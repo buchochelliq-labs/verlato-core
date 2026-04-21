@@ -19,6 +19,7 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
 - [ ] Track publication metadata by release/tag in state.
 - [ ] Add command to mark items as published in a specific release.
 - [ ] Add `reconcile` subcommand to explicitly list history deltas not yet represented.
+- [ ] Track release lineage/provenance by file area so changed paths can be linked to their most recent prior release(s).
 - [ ] Add checksum versioning strategy for future schema changes.
 
 ## Quality and DX
