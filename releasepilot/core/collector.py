@@ -19,6 +19,14 @@ class Collector:
             commits.append(Commit(sha=sha, message=message, author=author))
         return list(reversed(commits))
 
+    def latest_tag(self, head: str = "HEAD") -> str | None:
+        cmd = ["git", "describe", "--tags", "--abbrev=0", head]
+        result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        if result.returncode != 0:
+            return None
+        tag = result.stdout.strip()
+        return tag or None
+
     def map_commits_to_prs(self, commits: list[Commit]) -> dict[str, PullRequest]:
         mapping: dict[str, PullRequest] = {}
         for commit in commits:

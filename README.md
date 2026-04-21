@@ -73,6 +73,8 @@ python -m pip install -e .
 
 ```bash
 releasepilot scan --base <ref> --head <ref>
+releasepilot scan --from-latest-tag --head <ref>
+releasepilot scan --from-latest-published --head <ref>
 releasepilot generate --base <ref> --head <ref>
 releasepilot reconcile --base <ref> --head <ref>
 releasepilot render --format github-release --version v1.2.0
@@ -89,6 +91,9 @@ releasepilot state mark-published --version v1.2.0 --all-unpublished
 - `reconcile`: explicitly lists unpublished deltas for a ref range (no state mutation).
 - `state show`: prints persisted state JSON.
 - `state mark-published`: marks items as published for a given release/tag.
+- For `scan`/`generate`/`reconcile`, you can provide either explicit refs (`--base` + optional `--head`) or marker-based range selection:
+  - `--from-latest-tag`: base is resolved from the latest reachable git tag.
+  - `--from-latest-published`: base is resolved from the most recent `published_in` marker in state.
 
 ## Config sample
 

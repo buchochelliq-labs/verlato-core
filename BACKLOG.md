@@ -8,7 +8,7 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
   - [x] map commit SHAs to PRs
   - [x] fetch PR metadata (title/body/labels/base/head)
   - [x] fetch changed files + patch hunks
-- [ ] Add collector support for scanning from tag/release markers in addition to refs.
+- [x] Add collector support for scanning from tag/release markers in addition to refs.
 - [x] Improve grouping for non-PR commit ranges (grouped changesets instead of single commits when appropriate).
 - [x] Add smarter split logic when one PR contains unrelated user-facing changes.
 - [x] Add more deterministic heuristics for audience/area classification by path and labels.
