@@ -4,21 +4,21 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
 
 ## Must-have MVP follow-ups
 
-- [ ] Implement a real GitHub API adapter:
-  - [ ] map commit SHAs to PRs
-  - [ ] fetch PR metadata (title/body/labels/base/head)
-  - [ ] fetch changed files + patch hunks
+- [x] Implement a real GitHub API adapter:
+  - [x] map commit SHAs to PRs
+  - [x] fetch PR metadata (title/body/labels/base/head)
+  - [x] fetch changed files + patch hunks
 - [ ] Add collector support for scanning from tag/release markers in addition to refs.
-- [ ] Improve grouping for non-PR commit ranges (grouped changesets instead of single commits when appropriate).
+- [x] Improve grouping for non-PR commit ranges (grouped changesets instead of single commits when appropriate).
 - [ ] Add smarter split logic when one PR contains unrelated user-facing changes.
 - [ ] Add more deterministic heuristics for audience/area classification by path and labels.
 - [ ] Strengthen release rendering templates and include confidence/provenance options.
 
 ## State and reconciliation
 
-- [ ] Track publication metadata by release/tag in state.
-- [ ] Add command to mark items as published in a specific release.
-- [ ] Add `reconcile` subcommand to explicitly list history deltas not yet represented.
+- [x] Track publication metadata by release/tag in state.
+- [x] Add command to mark items as published in a specific release.
+- [x] Add `reconcile` subcommand to explicitly list history deltas not yet represented.
 - [ ] Track release lineage/provenance by file area so changed paths can be linked to their most recent prior release(s).
 - [ ] Add checksum versioning strategy for future schema changes.
 
@@ -41,3 +41,7 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
 - [ ] Keep `ARCHITECTURE.md` current with any structural changes.
 - [ ] Keep this backlog prioritized and prune completed items regularly.
 - [ ] Add contributor guide with development workflow and decision log.
+
+## Next biggest ticket
+
+- [ ] Add smarter split logic when one PR contains unrelated user-facing changes.
