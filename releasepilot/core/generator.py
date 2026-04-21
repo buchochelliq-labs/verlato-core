@@ -16,17 +16,48 @@ SECTION_MAP = {
 
 
 class MarkdownGenerator:
-    def render_github_release(self, items: list[ChangeItem], version: str = "Unreleased") -> str:
+    def render_github_release(
+        self,
+        items: list[ChangeItem],
+        version: str = "Unreleased",
+        include_confidence: bool = False,
+        include_provenance: bool = False,
+    ) -> str:
         lines = [f"## {version} - {date.today().isoformat()}", ""]
-        lines.extend(self._render_sections(items))
+        lines.extend(
+            self._render_sections(
+                items,
+                include_confidence=include_confidence,
+                include_provenance=include_provenance,
+            )
+        )
         return "\n".join(lines).strip() + "\n"
 
-    def render_changelog_entry(self, items: list[ChangeItem], version: str = "Unreleased") -> str:
+    def render_changelog_entry(
+        self,
+        items: list[ChangeItem],
+        version: str = "Unreleased",
+        include_confidence: bool = False,
+        include_provenance: bool = False,
+    ) -> str:
         lines = [f"### {version} ({date.today().isoformat()})", ""]
-        lines.extend(self._render_sections(items, include_summary=True))
+        lines.extend(
+            self._render_sections(
+                items,
+                include_summary=True,
+                include_confidence=include_confidence,
+                include_provenance=include_provenance,
+            )
+        )
         return "\n".join(lines).strip() + "\n"
 
-    def _render_sections(self, items: list[ChangeItem], include_summary: bool = False) -> list[str]:
+    def _render_sections(
+        self,
+        items: list[ChangeItem],
+        include_summary: bool = False,
+        include_confidence: bool = False,
+        include_provenance: bool = False,
+    ) -> list[str]:
         by_kind: dict[str, list[ChangeItem]] = defaultdict(list)
         for item in items:
             by_kind[item.classification.kind].append(item)
@@ -39,9 +70,15 @@ class MarkdownGenerator:
             lines.append(f"### {SECTION_MAP[key]}")
             for item in section_items:
                 source = f" (PR #{item.source.pr_number})" if item.source.pr_number else ""
+                extras: list[str] = []
+                if include_confidence:
+                    extras.append(f"confidence {item.confidence:.2f}")
+                if include_provenance:
+                    extras.append(f"source {item.source.base_ref}..{item.source.head_ref}")
+                suffix = f" [{'; '.join(extras)}]" if extras else ""
                 if include_summary:
-                    lines.append(f"- {item.content.title}{source}: {item.content.summary}")
+                    lines.append(f"- {item.content.title}{source}: {item.content.summary}{suffix}")
                 else:
-                    lines.append(f"- {item.content.title}{source}")
+                    lines.append(f"- {item.content.title}{source}{suffix}")
             lines.append("")
         return lines

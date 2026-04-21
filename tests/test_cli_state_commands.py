@@ -64,3 +64,25 @@ def test_build_adapter_prefers_github_when_enabled(monkeypatch):
 
     adapter = _build_adapter()
     assert isinstance(adapter, GitHubApiAdapter)
+
+
+def test_render_supports_confidence_and_provenance(monkeypatch, tmp_path: Path, capsys):
+    state_path = tmp_path / "state.json"
+    StateStore(path=str(state_path)).save(StateData(items=[_mk_item("ci_1")]))
+    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+
+    rc = main(
+        [
+            "render",
+            "--format",
+            "github-release",
+            "--version",
+            "v1.0.0",
+            "--include-confidence",
+            "--include-provenance",
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "confidence 0.80" in out
+    assert "source v1..main" in out

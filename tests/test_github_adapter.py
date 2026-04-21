@@ -48,3 +48,25 @@ def test_find_pr_for_commit_enriches_metadata_and_files():
     assert pr.head_ref == "feature/auth"
     assert len(pr.files) == 1
     assert pr.files[0].path == "api/auth.py"
+
+
+def test_github_adapter_paginates_file_results():
+    first_page = [{"filename": f"src/file_{idx}.py", "status": "modified", "patch": ""} for idx in range(100)]
+    responses = [
+        [{"number": 7}],
+        {"title": "Big PR", "labels": [], "base": {"ref": "main"}, "head": {"ref": "feat/huge"}},
+        first_page,
+        [{"filename": "src/b.py", "status": "modified", "patch": ""}],
+        [],
+    ]
+
+    def fake_urlopen(_request):
+        return _FakeResp(responses.pop(0))
+
+    adapter = GitHubApiAdapter(repo="org/repo", token="t")
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        pr = adapter.find_pr_for_commit("abc123")
+
+    assert pr is not None
+    assert len(pr.files) == 101
+    assert pr.files[-1].path == "src/b.py"
