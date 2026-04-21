@@ -74,9 +74,11 @@ python -m pip install -e .
 ```bash
 releasepilot scan --base <ref> --head <ref>
 releasepilot generate --base <ref> --head <ref>
+releasepilot reconcile --base <ref> --head <ref>
 releasepilot render --format github-release --version v1.2.0
 releasepilot render --format changelog --version v1.2.0
 releasepilot state show
+releasepilot state mark-published --version v1.2.0 --all-unpublished
 ```
 
 ### Command behavior
@@ -84,11 +86,20 @@ releasepilot state show
 - `scan`: detects unreconciled change items in a ref range (no state mutation).
 - `generate`: detects and persists newly generated items to state.
 - `render`: renders markdown from persisted items.
+- `reconcile`: explicitly lists unpublished deltas for a ref range (no state mutation).
 - `state show`: prints persisted state JSON.
+- `state mark-published`: marks items as published for a given release/tag.
 
 ## Config sample
 
 See `releasepilot.sample.json` for a minimal example.
+
+Environment variables:
+
+- `RELEASEPILOT_STATE_PATH`: overrides local state file path.
+- `RELEASEPILOT_PR_ADAPTER`: PR mapping mode: `standard-git` (default), `github`, or `none`.
+- `RELEASEPILOT_GITHUB_REPO`: repository slug (`owner/repo`) for GitHub API enrichment.
+- `GITHUB_TOKEN` or `GH_TOKEN`: API token used when `RELEASEPILOT_PR_ADAPTER=github`.
 
 ## Testing
 

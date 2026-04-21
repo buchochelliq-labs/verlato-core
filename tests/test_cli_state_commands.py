@@ -1,0 +1,66 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from releasepilot.cli.main import main
+from releasepilot.core.models import (
+    ChangeItem,
+    Classification,
+    Content,
+    Evidence,
+    SourceRef,
+)
+from releasepilot.state.store import StateData, StateStore
+
+
+def _mk_item(item_id: str, published: bool = False) -> ChangeItem:
+    return ChangeItem(
+        id=item_id,
+        source=SourceRef(pr_number=1, commit_shas=["a"], base_ref="v1", head_ref="main"),
+        classification=Classification(kind="changed", area="general", audience="external", semver="patch"),
+        content=Content(title="t", summary="s"),
+        evidence=Evidence(),
+        confidence=0.8,
+        published=published,
+        checksum=f"ck-{item_id}",
+    )
+
+
+def test_state_mark_published_all_unpublished(monkeypatch, tmp_path: Path):
+    state_path = tmp_path / "state.json"
+    store = StateStore(path=str(state_path))
+    store.save(StateData(items=[_mk_item("ci_1"), _mk_item("ci_2", published=True)]))
+
+    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+    rc = main(["state", "mark-published", "--version", "v1.2.0", "--all-unpublished"])
+    assert rc == 0
+
+    data = json.loads(state_path.read_text())
+    assert data["items"][0]["published"] is True
+    assert data["items"][0]["published_in"] == "v1.2.0"
+    assert data["items"][1]["published_in"] is None
+
+
+def test_reconcile_command_outputs_count(monkeypatch, tmp_path: Path, capsys):
+    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setattr("releasepilot.cli.main.run_scan", lambda base, head, persist: [{"id": "ci_1"}])
+
+    rc = main(["reconcile", "--base", "v1.0.0", "--head", "HEAD"])
+    assert rc == 0
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["count"] == 1
+    assert out["unpublished"][0]["id"] == "ci_1"
+
+
+def test_build_adapter_prefers_github_when_enabled(monkeypatch):
+    monkeypatch.setenv("RELEASEPILOT_PR_ADAPTER", "github")
+    monkeypatch.setenv("RELEASEPILOT_GITHUB_REPO", "org/repo")
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    from releasepilot.cli.main import _build_adapter
+    from releasepilot.github.adapter import GitHubApiAdapter
+
+    adapter = _build_adapter()
+    assert isinstance(adapter, GitHubApiAdapter)
