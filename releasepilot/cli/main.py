@@ -21,8 +21,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     for name in ("scan", "generate", "reconcile"):
         p = sub.add_parser(name)
-        p.add_argument("--base", required=True)
-        p.add_argument("--head", required=True)
+        p.add_argument("--base")
+        p.add_argument("--head", default="HEAD")
+        p.add_argument("--from-latest-tag", action="store_true")
+        p.add_argument("--from-latest-published", action="store_true")
 
     render = sub.add_parser("render")
     render.add_argument("--format", choices=["github-release", "changelog"], required=True)
@@ -75,6 +77,38 @@ def run_scan(base: str, head: str, persist: bool) -> list[dict]:
     return [asdict(i) for i in unpublished]
 
 
+def _latest_published_version() -> str | None:
+    state = _build_store().load()
+    published_versions = [item.published_in for item in state.items if item.published and item.published_in]
+    if not published_versions:
+        return None
+    # Preserve recency by taking the last published marker observed in state history.
+    return published_versions[-1]
+
+
+def _resolve_range(args: argparse.Namespace) -> tuple[str, str]:
+    if args.base:
+        return args.base, args.head
+
+    use_tag = bool(args.from_latest_tag)
+    use_published = bool(args.from_latest_published)
+    if use_tag and use_published:
+        raise SystemExit("Choose only one marker mode: --from-latest-tag or --from-latest-published")
+    if not use_tag and not use_published:
+        raise SystemExit("Provide --base or one marker mode: --from-latest-tag / --from-latest-published")
+
+    if use_tag:
+        marker = Collector(pr_adapter=_build_adapter()).latest_tag(args.head)
+        if not marker:
+            raise SystemExit(f"No reachable tag found from {args.head}")
+        return marker, args.head
+
+    marker = _latest_published_version()
+    if not marker:
+        raise SystemExit("No published release marker found in state")
+    return marker, args.head
+
+
 def _run_mark_published(version: str, ids: list[str] | None, all_unpublished: bool) -> int:
     store = _build_store()
     state = store.load()
@@ -97,16 +131,19 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     if args.command == "scan":
-        print(json.dumps(run_scan(args.base, args.head, persist=False), indent=2))
+        base, head = _resolve_range(args)
+        print(json.dumps(run_scan(base, head, persist=False), indent=2))
         return 0
 
     if args.command == "generate":
-        items = run_scan(args.base, args.head, persist=True)
+        base, head = _resolve_range(args)
+        items = run_scan(base, head, persist=True)
         print(json.dumps(items, indent=2))
         return 0
 
     if args.command == "reconcile":
-        items = run_scan(args.base, args.head, persist=False)
+        base, head = _resolve_range(args)
+        items = run_scan(base, head, persist=False)
         print(json.dumps({"unpublished": items, "count": len(items)}, indent=2))
         return 0
 
