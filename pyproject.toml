@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "releasepilot"
+version = "0.1.0"
+description = "PR-first changelog intelligence with conventional + diff evidence"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+releasepilot = "releasepilot.cli.main:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
