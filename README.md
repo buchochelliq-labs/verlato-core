@@ -57,6 +57,12 @@ Each generated `ChangeItem` includes:
 - detects docs-only and tests-only changes
 - extracts representative hunks (truncated) instead of full patches
 
+
+## Project planning docs
+
+- See `ARCHITECTURE.md` for system design and module boundaries.
+- See `BACKLOG.md` for prioritized work remaining from the original prompt.
+
 ## Install
 
 ```bash
