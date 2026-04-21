@@ -1,0 +1,10 @@
+{
+  "state_path": ".releasepilot_state.json",
+  "github": {
+    "repo": "owner/repo",
+    "token_env": "GITHUB_TOKEN"
+  },
+  "provider": {
+    "name": "stub"
+  }
+}
