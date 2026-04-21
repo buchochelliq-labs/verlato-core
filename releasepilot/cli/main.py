@@ -27,6 +27,8 @@ def build_parser() -> argparse.ArgumentParser:
     render = sub.add_parser("render")
     render.add_argument("--format", choices=["github-release", "changelog"], required=True)
     render.add_argument("--version", default="Unreleased")
+    render.add_argument("--include-confidence", action="store_true")
+    render.add_argument("--include-provenance", action="store_true")
 
     state = sub.add_parser("state")
     state_sub = state.add_subparsers(dest="state_command", required=True)
@@ -112,9 +114,23 @@ def main(argv: list[str] | None = None) -> int:
         state = _build_store().load().items
         generator = MarkdownGenerator()
         if args.format == "github-release":
-            print(generator.render_github_release(state, version=args.version))
+            print(
+                generator.render_github_release(
+                    state,
+                    version=args.version,
+                    include_confidence=args.include_confidence,
+                    include_provenance=args.include_provenance,
+                )
+            )
         else:
-            print(generator.render_changelog_entry(state, version=args.version))
+            print(
+                generator.render_changelog_entry(
+                    state,
+                    version=args.version,
+                    include_confidence=args.include_confidence,
+                    include_provenance=args.include_provenance,
+                )
+            )
         return 0
 
     if args.command == "state" and args.state_command == "show":

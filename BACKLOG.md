@@ -10,9 +10,9 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
   - [x] fetch changed files + patch hunks
 - [ ] Add collector support for scanning from tag/release markers in addition to refs.
 - [x] Improve grouping for non-PR commit ranges (grouped changesets instead of single commits when appropriate).
-- [ ] Add smarter split logic when one PR contains unrelated user-facing changes.
-- [ ] Add more deterministic heuristics for audience/area classification by path and labels.
-- [ ] Strengthen release rendering templates and include confidence/provenance options.
+- [x] Add smarter split logic when one PR contains unrelated user-facing changes.
+- [x] Add more deterministic heuristics for audience/area classification by path and labels.
+- [x] Strengthen release rendering templates and include confidence/provenance options.
 
 ## State and reconciliation
 
@@ -24,8 +24,8 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
 
 ## Quality and DX
 
-- [ ] Add integration tests for CLI commands using temp git repos.
-- [ ] Add mocked GitHub adapter integration tests for PR enrichment.
+- [x] Add integration tests for CLI commands using temp git repos.
+- [x] Add mocked GitHub adapter integration tests for PR enrichment.
 - [ ] Add lint/type-check tasks (`ruff`, `mypy`) in CI.
 - [ ] Add golden-file tests for markdown rendering.
 - [ ] Add sample fixtures for real-world bad commit message scenarios.
@@ -44,4 +44,17 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
 
 ## Next biggest ticket
 
-- [ ] Add smarter split logic when one PR contains unrelated user-facing changes.
+- [x] Add smarter split logic when one PR contains unrelated user-facing changes.
+
+## Suggested next items (recommended execution order)
+
+1. **Smarter PR split logic** (current biggest ticket)
+   - Implement heuristics to split one PR into multiple user-facing changelog items when unrelated areas are touched.
+2. **Deterministic audience/area classification**
+   - Add path/label mapping rules and deterministic fallback behavior for higher-confidence output.
+3. **Release rendering confidence/provenance**
+   - Include confidence and evidence provenance in output templates so reviewers can audit generated notes.
+4. **CLI integration tests with temp git repos**
+   - Validate end-to-end command behavior for realistic local workflows.
+5. **Mocked GitHub adapter integration tests**
+   - Lock down PR enrichment behavior and edge cases without external API dependence.

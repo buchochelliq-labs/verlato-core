@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
 
 from releasepilot.core.conventional import parse_conventional_commit
-from releasepilot.core.models import ChangeGroup, Commit, PullRequest
+from releasepilot.core.diff_evidence import DiffEvidenceBuilder
+from releasepilot.core.models import ChangeGroup, ChangedFile, Commit, PullRequest
 
 
 class Grouper:
+    USER_FACING_AREAS = {"api", "frontend", "backend", "infra", "general"}
+
+    def __init__(self) -> None:
+        self.diff_builder = DiffEvidenceBuilder()
+
     def group(self, commits: list[Commit], prs_by_commit: dict[str, PullRequest]) -> list[ChangeGroup]:
         grouped: dict[int, list[Commit]] = defaultdict(list)
         no_pr: list[Commit] = []
@@ -20,7 +27,7 @@ class Grouper:
         results: list[ChangeGroup] = []
         for pr_number, pr_commits in grouped.items():
             pr = prs_by_commit[pr_commits[0].sha]
-            results.append(ChangeGroup(pr=pr, commits=pr_commits))
+            results.extend(self._split_pr_group(pr, pr_commits))
 
         results.extend(self._group_non_pr_commits(no_pr))
 
@@ -64,3 +71,22 @@ class Grouper:
                 category = prefix
                 break
         return ("heuristic", category, commit.author.lower())
+
+    def _split_pr_group(self, pr: PullRequest, commits: list[Commit]) -> list[ChangeGroup]:
+        if not pr.files:
+            return [ChangeGroup(pr=pr, commits=commits)]
+
+        diff = self.diff_builder.build(pr.files)
+        user_facing_areas = [a for a in diff.files_by_area if a in self.USER_FACING_AREAS]
+        if len(user_facing_areas) <= 1:
+            return [ChangeGroup(pr=pr, commits=commits)]
+
+        split_groups: list[ChangeGroup] = []
+        for area in sorted(user_facing_areas):
+            files = [f for f in pr.files if self.diff_builder._infer_area(f.path) == area]
+            if not files:
+                continue
+            area_pr = replace(pr, title=f"{pr.title} [{area}]", files=[ChangedFile(**f.__dict__) for f in files])
+            split_groups.append(ChangeGroup(pr=area_pr, commits=commits))
+
+        return split_groups or [ChangeGroup(pr=pr, commits=commits)]

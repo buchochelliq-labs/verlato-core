@@ -15,6 +15,21 @@ from releasepilot.core.models import (
 
 
 class Classifier:
+    LABEL_AREA_RULES = {
+        "frontend": "frontend",
+        "ui": "frontend",
+        "backend": "backend",
+        "server": "backend",
+        "api": "api",
+        "docs": "docs",
+        "documentation": "docs",
+        "infra": "infra",
+        "ops": "infra",
+        "test": "tests",
+        "testing": "tests",
+    }
+    INTERNAL_LABELS = {"internal", "chore", "maintenance", "docs", "documentation", "test", "testing"}
+
     def __init__(self) -> None:
         self.diff_builder = DiffEvidenceBuilder()
 
@@ -25,7 +40,7 @@ class Classifier:
 
         kind = "changed"
         semver = "patch"
-        area = next(iter(diff.files_by_area.keys()), "general")
+        area = self._classify_area(labels=labels, files_by_area=diff.files_by_area)
         audience = "external"
         confidence = 0.55
         commit_signals: list[str] = []
@@ -51,6 +66,12 @@ class Classifier:
         if diff.docs_only or diff.tests_only:
             kind, audience = "internal", "internal"
             semver = "none"
+            area = "docs" if diff.docs_only else "tests"
+
+        if any(lbl in self.INTERNAL_LABELS for lbl in labels):
+            audience = "internal"
+            confidence = max(confidence, 0.78)
+            commit_signals.append("label:internal")
 
         if not parsed:
             confidence = 0.62
@@ -90,3 +111,15 @@ class Classifier:
             checksum=checksum,
         )
         return [item]
+
+    def _classify_area(self, labels: list[str], files_by_area: dict[str, list[str]]) -> str:
+        for label in labels:
+            normalized = label.strip().lower()
+            if normalized in self.LABEL_AREA_RULES:
+                return self.LABEL_AREA_RULES[normalized]
+
+        if not files_by_area:
+            return "general"
+
+        ordered = sorted(files_by_area.items(), key=lambda item: (-len(item[1]), item[0]))
+        return ordered[0][0]
