@@ -5,7 +5,7 @@ from dataclasses import replace
 
 from releasepilot.core.conventional import parse_conventional_commit
 from releasepilot.core.diff_evidence import DiffEvidenceBuilder
-from releasepilot.core.models import ChangeGroup, ChangedFile, Commit, PullRequest
+from releasepilot.core.models import ChangedFile, ChangeGroup, Commit, PullRequest
 
 
 class Grouper:
@@ -25,7 +25,7 @@ class Grouper:
                 no_pr.append(commit)
 
         results: list[ChangeGroup] = []
-        for pr_number, pr_commits in grouped.items():
+        for _pr_number, pr_commits in grouped.items():
             pr = prs_by_commit[pr_commits[0].sha]
             results.extend(self._split_pr_group(pr, pr_commits))
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import hashlib
-
+from releasepilot.core.checksum import CHECKSUM_VERSION, build_checksum
 from releasepilot.core.conventional import parse_conventional_commit
 from releasepilot.core.diff_evidence import DiffEvidenceBuilder
 from releasepilot.core.models import (
@@ -35,7 +34,7 @@ class Classifier:
 
     def classify(self, group: ChangeGroup, base_ref: str, head_ref: str) -> list[ChangeItem]:
         pr = group.pr
-        labels = [l.lower() for l in (pr.labels if pr else [])]
+        labels = [label.lower() for label in (pr.labels if pr else [])]
         diff = self.diff_builder.build(pr.files if pr else [])
 
         kind = "changed"
@@ -45,8 +44,11 @@ class Classifier:
         confidence = 0.55
         commit_signals: list[str] = []
 
-        parsed = [parse_conventional_commit(c.message) for c in group.commits]
-        parsed = [p for p in parsed if p]
+        parsed = []
+        for commit in group.commits:
+            parsed_commit = parse_conventional_commit(commit.message)
+            if parsed_commit:
+                parsed.append(parsed_commit)
         if parsed:
             best = parsed[0]
             commit_signals.append(f"conventional:{best.type}")
@@ -60,7 +62,11 @@ class Classifier:
                 kind, audience = "internal", "internal"
             confidence = 0.85
 
-        if any("security" in l for l in labels) or any("security" in p.lower() for p in diff.files_by_area.get("general", [])):
+        general_files = diff.files_by_area.get("general", [])
+        has_security_signal = any("security" in label for label in labels) or any(
+            "security" in path.lower() for path in general_files
+        )
+        if has_security_signal:
             kind, semver, confidence = "security", "patch", max(confidence, 0.8)
 
         if diff.docs_only or diff.tests_only:
@@ -99,8 +105,12 @@ class Classifier:
             },
         )
 
-        raw_id = f"{source.pr_number}:{','.join(source.commit_shas)}:{title}"
-        checksum = hashlib.sha256(raw_id.encode()).hexdigest()
+        checksum = build_checksum(
+            pr_number=source.pr_number,
+            commit_shas=source.commit_shas,
+            title=title,
+            area=area,
+        )
         item = ChangeItem(
             id=f"ci_{checksum[:12]}",
             source=source,
@@ -109,6 +119,7 @@ class Classifier:
             evidence=evidence,
             confidence=confidence,
             checksum=checksum,
+            checksum_version=CHECKSUM_VERSION,
         )
         return [item]
 

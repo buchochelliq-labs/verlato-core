@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import subprocess
 
-from releasepilot.core.models import Commit, PullRequest
 from releasepilot.core.adapters import PullRequestAdapter
+from releasepilot.core.models import Commit, PullRequest
 
 
 class Collector:

@@ -1,7 +1,7 @@
 from releasepilot.core.classifier import Classifier
 from releasepilot.core.generator import MarkdownGenerator
 from releasepilot.core.grouper import Grouper
-from releasepilot.core.models import ChangeGroup, ChangedFile, Commit, PullRequest
+from releasepilot.core.models import ChangedFile, ChangeGroup, Commit, PullRequest
 from releasepilot.core.reconciler import Reconciler
 
 

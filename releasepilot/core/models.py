@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -17,7 +17,7 @@ class PullRequest:
     title: str
     body: str = ""
     labels: list[str] = field(default_factory=list)
-    files: list["ChangedFile"] = field(default_factory=list)
+    files: list[ChangedFile] = field(default_factory=list)
     base_ref: str = ""
     head_ref: str = ""
 
@@ -70,12 +70,14 @@ class ChangeItem:
     published: bool = False
     published_in: str | None = None
     checksum: str = ""
+    checksum_version: str = "v1"
+    lineage_releases: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @staticmethod
-    def from_dict(data: dict[str, Any]) -> "ChangeItem":
+    def from_dict(data: dict[str, Any]) -> ChangeItem:
         return ChangeItem(
             id=data["id"],
             source=SourceRef(**data["source"]),
@@ -86,6 +88,8 @@ class ChangeItem:
             published=bool(data.get("published", False)),
             published_in=data.get("published_in"),
             checksum=data.get("checksum", ""),
+            checksum_version=data.get("checksum_version", "v1"),
+            lineage_releases=list(data.get("lineage_releases", [])),
         )
 
 

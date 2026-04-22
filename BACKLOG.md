@@ -19,28 +19,28 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
 - [x] Track publication metadata by release/tag in state.
 - [x] Add command to mark items as published in a specific release.
 - [x] Add `reconcile` subcommand to explicitly list history deltas not yet represented.
-- [ ] Track release lineage/provenance by file area so changed paths can be linked to their most recent prior release(s).
-- [ ] Add checksum versioning strategy for future schema changes.
+- [x] Track release lineage/provenance by file area so changed paths can be linked to their most recent prior release(s).
+- [x] Add checksum versioning strategy for future schema changes.
 
 ## Quality and DX
 
 - [x] Add integration tests for CLI commands using temp git repos.
 - [x] Add mocked GitHub adapter integration tests for PR enrichment.
-- [ ] Add lint/type-check tasks (`ruff`, `mypy`) in CI.
-- [ ] Add golden-file tests for markdown rendering.
-- [ ] Add sample fixtures for real-world bad commit message scenarios.
+- [x] Add lint/type-check tasks (`ruff`, `mypy`) in CI.
+- [x] Add golden-file tests for markdown rendering.
+- [x] Add sample fixtures for real-world bad commit message scenarios.
 
 ## BYOM and MCP readiness
 
-- [ ] Add provider request/response contracts for summarization and classification prompts.
-- [ ] Add a local/mock model adapter with deterministic outputs for tests.
-- [ ] Define MCP-facing service interface and wire read-only endpoints first.
+- [x] Add provider request/response contracts for summarization and classification prompts.
+- [x] Add a local/mock model adapter with deterministic outputs for tests.
+- [x] Define MCP-facing service interface and wire read-only endpoints first.
 
 ## Documentation
 
-- [ ] Keep `ARCHITECTURE.md` current with any structural changes.
-- [ ] Keep this backlog prioritized and prune completed items regularly.
-- [ ] Add contributor guide with development workflow and decision log.
+- [x] Keep `ARCHITECTURE.md` current with any structural changes.
+- [x] Keep this backlog prioritized and prune completed items regularly.
+- [x] Add contributor guide with development workflow and decision log.
 
 ## Next biggest ticket
 
@@ -48,13 +48,9 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
 
 ## Suggested next items (recommended execution order)
 
-1. **Smarter PR split logic** (current biggest ticket)
-   - Implement heuristics to split one PR into multiple user-facing changelog items when unrelated areas are touched.
-2. **Deterministic audience/area classification**
-   - Add path/label mapping rules and deterministic fallback behavior for higher-confidence output.
-3. **Release rendering confidence/provenance**
-   - Include confidence and evidence provenance in output templates so reviewers can audit generated notes.
-4. **CLI integration tests with temp git repos**
-   - Validate end-to-end command behavior for realistic local workflows.
-5. **Mocked GitHub adapter integration tests**
-   - Lock down PR enrichment behavior and edge cases without external API dependence.
+1. **MCP transport and auth**
+   - Expose the read-only MCP service interface via a deployable server process.
+2. **Confidence calibration**
+   - Improve confidence scoring with richer evidence weighting and calibration tests.
+3. **State backend expansion**
+   - Add optional SQLite backend for larger repositories and concurrent workflows.
