@@ -17,6 +17,8 @@ It is **PR-first by default**: the primary analysis unit is a pull request (or g
   - CHANGELOG-style entries
 - Persist state in JSON.
 - Provider abstraction with a stub provider for future BYOM model support.
+- Versioned checksums and area-level release lineage provenance in persisted state.
+- Read-only MCP service interface for change/reconcile/release-preview endpoints.
 
 ## Architecture
 
@@ -32,6 +34,7 @@ It is **PR-first by default**: the primary analysis unit is a pull request (or g
 - `core/generator.py` — markdown rendering.
 - `github/adapter.py` — GitHub adapter boundary + stub implementation.
 - `providers/` — model-provider interface + stub.
+- `mcp/service.py` — read-only service interface for MCP integration.
 - `state/store.py` — JSON persistence.
 - `tests/` — unit tests.
 
@@ -46,6 +49,8 @@ Each generated `ChangeItem` includes:
 - confidence score
 - publication metadata (`published`, `published_in`)
 - checksum for idempotent reconciliation
+- checksum version for safe schema evolution
+- area lineage (`lineage_releases`) to show prior releases for similar file areas
 
 ## Diff intelligence (MVP)
 

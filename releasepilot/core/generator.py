@@ -75,6 +75,8 @@ class MarkdownGenerator:
                     extras.append(f"confidence {item.confidence:.2f}")
                 if include_provenance:
                     extras.append(f"source {item.source.base_ref}..{item.source.head_ref}")
+                    if item.lineage_releases:
+                        extras.append(f"prior {', '.join(item.lineage_releases)}")
                 suffix = f" [{'; '.join(extras)}]" if extras else ""
                 if include_summary:
                     lines.append(f"- {item.content.title}{source}: {item.content.summary}{suffix}")

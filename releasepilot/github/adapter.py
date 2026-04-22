@@ -5,6 +5,7 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Any
 
 from releasepilot.core.adapters import PullRequestAdapter
 from releasepilot.core.models import ChangedFile, PullRequest
@@ -17,7 +18,7 @@ class GitHubApiAdapter(PullRequestAdapter):
         self.api_base = api_base.rstrip("/")
 
     @classmethod
-    def from_env(cls) -> "GitHubApiAdapter | None":
+    def from_env(cls) -> GitHubApiAdapter | None:
         repo = os.getenv("RELEASEPILOT_GITHUB_REPO")
         token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
         if not repo or not token:
@@ -35,7 +36,10 @@ class GitHubApiAdapter(PullRequestAdapter):
         return self._build_pull_request(int(pulls[0]["number"]))
 
     def _build_pull_request(self, pr_number: int) -> PullRequest:
-        pr_data = self._request_json(f"/repos/{self.repo}/pulls/{pr_number}")
+        pr_data_raw = self._request_json(f"/repos/{self.repo}/pulls/{pr_number}")
+        if not isinstance(pr_data_raw, dict):
+            raise RuntimeError("Expected object payload for pull request details")
+        pr_data = pr_data_raw
         files = self._paginate(f"/repos/{self.repo}/pulls/{pr_number}/files", params={"per_page": "100"})
         return PullRequest(
             number=pr_number,
@@ -55,9 +59,9 @@ class GitHubApiAdapter(PullRequestAdapter):
             head_ref=(pr_data.get("head") or {}).get("ref", ""),
         )
 
-    def _paginate(self, path: str, params: dict[str, str] | None = None) -> list[dict]:
+    def _paginate(self, path: str, params: dict[str, str] | None = None) -> list[dict[str, Any]]:
         page = 1
-        results: list[dict] = []
+        results: list[dict[str, Any]] = []
         while True:
             merged_params = {"page": str(page)}
             if params:
@@ -73,7 +77,7 @@ class GitHubApiAdapter(PullRequestAdapter):
             page += 1
         return results
 
-    def _request_json(self, path: str, params: dict[str, str] | None = None) -> dict | list:
+    def _request_json(self, path: str, params: dict[str, str] | None = None) -> Any:
         qs = f"?{urllib.parse.urlencode(params)}" if params else ""
         url = f"{self.api_base}{path}{qs}"
         req = urllib.request.Request(

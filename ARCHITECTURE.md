@@ -38,11 +38,13 @@ This document captures the current MVP architecture and should be reviewed befor
 - `releasepilot/core/generator.py`
   - Markdown rendering for GitHub release notes and changelog output.
 - `releasepilot/state/store.py`
-  - JSON persistence.
+  - JSON persistence, schema versioning, and area lineage index.
 - `releasepilot/github/adapter.py`
   - GitHub adapter boundary, including stub implementation.
 - `releasepilot/providers/`
-  - BYOM provider abstraction and stub provider.
+  - BYOM provider abstraction with stub + deterministic mock providers.
+- `releasepilot/mcp/service.py`
+  - Read-only MCP service interface over scan/reconcile/render.
 
 ## Data flow
 
@@ -63,7 +65,6 @@ This document captures the current MVP architecture and should be reviewed befor
 ## Near-term architecture improvements
 
 - Add explicit PR changed-file retrieval API in adapter interface.
-- Expand `ChangeItem` split logic for multi-feature PRs.
 - Add SQLite state backend option.
 - Introduce richer evidence scoring and confidence calibration.
-- Add MCP server layer around collector/classifier/generator endpoints.
+- Expand MCP service into a networked server transport.

@@ -1,0 +1,23 @@
+[
+  {
+    "message": "fix stuff",
+    "title": "Fix stuff",
+    "files": ["api/users.py"],
+    "expected_kind": "changed",
+    "expected_signal": "diff-fallback"
+  },
+  {
+    "message": "update",
+    "title": "Update misc",
+    "files": ["docs/README.md"],
+    "expected_kind": "internal",
+    "expected_signal": "diff-fallback"
+  },
+  {
+    "message": "Merge branch 'main'",
+    "title": "Merge branch main",
+    "files": ["tests/test_api.py"],
+    "expected_kind": "internal",
+    "expected_signal": "diff-fallback"
+  }
+]
