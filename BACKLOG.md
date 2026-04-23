@@ -50,7 +50,10 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
 
 1. **MCP transport and auth**
    - Expose the read-only MCP service interface via a deployable server process.
-2. **Confidence calibration**
+2. **AI provider strategy (GitHub baked-in vs Copilot workflows)**
+   - Add a provider selection mode that supports organization-managed GitHub-hosted models and Codex/Copilot-assisted workflows.
+   - Document default model settings, token requirements, and local fallback behavior.
+3. **Confidence calibration**
    - Improve confidence scoring with richer evidence weighting and calibration tests.
-3. **State backend expansion**
+4. **State backend expansion**
    - Add optional SQLite backend for larger repositories and concurrent workflows.
