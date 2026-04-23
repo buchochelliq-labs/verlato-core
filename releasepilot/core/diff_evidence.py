@@ -2,19 +2,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from releasepilot.core.areas import infer_area, is_docs_path, is_test_path
 from releasepilot.core.models import ChangedFile, DiffEvidence
 
 
 class DiffEvidenceBuilder:
-    AREA_RULES = {
-        "api": ["api/", "openapi", "schema", "graphql"],
-        "frontend": ["web/", "ui/", "frontend/"],
-        "backend": ["server/", "backend/", "service/", "src/"],
-        "docs": ["docs/", "README", ".md"],
-        "tests": ["test/", "tests/", "spec/"],
-        "infra": ["terraform", "k8s", "helm", ".github/"],
-    }
-
     def build(self, files: list[ChangedFile]) -> DiffEvidence:
         files_by_area: dict[str, list[str]] = defaultdict(list)
         api_changes: list[str] = []
@@ -23,7 +15,7 @@ class DiffEvidenceBuilder:
         representative_hunks: dict[str, list[str]] = {}
 
         for file in files:
-            area = self._infer_area(file.path)
+            area = self.infer_area(file.path)
             files_by_area[area].append(file.path)
 
             path_lower = file.path.lower()
@@ -39,8 +31,8 @@ class DiffEvidenceBuilder:
                 representative_hunks[file.path] = hunks
 
         all_paths = [f.path.lower() for f in files]
-        docs_only = bool(all_paths) and all(self._is_docs_path(p) for p in all_paths)
-        tests_only = bool(all_paths) and all(self._is_test_path(p) for p in all_paths)
+        docs_only = bool(all_paths) and all(is_docs_path(p) for p in all_paths)
+        tests_only = bool(all_paths) and all(is_test_path(p) for p in all_paths)
         summary = self._build_summary(files_by_area, api_changes, migration_changes, config_changes)
 
         return DiffEvidence(
@@ -54,18 +46,9 @@ class DiffEvidenceBuilder:
             summary=summary,
         )
 
-    def _infer_area(self, path: str) -> str:
-        lower = path.lower()
-        for area, signals in self.AREA_RULES.items():
-            if any(signal in lower for signal in signals):
-                return area
-        return "general"
-
-    def _is_docs_path(self, path: str) -> bool:
-        return path.endswith(".md") or "docs/" in path
-
-    def _is_test_path(self, path: str) -> bool:
-        return "test" in path or "spec" in path
+    @staticmethod
+    def infer_area(path: str) -> str:
+        return infer_area(path)
 
     def _extract_representative_hunks(self, patch: str, max_hunks: int = 2) -> list[str]:
         if not patch:

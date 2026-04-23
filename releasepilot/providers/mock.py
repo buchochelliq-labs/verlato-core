@@ -16,7 +16,7 @@ class MockProvider(ReleasePilotProvider):
         rng = Random(seed)
         confidence = round(0.6 + (rng.random() * 0.35), 2)
         return ProviderResponse(
-            content=f"[mock-summary] {request.prompt[:60]}",
+            content=f"Mock summary: {request.prompt[:60]}",
             confidence=confidence,
             model="mock-local",
         )

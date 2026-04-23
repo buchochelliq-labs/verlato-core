@@ -16,7 +16,7 @@ It is **PR-first by default**: the primary analysis unit is a pull request (or g
   - GitHub release notes
   - CHANGELOG-style entries
 - Persist state in JSON.
-- Provider abstraction with a stub provider for future BYOM model support.
+- Provider abstraction with stub, mock, and GitHub Copilot-backed model support for summary enrichment and low-confidence classification assists.
 - Versioned checksums and area-level release lineage provenance in persisted state.
 - Read-only MCP service interface for change/reconcile/release-preview endpoints.
 
@@ -114,10 +114,16 @@ Environment variables:
 - `RELEASEPILOT_GITHUB_MODELS_ENDPOINT`: override chat-completions endpoint for GitHub-hosted models.
 - `GITHUB_TOKEN` or `GH_TOKEN`: API token used when `RELEASEPILOT_PR_ADAPTER=github`. Also used by `github-copilot` provider mode.
 
+Provider behavior:
+
+- `stub`: deterministic no-op provider that preserves the built-in classifier summary.
+- `mock`: deterministic local provider that enriches summaries and can assist low-confidence classification.
+- `github-copilot`: remote provider that enriches summaries and can assist low-confidence classification.
+
 ## Testing
 
 ```bash
-pytest
+python -m pytest
 ```
 
 ## Notes on signal priority

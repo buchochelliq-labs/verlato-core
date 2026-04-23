@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from releasepilot.cli.main import _build_store, run_scan
+from releasepilot.cli.main import run_scan, scan_change_items
 from releasepilot.core.generator import MarkdownGenerator
 
 
@@ -24,8 +24,7 @@ class MCPService:
         return run_scan(base=base, head=head, persist=False)
 
     def preview_release_notes(self, request: ReleasePreviewRequest) -> str:
-        store = _build_store()
-        state_items = store.load().items
+        state_items = scan_change_items(request.base, request.head, persist=False)
         return MarkdownGenerator().render_github_release(
             state_items,
             version=request.version,

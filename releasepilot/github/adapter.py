@@ -16,6 +16,8 @@ class GitHubApiAdapter(PullRequestAdapter):
         self.repo = repo
         self.token = token
         self.api_base = api_base.rstrip("/")
+        self._commit_cache: dict[str, PullRequest | None] = {}
+        self._pr_cache: dict[int, PullRequest] = {}
 
     @classmethod
     def from_env(cls) -> GitHubApiAdapter | None:
@@ -26,14 +28,25 @@ class GitHubApiAdapter(PullRequestAdapter):
         return cls(repo=repo, token=token)
 
     def find_pr_for_commit(self, commit_sha: str) -> PullRequest | None:
+        if commit_sha in self._commit_cache:
+            return self._commit_cache[commit_sha]
+
         try:
             pulls = self._request_json(f"/repos/{self.repo}/commits/{commit_sha}/pulls")
         except (urllib.error.URLError, RuntimeError, json.JSONDecodeError):
+            self._commit_cache[commit_sha] = None
             return None
 
         if not pulls:
+            self._commit_cache[commit_sha] = None
             return None
-        return self._build_pull_request(int(pulls[0]["number"]))
+        pr_number = int(pulls[0]["number"])
+        pr = self._pr_cache.get(pr_number)
+        if pr is None:
+            pr = self._build_pull_request(pr_number)
+            self._pr_cache[pr_number] = pr
+        self._commit_cache[commit_sha] = pr
+        return pr
 
     def _build_pull_request(self, pr_number: int) -> PullRequest:
         pr_data_raw = self._request_json(f"/repos/{self.repo}/pulls/{pr_number}")

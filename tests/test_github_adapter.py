@@ -70,3 +70,27 @@ def test_github_adapter_paginates_file_results():
     assert pr is not None
     assert len(pr.files) == 101
     assert pr.files[-1].path == "src/b.py"
+
+
+def test_github_adapter_caches_pr_details_across_commits():
+    responses = [
+        [{"number": 42}],
+        {"title": "Shared PR", "labels": [], "base": {"ref": "main"}, "head": {"ref": "feat/shared"}},
+        [{"filename": "src/a.py", "status": "modified", "patch": ""}],
+        [{"number": 42}],
+    ]
+    requests: list[object] = []
+
+    def fake_urlopen(request):
+        requests.append(request)
+        return _FakeResp(responses.pop(0))
+
+    adapter = GitHubApiAdapter(repo="org/repo", token="t")
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        first = adapter.find_pr_for_commit("abc123")
+        second = adapter.find_pr_for_commit("def456")
+
+    assert first is not None
+    assert second is not None
+    assert first is second
+    assert len(requests) == 4

@@ -4,7 +4,7 @@ import re
 import subprocess
 from abc import ABC, abstractmethod
 
-from releasepilot.core.models import ChangedFile, PullRequest
+from releasepilot.core.models import ChangedFile, Commit, PullRequest
 
 _PR_PATTERNS = [
     re.compile(r"\(#(?P<num>\d+)\)"),
@@ -18,6 +18,14 @@ class PullRequestAdapter(ABC):
     def find_pr_for_commit(self, commit_sha: str) -> PullRequest | None:
         raise NotImplementedError
 
+    def map_commits_to_prs(self, commits: list[Commit]) -> dict[str, PullRequest]:
+        mapping: dict[str, PullRequest] = {}
+        for commit in commits:
+            pr = self.find_pr_for_commit(commit.sha)
+            if pr:
+                mapping[commit.sha] = pr
+        return mapping
+
 
 class NullPullRequestAdapter(PullRequestAdapter):
     def find_pr_for_commit(self, commit_sha: str) -> PullRequest | None:
@@ -29,14 +37,20 @@ class StandardGitAdapter(PullRequestAdapter):
 
     def __init__(self, repo_path: str = ".") -> None:
         self.repo_path = repo_path
+        self._commit_cache: dict[str, PullRequest | None] = {}
 
     def find_pr_for_commit(self, commit_sha: str) -> PullRequest | None:
+        if commit_sha in self._commit_cache:
+            return self._commit_cache[commit_sha]
         subject = self._git(["show", "-s", "--format=%s", commit_sha]).strip()
         pr_number = self._extract_pr_number(subject)
         if pr_number is None:
+            self._commit_cache[commit_sha] = None
             return None
         files = self._git_changed_files(commit_sha)
-        return PullRequest(number=pr_number, title=subject, files=files)
+        pr = PullRequest(number=pr_number, title=subject, files=files)
+        self._commit_cache[commit_sha] = pr
+        return pr
 
     def _extract_pr_number(self, subject: str) -> int | None:
         for pattern in _PR_PATTERNS:

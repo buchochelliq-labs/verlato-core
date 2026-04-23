@@ -83,7 +83,7 @@ class Grouper:
 
         split_groups: list[ChangeGroup] = []
         for area in sorted(user_facing_areas):
-            files = [f for f in pr.files if self.diff_builder._infer_area(f.path) == area]
+            files = [f for f in pr.files if self.diff_builder.infer_area(f.path) == area]
             if not files:
                 continue
             area_pr = replace(pr, title=f"{pr.title} [{area}]", files=[ChangedFile(**f.__dict__) for f in files])

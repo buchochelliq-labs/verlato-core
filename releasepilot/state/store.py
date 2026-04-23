@@ -7,6 +7,10 @@ from pathlib import Path
 from releasepilot.core.models import ChangeItem
 
 
+class StateStoreError(RuntimeError):
+    pass
+
+
 @dataclass
 class StateData:
     items: list[ChangeItem] = field(default_factory=list)
@@ -15,25 +19,37 @@ class StateData:
 
 
 class StateStore:
+    CURRENT_SCHEMA_VERSION = "v2"
+
     def __init__(self, path: str = ".releasepilot_state.json") -> None:
         self.path = Path(path)
 
     def load(self) -> StateData:
         if not self.path.exists():
             return StateData()
-        raw = json.loads(self.path.read_text())
-        items = [ChangeItem.from_dict(i) for i in raw.get("items", [])]
-        lineage = raw.get("area_release_lineage") or self._derive_lineage(items)
+        try:
+            raw = json.loads(self.path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise StateStoreError(f"Unable to load state from {self.path}: {exc}") from exc
+        schema_version = raw.get("schema_version", "v1")
+        if schema_version == "v1":
+            items = [ChangeItem.from_dict(i) for i in raw.get("items", [])]
+            lineage = self._derive_lineage(items)
+        elif schema_version == self.CURRENT_SCHEMA_VERSION:
+            items = [ChangeItem.from_dict(i) for i in raw.get("items", [])]
+            lineage = raw.get("area_release_lineage") or self._derive_lineage(items)
+        else:
+            raise StateStoreError(f"Unsupported state schema version: {schema_version}")
         return StateData(
             items=items,
-            schema_version=raw.get("schema_version", "v1"),
+            schema_version=schema_version,
             area_release_lineage=lineage,
         )
 
     def save(self, data: StateData) -> None:
         lineage = self._derive_lineage(data.items)
         payload = {
-            "schema_version": "v2",
+            "schema_version": self.CURRENT_SCHEMA_VERSION,
             "area_release_lineage": lineage,
             "items": [i.to_dict() for i in data.items],
         }

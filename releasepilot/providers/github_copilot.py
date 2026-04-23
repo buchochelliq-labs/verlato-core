@@ -77,12 +77,13 @@ class GitHubCopilotProvider(ReleasePilotProvider):
             )
 
         content = ""
-        confidence = 0.5
+        confidence = 0.75
         choices = data.get("choices") or []
         if choices:
             message = choices[0].get("message") or {}
             content = str(message.get("content") or "").strip()
         if not content:
             content = "[github-copilot-empty] no content"
+            confidence = 0.0
 
         return ProviderResponse(content=content, confidence=confidence, model=f"github-copilot:{self.model}")

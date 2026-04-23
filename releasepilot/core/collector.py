@@ -28,9 +28,4 @@ class Collector:
         return tag or None
 
     def map_commits_to_prs(self, commits: list[Commit]) -> dict[str, PullRequest]:
-        mapping: dict[str, PullRequest] = {}
-        for commit in commits:
-            pr = self.pr_adapter.find_pr_for_commit(commit.sha)
-            if pr:
-                mapping[commit.sha] = pr
-        return mapping
+        return self.pr_adapter.map_commits_to_prs(commits)

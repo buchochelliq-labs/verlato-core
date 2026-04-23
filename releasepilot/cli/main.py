@@ -10,8 +10,10 @@ from releasepilot.core.classifier import Classifier
 from releasepilot.core.collector import Collector
 from releasepilot.core.generator import MarkdownGenerator
 from releasepilot.core.grouper import Grouper
+from releasepilot.core.models import ChangeItem
 from releasepilot.core.reconciler import Reconciler
 from releasepilot.github.adapter import GitHubApiAdapter
+from releasepilot.providers.factory import build_provider
 from releasepilot.state.store import StateStore
 
 
@@ -59,10 +61,14 @@ def _build_adapter() -> PullRequestAdapter:
 
 
 def run_scan(base: str, head: str, persist: bool) -> list[dict]:
+    return [asdict(i) for i in scan_change_items(base, head, persist)]
+
+
+def scan_change_items(base: str, head: str, persist: bool) -> list[ChangeItem]:
     store = _build_store()
     collector = Collector(pr_adapter=_build_adapter())
     grouper = Grouper()
-    classifier = Classifier()
+    classifier = Classifier(provider=build_provider())
     reconciler = Reconciler()
 
     commits = collector.collect_commits(base, head)
@@ -74,7 +80,7 @@ def run_scan(base: str, head: str, persist: bool) -> list[dict]:
     unpublished = reconciler.unpublished(existing, detected)
     if persist and unpublished:
         store.append_new(unpublished)
-    return [asdict(i) for i in unpublished]
+    return unpublished
 
 
 def _latest_published_version() -> str | None:
