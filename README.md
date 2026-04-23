@@ -109,7 +109,10 @@ Environment variables:
 - `RELEASEPILOT_STATE_PATH`: overrides local state file path.
 - `RELEASEPILOT_PR_ADAPTER`: PR mapping mode: `standard-git` (default), `github`, or `none`.
 - `RELEASEPILOT_GITHUB_REPO`: repository slug (`owner/repo`) for GitHub API enrichment.
-- `GITHUB_TOKEN` or `GH_TOKEN`: API token used when `RELEASEPILOT_PR_ADAPTER=github`.
+- `RELEASEPILOT_MODEL_PROVIDER`: model provider mode: `stub` (default), `mock`, or `github-copilot`.
+- `RELEASEPILOT_GITHUB_MODEL`: model name when using `github-copilot` (default `gpt-4o-mini`).
+- `RELEASEPILOT_GITHUB_MODELS_ENDPOINT`: override chat-completions endpoint for GitHub-hosted models.
+- `GITHUB_TOKEN` or `GH_TOKEN`: API token used when `RELEASEPILOT_PR_ADAPTER=github`. Also used by `github-copilot` provider mode.
 
 ## Testing
 
