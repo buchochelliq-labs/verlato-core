@@ -41,8 +41,15 @@ def test_stub_provider_contracts():
 def test_mcp_service_read_only_endpoints(monkeypatch):
     monkeypatch.setattr("releasepilot.mcp.service.run_scan", lambda base, head, persist: [{"id": f"{base}->{head}"}])
     monkeypatch.setattr(
-        "releasepilot.mcp.service.scan_change_items",
-        lambda base, head, persist: [_item("ci_preview", f"{base}->{head}", base_ref=base, head_ref=head)],
+        "releasepilot.mcp.service.build_draft_document",
+        lambda **kwargs: type(
+            "_DraftDocument",
+            (),
+            {
+                "rendered": {"github-release": f"## {kwargs['version']}\n\n- {kwargs['base']}->{kwargs['head']}\n"},
+                "version": kwargs["version"],
+            },
+        )(),
     )
 
     svc = MCPService()
@@ -100,3 +107,25 @@ def test_run_scan_uses_selected_provider(monkeypatch, tmp_path):
 
     assert stub_items[0]["content"]["summary"] == "Derived from commit history"
     assert mock_items[0]["content"]["summary"].startswith("Mock summary:")
+
+
+def test_mcp_service_can_update_review_state(monkeypatch, tmp_path):
+    state_path = tmp_path / "state.json"
+    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+    monkeypatch.setenv("RELEASEPILOT_PR_ADAPTER", "none")
+    monkeypatch.setattr(
+        "releasepilot.cli.main.detect_change_items",
+        lambda base, head: [_item("ci_review", "Review me", base_ref=base, head_ref=head)],
+    )
+
+    item = MCPService().update_review_state(
+        base="v1.0.0",
+        head="HEAD",
+        item_id="ci_review",
+        status="hidden",
+        summary="Hidden by reviewer",
+        reviewer="nick",
+    )
+
+    assert item["status"] == "hidden"
+    assert item["summary"] == "Hidden by reviewer"

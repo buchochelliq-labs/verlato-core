@@ -12,6 +12,7 @@ from releasepilot.core.models import (
     Content,
     Evidence,
     SourceRef,
+    default_review_status,
 )
 from releasepilot.providers.base import ProviderRequest, ReleasePilotProvider
 
@@ -147,6 +148,7 @@ class Classifier:
             confidence=confidence,
             checksum=checksum,
             checksum_version=CHECKSUM_VERSION,
+            status=default_review_status(confidence),
         )
         return [item]
 

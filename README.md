@@ -82,6 +82,11 @@ releasepilot scan --from-latest-tag --head <ref>
 releasepilot scan --from-latest-published --head <ref>
 releasepilot generate --base <ref> --head <ref>
 releasepilot reconcile --base <ref> --head <ref>
+releasepilot draft preview --base <ref> --head <ref> --version v1.2.0
+releasepilot draft json --base <ref> --head <ref> --version v1.2.0
+releasepilot draft apply --base <ref> --head <ref> --target changelog --version v1.2.0
+releasepilot draft review --base <ref> --id <item-id> --status ready --reviewer alice
+releasepilot serve
 releasepilot render --format github-release --version v1.2.0
 releasepilot render --format changelog --version v1.2.0
 releasepilot state show
@@ -93,10 +98,15 @@ releasepilot state mark-published --version v1.2.0 --all-unpublished
 - `scan`: detects unreconciled change items in a ref range (no state mutation).
 - `generate`: detects and persists newly generated items to state.
 - `render`: renders markdown from persisted items.
+- `draft preview`: renders release notes directly from the requested range.
+- `draft json`: returns a structured draft document for editor and automation clients.
+- `draft apply`: updates a configured or explicit release-note target file.
+- `draft review`: persists review metadata such as status, hidden state, reviewer, and edited summary for a draft item.
+- `serve`: starts the local JSON-over-stdio service used by editor clients.
 - `reconcile`: explicitly lists unpublished deltas for a ref range (no state mutation).
 - `state show`: prints persisted state JSON.
 - `state mark-published`: marks items as published for a given release/tag.
-- For `scan`/`generate`/`reconcile`, you can provide either explicit refs (`--base` + optional `--head`) or marker-based range selection:
+- For `scan`/`generate`/`reconcile`/`draft`, you can provide either explicit refs (`--base` + optional `--head`) or marker-based range selection:
   - `--from-latest-tag`: base is resolved from the latest reachable git tag.
   - `--from-latest-published`: base is resolved from the most recent `published_in` marker in state.
 
@@ -107,6 +117,7 @@ See `releasepilot.sample.json` for a minimal example.
 Environment variables:
 
 - `RELEASEPILOT_STATE_PATH`: overrides local state file path.
+- `RELEASEPILOT_CONFIG_PATH`: overrides the repo config file path.
 - `RELEASEPILOT_PR_ADAPTER`: PR mapping mode: `standard-git` (default), `github`, or `none`.
 - `RELEASEPILOT_GITHUB_REPO`: repository slug (`owner/repo`) for GitHub API enrichment.
 - `RELEASEPILOT_MODEL_PROVIDER`: model provider mode: `stub` (default), `mock`, or `github-copilot`.
@@ -119,6 +130,22 @@ Provider behavior:
 - `stub`: deterministic no-op provider that preserves the built-in classifier summary.
 - `mock`: deterministic local provider that enriches summaries and can assist low-confidence classification.
 - `github-copilot`: remote provider that enriches summaries and can assist low-confidence classification.
+
+Config targets:
+
+- `releasepilot.json` can define draft/apply targets such as `CHANGELOG.md` and `.github/release.md`.
+- See `releasepilot.sample.json` for the baseline shape.
+
+Agent guidance:
+
+- `AGENT.md` describes the project mission and working expectations for coding agents.
+- `.github/copilot-instructions.md` gives Copilot a short workspace entrypoint and points to the deeper guidance files.
+- `.codex/skills/releasepilot/SKILL.md` bundles an in-repo skill for agents working on ReleasePilot itself.
+
+Editor integration:
+
+- The bundled VS Code extension now prefers a persistent local `releasepilot serve` process.
+- If the service is unavailable, the extension falls back to one-off CLI commands.
 
 ## Testing
 

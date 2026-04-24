@@ -20,11 +20,17 @@ def test_state_store_roundtrip(tmp_path):
         evidence=Evidence(labels=["feature"], files=["api/x.py"], commit_signals=["conventional:feat"]),
         confidence=0.9,
         checksum="sum1",
+        status="edited",
+        reviewed_by="nick",
+        reviewed_at="2026-04-24",
+        edited_summary="Reviewer wording",
     )
     store.append_new([item])
     loaded = store.load()
     assert len(loaded.items) == 1
     assert loaded.items[0].id == "ci_1"
+    assert loaded.items[0].status == "edited"
+    assert loaded.items[0].edited_summary == "Reviewer wording"
 
 
 def test_state_store_raises_for_invalid_json(tmp_path):
@@ -76,3 +82,33 @@ def test_state_store_migrates_v1_lineage(tmp_path):
 
     assert loaded.schema_version == "v1"
     assert loaded.area_release_lineage == {"api": ["v1.1.0"]}
+
+
+def test_state_store_loads_v2_items_with_default_review_state(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v2",
+                "area_release_lineage": {},
+                "items": [
+                    {
+                        "id": "ci_v2",
+                        "source": {"pr_number": 1, "commit_shas": ["abc"], "base_ref": "v1.0.0", "head_ref": "main"},
+                        "classification": {"kind": "changed", "area": "general", "audience": "external", "semver": "patch"},
+                        "content": {"title": "Legacy item", "summary": "Legacy summary"},
+                        "evidence": {"labels": [], "files": [], "commit_signals": [], "diff_summary": {}},
+                        "confidence": 0.4,
+                        "checksum": "legacy-v2",
+                        "checksum_version": "v2",
+                    }
+                ],
+            }
+        )
+    )
+
+    loaded = StateStore(str(path)).load()
+
+    assert loaded.schema_version == "v2"
+    assert loaded.items[0].status == "needs-review"
+    assert loaded.items[0].hidden is False

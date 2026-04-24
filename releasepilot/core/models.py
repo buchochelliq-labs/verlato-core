@@ -3,6 +3,12 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+REVIEW_STATUS_VALUES = {"needs-review", "ready", "accepted", "edited", "hidden"}
+
+
+def default_review_status(confidence: float) -> str:
+    return "ready" if confidence >= 0.8 else "needs-review"
+
 
 @dataclass
 class Commit:
@@ -72,24 +78,39 @@ class ChangeItem:
     checksum: str = ""
     checksum_version: str = "v1"
     lineage_releases: list[str] = field(default_factory=list)
+    status: str = "needs-review"
+    reviewed_by: str | None = None
+    reviewed_at: str | None = None
+    edited_summary: str | None = None
+    hidden: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> ChangeItem:
+        confidence = float(data.get("confidence", 0.5))
+        status = str(data.get("status") or default_review_status(confidence))
+        if status not in REVIEW_STATUS_VALUES:
+            status = default_review_status(confidence)
+        hidden = bool(data.get("hidden", False) or status == "hidden")
         return ChangeItem(
             id=data["id"],
             source=SourceRef(**data["source"]),
             classification=Classification(**data["classification"]),
             content=Content(**data["content"]),
             evidence=Evidence(**data.get("evidence", {})),
-            confidence=float(data.get("confidence", 0.5)),
+            confidence=confidence,
             published=bool(data.get("published", False)),
             published_in=data.get("published_in"),
             checksum=data.get("checksum", ""),
             checksum_version=data.get("checksum_version", "v1"),
             lineage_releases=list(data.get("lineage_releases", [])),
+            status=status,
+            reviewed_by=data.get("reviewed_by"),
+            reviewed_at=data.get("reviewed_at"),
+            edited_summary=data.get("edited_summary"),
+            hidden=hidden,
         )
 
 

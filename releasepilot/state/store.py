@@ -14,12 +14,12 @@ class StateStoreError(RuntimeError):
 @dataclass
 class StateData:
     items: list[ChangeItem] = field(default_factory=list)
-    schema_version: str = "v2"
+    schema_version: str = "v3"
     area_release_lineage: dict[str, list[str]] = field(default_factory=dict)
 
 
 class StateStore:
-    CURRENT_SCHEMA_VERSION = "v2"
+    CURRENT_SCHEMA_VERSION = "v3"
 
     def __init__(self, path: str = ".releasepilot_state.json") -> None:
         self.path = Path(path)
@@ -35,7 +35,7 @@ class StateStore:
         if schema_version == "v1":
             items = [ChangeItem.from_dict(i) for i in raw.get("items", [])]
             lineage = self._derive_lineage(items)
-        elif schema_version == self.CURRENT_SCHEMA_VERSION:
+        elif schema_version in {"v2", self.CURRENT_SCHEMA_VERSION}:
             items = [ChangeItem.from_dict(i) for i in raw.get("items", [])]
             lineage = raw.get("area_release_lineage") or self._derive_lineage(items)
         else:

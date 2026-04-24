@@ -6,5 +6,15 @@
   },
   "provider": {
     "name": "stub"
+  },
+  "targets": {
+    "changelog": {
+      "path": "CHANGELOG.md",
+      "format": "changelog"
+    },
+    "github-release": {
+      "path": ".github/release.md",
+      "format": "github-release"
+    }
   }
 }

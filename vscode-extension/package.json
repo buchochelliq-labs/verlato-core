@@ -1,0 +1,156 @@
+{
+  "name": "releasepilot-vscode",
+  "displayName": "ReleasePilot",
+  "description": "Scan repositories, preview release notes, and apply changelog updates with ReleasePilot.",
+  "version": "0.0.1",
+  "publisher": "releasepilot",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:releasepilot.items",
+    "onCommand:releasepilot.scanRepository",
+    "onCommand:releasepilot.previewReleaseNotes",
+    "onCommand:releasepilot.applyToChangelog",
+    "onCommand:releasepilot.applyToReleaseFile",
+    "onCommand:releasepilot.markItemReady",
+    "onCommand:releasepilot.markItemNeedsReview",
+    "onCommand:releasepilot.hideItem",
+    "onCommand:releasepilot.editItemSummary"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "releasepilot",
+          "title": "ReleasePilot",
+          "icon": "media/releasepilot.svg"
+        }
+      ]
+    },
+    "views": {
+      "releasepilot": [
+        {
+          "id": "releasepilot.items",
+          "name": "Release Notes"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "releasepilot.scanRepository",
+        "title": "ReleasePilot: Scan Repository"
+      },
+      {
+        "command": "releasepilot.previewReleaseNotes",
+        "title": "ReleasePilot: Preview Release Notes"
+      },
+      {
+        "command": "releasepilot.applyToChangelog",
+        "title": "ReleasePilot: Apply to CHANGELOG"
+      },
+      {
+        "command": "releasepilot.applyToReleaseFile",
+        "title": "ReleasePilot: Apply to Release File"
+      },
+      {
+        "command": "releasepilot.refreshItems",
+        "title": "ReleasePilot: Refresh"
+      },
+      {
+        "command": "releasepilot.markItemReady",
+        "title": "ReleasePilot: Mark Item Ready"
+      },
+      {
+        "command": "releasepilot.markItemNeedsReview",
+        "title": "ReleasePilot: Mark Item Needs Review"
+      },
+      {
+        "command": "releasepilot.hideItem",
+        "title": "ReleasePilot: Hide Item"
+      },
+      {
+        "command": "releasepilot.editItemSummary",
+        "title": "ReleasePilot: Edit Item Summary"
+      }
+    ],
+    "configuration": {
+      "title": "ReleasePilot",
+      "properties": {
+        "releasepilot.cliPath": {
+          "type": "string",
+          "default": "releasepilot",
+          "description": "Path to the ReleasePilot CLI executable."
+        },
+        "releasepilot.preferLocalService": {
+          "type": "boolean",
+          "default": true,
+          "description": "Prefer a persistent local ReleasePilot service over one-off CLI commands."
+        },
+        "releasepilot.serviceArgs": {
+          "type": "array",
+          "default": ["serve"],
+          "items": {
+            "type": "string"
+          },
+          "description": "Arguments passed to the ReleasePilot CLI when starting the local service."
+        },
+        "releasepilot.requestTimeoutMs": {
+          "type": "number",
+          "default": 10000,
+          "minimum": 1000,
+          "description": "Timeout in milliseconds for ReleasePilot service requests."
+        }
+      }
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "releasepilot.scanRepository",
+          "when": "view == releasepilot.items",
+          "group": "navigation"
+        },
+        {
+          "command": "releasepilot.refreshItems",
+          "when": "view == releasepilot.items",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "releasepilot.markItemReady",
+          "when": "view == releasepilot.items && viewItem == releasepilot.item",
+          "group": "inline"
+        },
+        {
+          "command": "releasepilot.markItemNeedsReview",
+          "when": "view == releasepilot.items && viewItem == releasepilot.item",
+          "group": "inline"
+        },
+        {
+          "command": "releasepilot.hideItem",
+          "when": "view == releasepilot.items && viewItem == releasepilot.item",
+          "group": "inline"
+        },
+        {
+          "command": "releasepilot.editItemSummary",
+          "when": "view == releasepilot.items && viewItem == releasepilot.item",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "tsc -p ./",
+    "watch": "tsc -w -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.6.0"
+  }
+}

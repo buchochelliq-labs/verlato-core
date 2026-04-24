@@ -45,6 +45,8 @@ This document captures the current MVP architecture and should be reviewed befor
   - BYOM provider abstraction with stub + deterministic mock providers.
 - `releasepilot/mcp/service.py`
   - Read-only MCP service interface over scan/reconcile/render.
+- `releasepilot/server.py`
+  - Local JSON-over-stdio transport for editor and agent clients.
 
 ## Data flow
 
@@ -55,16 +57,18 @@ This document captures the current MVP architecture and should be reviewed befor
 5. `Reconciler` filters already-known items by checksum.
 6. `StateStore` persists newly generated items.
 7. `MarkdownGenerator` renders organized output sections.
+8. `ReleasePilotServer` exposes draft/review operations to editor clients over stdio.
 
 ## Extensibility seams
 
 - **GitHub adapter boundary** allows replacement with real API implementation and easy mocking in tests.
 - **Provider boundary** allows future model-backed summarization/classification without changing core pipeline contracts.
 - **Diff evidence bundle** is intentionally compact and model-friendly.
+- **Local service transport** allows the VS Code extension to reuse backend logic without shelling out for each operation.
 
 ## Near-term architecture improvements
 
 - Add explicit PR changed-file retrieval API in adapter interface.
 - Add SQLite state backend option.
 - Introduce richer evidence scoring and confidence calibration.
-- Expand MCP service into a networked server transport.
+- Expand the local stdio server into a richer multi-client or networked transport.
