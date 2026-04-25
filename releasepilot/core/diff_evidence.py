@@ -9,6 +9,7 @@ from releasepilot.core.models import ChangedFile, DiffEvidence
 class DiffEvidenceBuilder:
     def build(self, files: list[ChangedFile]) -> DiffEvidence:
         files_by_area: dict[str, list[str]] = defaultdict(list)
+        file_statuses: dict[str, str] = {}
         api_changes: list[str] = []
         migration_changes: list[str] = []
         config_changes: list[str] = []
@@ -17,6 +18,7 @@ class DiffEvidenceBuilder:
         for file in files:
             area = self.infer_area(file.path)
             files_by_area[area].append(file.path)
+            file_statuses[file.path] = file.status
 
             path_lower = file.path.lower()
             if any(k in path_lower for k in ["public", "api", "interface", "sdk"]):
@@ -33,10 +35,18 @@ class DiffEvidenceBuilder:
         all_paths = [f.path.lower() for f in files]
         docs_only = bool(all_paths) and all(is_docs_path(p) for p in all_paths)
         tests_only = bool(all_paths) and all(is_test_path(p) for p in all_paths)
-        summary = self._build_summary(files_by_area, api_changes, migration_changes, config_changes)
+        summary = self._build_summary(
+            files_by_area,
+            file_statuses,
+            api_changes,
+            migration_changes,
+            config_changes,
+            representative_hunks,
+        )
 
         return DiffEvidence(
             files_by_area=dict(files_by_area),
+            file_statuses=file_statuses,
             api_changes=api_changes,
             migration_changes=migration_changes,
             config_changes=config_changes,
@@ -53,21 +63,59 @@ class DiffEvidenceBuilder:
     def _extract_representative_hunks(self, patch: str, max_hunks: int = 2) -> list[str]:
         if not patch:
             return []
-        blocks = [b.strip() for b in patch.split("@@") if b.strip()]
-        return [block[:240] for block in blocks[:max_hunks]]
+        hunks: list[str] = []
+        current: list[str] = []
+        for line in patch.splitlines():
+            if line.startswith("@@"):
+                if current:
+                    hunks.append("\n".join(current).strip())
+                current = [line]
+                continue
+            if not current:
+                continue
+            if line.startswith(("+++", "---")):
+                continue
+            if line.startswith(("+", "-")) and line.strip() not in {"+", "-"}:
+                current.append(line[:160])
+
+        if current:
+            hunks.append("\n".join(current).strip())
+        return [hunk[:500] for hunk in hunks if hunk][:max_hunks]
 
     def _build_summary(
         self,
         files_by_area: dict[str, list[str]],
+        file_statuses: dict[str, str],
         api_changes: list[str],
         migration_changes: list[str],
         config_changes: list[str],
+        representative_hunks: dict[str, list[str]],
     ) -> str:
-        parts = [f"areas: {', '.join(sorted(files_by_area))}" if files_by_area else "areas: none"]
+        if not file_statuses:
+            return "No file changes detected"
+
+        status_counts: dict[str, int] = defaultdict(int)
+        for status in file_statuses.values():
+            status_counts[status] += 1
+
+        changed_files = ", ".join(
+            f"{status} {path}" for path, status in sorted(file_statuses.items())[:5]
+        )
+        if len(file_statuses) > 5:
+            changed_files += f", and {len(file_statuses) - 5} more"
+
+        status_text = ", ".join(f"{status}:{count}" for status, count in sorted(status_counts.items()))
+        area_text = ", ".join(
+            f"{area}({len(paths)})" for area, paths in sorted(files_by_area.items())
+        )
+        parts = [f"changed files: {changed_files}", f"statuses: {status_text}", f"areas: {area_text}"]
         if api_changes:
-            parts.append(f"public-api: {len(api_changes)} file(s)")
+            parts.append(f"public-api: {', '.join(api_changes[:3])}")
         if migration_changes:
-            parts.append(f"migrations: {len(migration_changes)}")
+            parts.append(f"migrations: {', '.join(migration_changes[:3])}")
         if config_changes:
-            parts.append(f"config: {len(config_changes)}")
+            parts.append(f"config: {', '.join(config_changes[:3])}")
+        hunk_paths = list(representative_hunks)[:3]
+        if hunk_paths:
+            parts.append(f"diff excerpts: {', '.join(hunk_paths)}")
         return "; ".join(parts)

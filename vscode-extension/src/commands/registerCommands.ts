@@ -71,6 +71,21 @@ export function registerCommands(
       }
       await updateItemReviewState(client, treeProvider, previewPanel, node, { summary });
     }),
+    vscode.commands.registerCommand("releasepilot.acceptItem", async (node?: DraftItemNode) => {
+      await updateItemReviewState(client, treeProvider, previewPanel, node, { status: "accepted" });
+    }),
+    vscode.commands.registerCommand("releasepilot.unhideItem", async (node?: DraftItemNode) => {
+      await updateItemReviewState(client, treeProvider, previewPanel, node, { status: "needs-review" });
+    }),
+    vscode.commands.registerCommand("releasepilot.resetItemSummary", async (node?: DraftItemNode) => {
+      await updateItemReviewState(client, treeProvider, previewPanel, node, { summary: "" });
+    }),
+    vscode.commands.registerCommand("releasepilot.showServiceInfo", async () => {
+      void vscode.window.showInformationMessage(
+        client.getDiagnosticInfo(),
+        { modal: true },
+      );
+    }),
   );
 }
 
@@ -105,7 +120,7 @@ async function updateItemReviewState(
   treeProvider: ReleasePilotTreeProvider,
   previewPanel: PreviewPanel,
   node: DraftItemNode | undefined,
-  update: { status?: "needs-review" | "ready" | "hidden"; summary?: string },
+  update: { status?: "needs-review" | "ready" | "accepted" | "hidden"; summary?: string },
 ): Promise<void> {
   if (!node) {
     return;

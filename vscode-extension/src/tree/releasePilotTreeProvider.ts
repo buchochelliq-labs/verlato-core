@@ -63,7 +63,13 @@ export class DraftItemNode extends vscode.TreeItem {
   constructor(readonly item: DraftItem) {
     super(item.title, vscode.TreeItemCollapsibleState.None);
     this.description = `${item.kind} | ${item.area} | ${toStatusLabel(item.status)} | ${item.confidence.toFixed(2)}`;
-    this.tooltip = `${item.summary}\n${item.base_ref}..${item.head_ref}`;
+    this.tooltip = [
+      item.summary,
+      `${item.base_ref}..${item.head_ref}`,
+      `Signals: ${item.commit_signals.join(", ") || "none"}`,
+      `Files: ${item.files.join(", ") || "none"}`,
+      `Reviewer: ${item.reviewed_by || "unassigned"}`,
+    ].join("\n");
     this.contextValue = "releasepilot.item";
   }
 }

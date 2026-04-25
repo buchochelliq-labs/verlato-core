@@ -15,6 +15,7 @@ class Commit:
     sha: str
     message: str
     author: str = ""
+    files: list[ChangedFile] = field(default_factory=list)
 
 
 @dataclass
@@ -117,6 +118,7 @@ class ChangeItem:
 @dataclass
 class DiffEvidence:
     files_by_area: dict[str, list[str]]
+    file_statuses: dict[str, str]
     api_changes: list[str]
     migration_changes: list[str]
     config_changes: list[str]
@@ -130,3 +132,4 @@ class DiffEvidence:
 class ChangeGroup:
     pr: PullRequest | None
     commits: list[Commit]
+    files: list[ChangedFile] = field(default_factory=list)

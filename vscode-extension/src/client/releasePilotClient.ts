@@ -1,87 +1,78 @@
 import * as vscode from "vscode";
-import { ChildProcessWithoutNullStreams, execFile, spawn } from "node:child_process";
-import * as readline from "node:readline";
+import { execFile } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { promisify } from "node:util";
 
-import { ApplyResult, DraftDocument, DraftItem, DraftRangeRequest, ReviewUpdateRequest } from "./types";
+import {
+  ApplyResult,
+  ClientStatus,
+  DraftDocument,
+  DraftItem,
+  DraftRangeRequest,
+  ReviewUpdateRequest,
+} from "./types";
 
 const execFileAsync = promisify(execFile);
 
-interface PendingRequest {
-  resolve: (value: any) => void;
-  reject: (reason?: unknown) => void;
-  timeout: NodeJS.Timeout;
-}
-
 export class ReleasePilotClient implements vscode.Disposable {
-  private serviceProcess: ChildProcessWithoutNullStreams | undefined;
-  private serviceReader: readline.Interface | undefined;
-  private nextRequestId = 1;
-  private readonly pending = new Map<string, PendingRequest>();
+  private readonly onDidChangeStatusEmitter = new vscode.EventEmitter<ClientStatus>();
+  readonly onDidChangeStatus = this.onDidChangeStatusEmitter.event;
+  private lastStatus: ClientStatus = { mode: "cli", label: "ReleasePilot: CLI", detail: "Using direct CLI commands" };
+  private lastResolution: ExecutableResolution | undefined;
 
   constructor(
     private readonly workspaceFolder: vscode.WorkspaceFolder,
+    private readonly extensionPath: string,
     private readonly output: vscode.OutputChannel,
-  ) {}
+  ) {
+    this.emitStatus(this.lastStatus);
+  }
 
   async getDraft(request: DraftRangeRequest): Promise<DraftDocument> {
-    return this.runServiceFirst<DraftDocument>(
-      "draft.getDocument",
-      this.toServiceRangeParams(request),
-      [
-        "draft",
-        "json",
-        "--base",
-        request.base,
-        "--head",
-        request.head ?? "HEAD",
-        "--version",
-        request.version ?? "Unreleased",
-        ...(request.includeConfidence ? ["--include-confidence"] : []),
-        ...(request.includeProvenance ? ["--include-provenance"] : []),
-      ],
-    );
+    return this.runJsonCommand<DraftDocument>([
+      "draft",
+      "json",
+      "--base",
+      request.base,
+      "--head",
+      request.head ?? "HEAD",
+      "--version",
+      request.version ?? "Unreleased",
+      ...(request.includeConfidence ? ["--include-confidence"] : []),
+      ...(request.includeProvenance ? ["--include-provenance"] : []),
+    ]);
   }
 
   async previewDraft(request: DraftRangeRequest): Promise<string> {
-    return this.runServiceFirst<string>(
-      "draft.preview",
-      this.toServiceRangeParams(request),
-      [
-        "draft",
-        "preview",
-        "--base",
-        request.base,
-        "--head",
-        request.head ?? "HEAD",
-        "--version",
-        request.version ?? "Unreleased",
-        ...(request.includeConfidence ? ["--include-confidence"] : []),
-        ...(request.includeProvenance ? ["--include-provenance"] : []),
-      ],
-    );
+    const { stdout } = await this.runCommand([
+      "draft",
+      "preview",
+      "--base",
+      request.base,
+      "--head",
+      request.head ?? "HEAD",
+      "--version",
+      request.version ?? "Unreleased",
+      ...(request.includeConfidence ? ["--include-confidence"] : []),
+      ...(request.includeProvenance ? ["--include-provenance"] : []),
+    ]);
+    return stdout;
   }
 
   async applyDraft(request: DraftRangeRequest, target: "changelog" | "github-release"): Promise<ApplyResult> {
-    return this.runServiceFirst<ApplyResult>(
-      "draft.apply",
-      {
-        ...this.toServiceRangeParams(request),
-        target,
-      },
-      [
-        "draft",
-        "apply",
-        "--base",
-        request.base,
-        "--head",
-        request.head ?? "HEAD",
-        "--version",
-        request.version ?? "Unreleased",
-        "--target",
-        target,
-      ],
-    );
+    return this.runJsonCommand<ApplyResult>([
+      "draft",
+      "apply",
+      "--base",
+      request.base,
+      "--head",
+      request.head ?? "HEAD",
+      "--version",
+      request.version ?? "Unreleased",
+      "--target",
+      target,
+    ]);
   }
 
   async reviewDraftItem(
@@ -89,31 +80,45 @@ export class ReleasePilotClient implements vscode.Disposable {
     itemId: string,
     update: ReviewUpdateRequest,
   ): Promise<DraftItem> {
-    return this.runServiceFirst<DraftItem>(
-      "draft.review",
-      {
-        ...this.toServiceRangeParams(request),
-        id: itemId,
-        ...update,
-      },
-      [
-        "draft",
-        "review",
-        "--base",
-        request.base,
-        "--head",
-        request.head ?? "HEAD",
-        "--id",
-        itemId,
-        ...(update.status ? ["--status", update.status] : []),
-        ...(update.summary !== undefined ? ["--summary", update.summary] : []),
-        ...(update.reviewer ? ["--reviewer", update.reviewer] : []),
-      ],
-    );
+    return this.runJsonCommand<DraftItem>([
+      "draft",
+      "review",
+      "--base",
+      request.base,
+      "--head",
+      request.head ?? "HEAD",
+      "--id",
+      itemId,
+      ...(update.status ? ["--status", update.status] : []),
+      ...(update.summary !== undefined ? ["--summary", update.summary] : []),
+      ...(update.reviewer ? ["--reviewer", update.reviewer] : []),
+    ]);
+  }
+
+  async initialize(): Promise<void> {
+    const resolution = this.resolveExecutable();
+    this.output.appendLine(`Workspace: ${this.workspaceFolder.uri.fsPath}`);
+    this.output.appendLine(`Extension: ${this.extensionPath}`);
+    this.output.appendLine(`ReleasePilot CLI: ${resolution.executable}`);
+    this.emitStatus({
+      mode: "cli",
+      label: "ReleasePilot: CLI",
+      detail: `Workspace: ${this.workspaceFolder.uri.fsPath}\nCLI: ${resolution.executable}`,
+    });
   }
 
   dispose(): void {
-    this.shutdownServiceProcess();
+    this.onDidChangeStatusEmitter.dispose();
+  }
+
+  getDiagnosticInfo(): string {
+    const resolution = this.lastResolution ?? this.resolveExecutable();
+    return [
+      `Workspace: ${this.workspaceFolder.uri.fsPath}`,
+      `Extension: ${this.extensionPath}`,
+      `CLI: ${resolution.executable}`,
+      `Searched: ${resolution.searched.join(", ")}`,
+    ].join("\n");
   }
 
   private async runJsonCommand<T>(args: string[]): Promise<T> {
@@ -121,131 +126,63 @@ export class ReleasePilotClient implements vscode.Disposable {
     return JSON.parse(stdout) as T;
   }
 
-  private async runServiceFirst<T>(method: string, params: Record<string, unknown>, fallbackArgs: string[]): Promise<T> {
-    const configuration = vscode.workspace.getConfiguration("releasepilot");
-    if (configuration.get<boolean>("preferLocalService", true)) {
-      try {
-        return await this.runServiceRequest<T>(method, params);
-      } catch (error) {
-        this.output.appendLine(`[service-fallback] ${String(error)}`);
-      }
-    }
-    return this.runJsonCommand<T>(fallbackArgs);
-  }
-
-  private async runServiceRequest<T>(method: string, params: Record<string, unknown>): Promise<T> {
-    const process = await this.ensureServiceProcess();
-    const requestId = String(this.nextRequestId++);
-    const timeoutMs = vscode.workspace.getConfiguration("releasepilot").get<number>("requestTimeoutMs", 10000);
-    const payload = JSON.stringify({ id: requestId, method, params });
-    this.output.appendLine(`$ [service] ${payload}`);
-
-    const result = await new Promise<T>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pending.delete(requestId);
-        reject(new Error(`ReleasePilot service timed out for ${method}`));
-      }, timeoutMs);
-      this.pending.set(requestId, { resolve, reject, timeout });
-      process.stdin.write(payload + "\n");
-    });
-    return result;
-  }
-
   private async runCommand(args: string[]): Promise<{ stdout: string; stderr: string }> {
-    const executable = vscode.workspace.getConfiguration("releasepilot").get<string>("cliPath") || "releasepilot";
+    const resolution = this.resolveExecutable();
+    const executable = resolution.executable;
     this.output.appendLine(`$ ${executable} ${args.join(" ")}`);
-    const result = await execFileAsync(executable, args, {
-      cwd: this.workspaceFolder.uri.fsPath,
-      encoding: "utf8",
-    });
+    let result: { stdout: string; stderr: string };
+    try {
+      result = await execFileAsync(executable, args, {
+        cwd: this.workspaceFolder.uri.fsPath,
+        encoding: "utf8",
+      });
+    } catch (error) {
+      if (isMissingExecutableError(error)) {
+        throw new Error(
+          `ReleasePilot CLI was not found. Tried: ${resolution.searched.join(", ")}. Install the backend package or set releasepilot.cliPath to the full path of releasepilot.exe.`,
+        );
+      }
+      throw error;
+    }
     if (result.stderr) {
       this.output.appendLine(result.stderr);
     }
     return result;
   }
 
-  private async ensureServiceProcess(): Promise<ChildProcessWithoutNullStreams> {
-    if (this.serviceProcess && !this.serviceProcess.killed) {
-      return this.serviceProcess;
+  private resolveExecutable(): ExecutableResolution {
+    const configuredPath = vscode.workspace.getConfiguration("releasepilot").get<string>("cliPath") || "releasepilot";
+    if (configuredPath !== "releasepilot") {
+      this.lastResolution = { executable: configuredPath, searched: [configuredPath] };
+      return this.lastResolution;
     }
 
-    const executable = vscode.workspace.getConfiguration("releasepilot").get<string>("cliPath") || "releasepilot";
-    const configuredArgs = vscode.workspace.getConfiguration("releasepilot").get<string[]>("serviceArgs", ["serve"]);
-    this.output.appendLine(`$ ${executable} ${configuredArgs.join(" ")}`);
+    const workspaceCli = getVenvExecutable(this.workspaceFolder.uri.fsPath);
+    const extensionCheckoutCli = getVenvExecutable(path.dirname(this.extensionPath));
+    const candidates = [workspaceCli, extensionCheckoutCli];
+    const executable = candidates.find((candidate) => fs.existsSync(candidate)) ?? configuredPath;
 
-    const child = spawn(executable, configuredArgs, {
-      cwd: this.workspaceFolder.uri.fsPath,
-      stdio: "pipe",
-    });
-    this.serviceProcess = child;
-    this.serviceReader = readline.createInterface({ input: child.stdout });
-    this.serviceReader.on("line", (line) => {
-      this.handleServiceLine(line);
-    });
-    child.stderr.on("data", (chunk: Buffer | string) => {
-      this.output.appendLine(String(chunk));
-    });
-    child.on("error", (error) => {
-      this.failPendingRequests(error);
-      this.shutdownServiceProcess();
-    });
-    child.on("exit", (code, signal) => {
-      this.failPendingRequests(new Error(`ReleasePilot service exited (${code ?? "null"}${signal ? `, ${signal}` : ""})`));
-      this.shutdownServiceProcess();
-    });
-    return child;
+    this.lastResolution = { executable, searched: [...candidates, configuredPath] };
+    return this.lastResolution;
   }
 
-  private handleServiceLine(line: string): void {
-    this.output.appendLine(`[service] ${line}`);
-    let payload: { id?: string; result?: unknown; error?: { message?: string } };
-    try {
-      payload = JSON.parse(line) as { id?: string; result?: unknown; error?: { message?: string } };
-    } catch (error) {
-      this.output.appendLine(`[service-error] ${String(error)}`);
-      return;
-    }
-    const requestId = payload.id;
-    if (!requestId) {
-      return;
-    }
-    const pending = this.pending.get(requestId);
-    if (!pending) {
-      return;
-    }
-    clearTimeout(pending.timeout);
-    this.pending.delete(requestId);
-    if (payload.error) {
-      pending.reject(new Error(payload.error.message || "ReleasePilot service request failed"));
-      return;
-    }
-    pending.resolve(payload.result as unknown);
+  private emitStatus(status: ClientStatus): void {
+    this.lastStatus = status;
+    this.onDidChangeStatusEmitter.fire(status);
   }
+}
 
-  private failPendingRequests(error: unknown): void {
-    for (const [requestId, pending] of this.pending.entries()) {
-      clearTimeout(pending.timeout);
-      pending.reject(error);
-      this.pending.delete(requestId);
-    }
-  }
+function isMissingExecutableError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
 
-  private shutdownServiceProcess(): void {
-    this.serviceReader?.close();
-    this.serviceReader = undefined;
-    if (this.serviceProcess && !this.serviceProcess.killed) {
-      this.serviceProcess.kill();
-    }
-    this.serviceProcess = undefined;
-  }
+interface ExecutableResolution {
+  executable: string;
+  searched: string[];
+}
 
-  private toServiceRangeParams(request: DraftRangeRequest): Record<string, unknown> {
-    return {
-      base: request.base,
-      head: request.head ?? "HEAD",
-      version: request.version ?? "Unreleased",
-      includeConfidence: request.includeConfidence ?? false,
-      includeProvenance: request.includeProvenance ?? false,
-    };
-  }
+function getVenvExecutable(rootPath: string): string {
+  return process.platform === "win32"
+    ? path.join(rootPath, ".venv", "Scripts", "releasepilot.exe")
+    : path.join(rootPath, ".venv", "bin", "releasepilot");
 }

@@ -63,3 +63,11 @@ export interface ReviewUpdateRequest {
   summary?: string;
   reviewer?: string;
 }
+
+export type ClientMode = "cli";
+
+export interface ClientStatus {
+  mode: ClientMode;
+  label: string;
+  detail: string;
+}

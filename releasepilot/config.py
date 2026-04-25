@@ -18,8 +18,16 @@ class OutputTargetConfig:
 
 
 @dataclass
+class ProviderConfig:
+    name: str = "stub"
+    model: str | None = None
+    endpoint: str | None = None
+
+
+@dataclass
 class ReleasePilotConfig:
     state_path: str = ".releasepilot_state.json"
+    provider: ProviderConfig = field(default_factory=lambda: ProviderConfig(name="stub"))
     targets: dict[str, OutputTargetConfig] = field(
         default_factory=lambda: {
             "changelog": OutputTargetConfig(path="CHANGELOG.md", format="changelog"),
@@ -42,6 +50,17 @@ def load_config(cwd: str | None = None) -> ReleasePilotConfig:
     config = ReleasePilotConfig(raw=raw)
     if raw.get("state_path"):
         config.state_path = str(raw["state_path"])
+
+    provider = raw.get("provider")
+    if isinstance(provider, dict):
+        name = str(provider.get("name") or config.provider.name).strip() or "stub"
+        model = provider.get("model")
+        endpoint = provider.get("endpoint")
+        config.provider = ProviderConfig(
+            name=name,
+            model=str(model).strip() if model else None,
+            endpoint=str(endpoint).strip() if endpoint else None,
+        )
 
     targets = raw.get("targets")
     if isinstance(targets, dict):

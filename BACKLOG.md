@@ -50,6 +50,7 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
 
 1. **MCP transport and auth**
    - [x] Expose the local service interface via a stdio server process.
+   - [x] Expose an MCP stdio server with named scan/draft/review/apply tools for agent clients.
    - [ ] Add auth/session strategy for non-local or multi-client transports.
 2. **AI provider strategy (GitHub baked-in vs Copilot workflows)**
    - Add a provider selection mode that supports organization-managed GitHub-hosted models and Codex/Copilot-assisted workflows.

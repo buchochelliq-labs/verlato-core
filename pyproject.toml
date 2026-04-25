@@ -16,6 +16,9 @@ dev = [
   "ruff>=0.6.0",
   "mypy>=1.10.0",
 ]
+mcp = [
+  "fastmcp>=3.0.0",
+]
 
 [project.scripts]
 releasepilot = "releasepilot.cli.main:main"

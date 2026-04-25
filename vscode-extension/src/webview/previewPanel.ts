@@ -39,6 +39,11 @@ export class PreviewPanel {
                       <strong>${escapeHtml(item.title)}</strong>
                       <div>${escapeHtml(item.summary)}</div>
                       <small>${escapeHtml(`${item.kind} | ${item.area} | ${item.status} | confidence ${item.confidence.toFixed(2)}`)}</small>
+                      <div>${escapeHtml(item.pr_number ? `PR #${item.pr_number}` : "No PR mapping")}</div>
+                      <div>${escapeHtml(`Signals: ${item.commit_signals.join(", ") || "none"}`)}</div>
+                      <div>${escapeHtml(`Files: ${item.files.join(", ") || "none"}`)}</div>
+                      <div>${escapeHtml(`Reviewer: ${item.reviewed_by || "unassigned"} | Reviewed: ${item.reviewed_at || "not yet"}`)}</div>
+                      ${item.edited_summary ? `<div>${escapeHtml(`Edited summary: ${item.edited_summary}`)}</div>` : ""}
                     </li>
                   `,
                 )
@@ -61,6 +66,8 @@ export class PreviewPanel {
       ul { padding-left: 20px; }
       li { margin-bottom: 12px; }
       small { opacity: 0.8; }
+      section { margin-bottom: 24px; }
+      li div { margin-top: 4px; }
     </style>
   </head>
   <body>

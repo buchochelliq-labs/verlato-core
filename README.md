@@ -18,7 +18,7 @@ It is **PR-first by default**: the primary analysis unit is a pull request (or g
 - Persist state in JSON.
 - Provider abstraction with stub, mock, and GitHub Copilot-backed model support for summary enrichment and low-confidence classification assists.
 - Versioned checksums and area-level release lineage provenance in persisted state.
-- Read-only MCP service interface for change/reconcile/release-preview endpoints.
+- MCP tool server for agent-facing scan, draft, review, and apply operations.
 
 ## Architecture
 
@@ -34,7 +34,8 @@ It is **PR-first by default**: the primary analysis unit is a pull request (or g
 - `core/generator.py` — markdown rendering.
 - `github/adapter.py` — GitHub adapter boundary + stub implementation.
 - `providers/` — model-provider interface + stub.
-- `mcp/service.py` — read-only service interface for MCP integration.
+- `mcp/service.py` — shared service interface for MCP and local transports.
+- `mcp/server.py` — MCP tool registration and stdio server entrypoint.
 - `state/store.py` — JSON persistence.
 - `tests/` — unit tests.
 
@@ -54,13 +55,14 @@ Each generated `ChangeItem` includes:
 
 ## Diff intelligence (MVP)
 
-`DiffEvidenceBuilder` produces a compact summary object intended for later model-backed inference:
+`DiffEvidenceBuilder` produces compact release-note evidence for deterministic summaries and model-backed inference:
 
 - groups files by inferred area
+- records changed file statuses
 - flags possible public API changes
 - flags migrations/config changes
 - detects docs-only and tests-only changes
-- extracts representative hunks (truncated) instead of full patches
+- extracts representative added/removed hunk lines (truncated) instead of full patches
 
 
 ## Project planning docs
@@ -102,7 +104,7 @@ releasepilot state mark-published --version v1.2.0 --all-unpublished
 - `draft json`: returns a structured draft document for editor and automation clients.
 - `draft apply`: updates a configured or explicit release-note target file.
 - `draft review`: persists review metadata such as status, hidden state, reviewer, and edited summary for a draft item.
-- `serve`: starts the local JSON-over-stdio service used by editor clients.
+- `serve`: starts the FastMCP stdio server.
 - `reconcile`: explicitly lists unpublished deltas for a ref range (no state mutation).
 - `state show`: prints persisted state JSON.
 - `state mark-published`: marks items as published for a given release/tag.
@@ -131,6 +133,20 @@ Provider behavior:
 - `mock`: deterministic local provider that enriches summaries and can assist low-confidence classification.
 - `github-copilot`: remote provider that enriches summaries and can assist low-confidence classification.
 
+Provider defaults can also be set in `releasepilot.json`; environment variables override these values:
+
+```json
+{
+  "provider": {
+    "name": "github-copilot",
+    "model": "gpt-4o-mini",
+    "endpoint": "https://models.inference.ai.azure.com/chat/completions"
+  }
+}
+```
+
+When a provider is enabled, ReleasePilot sends compact file-diff evidence, representative hunks, PR context, and commit subjects to the summary prompt. If the model returns empty output, an error marker, or text that simply repeats the title/commit subject, ReleasePilot falls back to its deterministic diff summary.
+
 Config targets:
 
 - `releasepilot.json` can define draft/apply targets such as `CHANGELOG.md` and `.github/release.md`.
@@ -144,8 +160,41 @@ Agent guidance:
 
 Editor integration:
 
-- The bundled VS Code extension now prefers a persistent local `releasepilot serve` process.
-- If the service is unavailable, the extension falls back to one-off CLI commands.
+- The bundled VS Code extension uses one-off `releasepilot` CLI commands for its current UI workflow.
+- The repo includes [.vscode/mcp.json](.vscode/mcp.json) so VS Code/Copilot can attach to the FastMCP server from the workspace.
+- The MCP server exposes these tool names:
+  - `releasepilot_service_health`
+  - `releasepilot_service_info`
+  - `releasepilot_scan_unpublished_changes`
+  - `releasepilot_get_draft_document`
+  - `releasepilot_preview_release_notes`
+  - `releasepilot_apply_draft`
+  - `releasepilot_update_review_state`
+  - `releasepilot_reconcile_preview`
+- The MCP server also exposes read-only resources:
+  - `releasepilot://overview`
+  - `releasepilot://guidance/{name}`
+  - `releasepilot://sample-config`
+- The MCP server exposes the prompt `releasepilot_review_request`.
+
+MCP setup:
+
+- Install the optional FastMCP v3+ dependency with `python -m pip install -e .[mcp]`.
+- The checked-in [.vscode/mcp.json](.vscode/mcp.json) runs `fastmcp run ${workspaceFolder}/scripts/releasepilot_mcp_server.py:mcp`.
+- Start the MCP server manually with `releasepilot serve` if you are not using the workspace config.
+
+VS Code extension local testing:
+
+1. Install the Python package for the repo:
+   `python -m pip install -e .`
+2. Install the extension dependencies:
+   `cd vscode-extension && npm install`
+3. Build the extension:
+   `npm run build`
+4. Open the repo root in VS Code and press `F5`.
+   The checked-in [.vscode/launch.json](.vscode/launch.json) starts an Extension Development Host using `vscode-extension/`.
+5. In the Extension Development Host, open the `ReleasePilot` view and run `ReleasePilot: Scan Repository`.
+6. To exercise the MCP server in the same workspace, ensure `fastmcp>=3` is installed and keep [.vscode/mcp.json](.vscode/mcp.json) enabled.
 
 ## Testing
 
@@ -157,5 +206,5 @@ python -m pytest
 
 1. Conventional commits are preferred when available.
 2. PR-level grouping is the default output unit.
-3. Vague commit messages trigger diff-based fallback evidence.
+3. Vague commit messages trigger diff-based fallback evidence and summaries.
 4. Internal-only changes are separated from customer-facing changes when detectable.

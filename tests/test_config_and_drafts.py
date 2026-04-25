@@ -66,6 +66,28 @@ def test_load_config_reads_custom_targets(monkeypatch, tmp_path: Path):
     assert config.targets["github-release"].path == ".github/release-notes.md"
 
 
+def test_load_config_reads_provider_defaults(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "releasepilot.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "provider": {
+                    "name": "github-copilot",
+                    "model": "gpt-4o-mini",
+                    "endpoint": "https://example.test/chat/completions",
+                }
+            }
+        )
+    )
+    monkeypatch.chdir(tmp_path)
+
+    config = load_config()
+
+    assert config.provider.name == "github-copilot"
+    assert config.provider.model == "gpt-4o-mini"
+    assert config.provider.endpoint == "https://example.test/chat/completions"
+
+
 def test_draft_json_command_outputs_sections_and_targets(monkeypatch, tmp_path: Path, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(

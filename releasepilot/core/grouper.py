@@ -50,12 +50,12 @@ class Grouper:
             if bucket_key == key and key[1] != "misc":
                 bucket.append(commit)
                 continue
-            groups.append(ChangeGroup(pr=None, commits=bucket))
+            groups.append(ChangeGroup(pr=None, commits=bucket, files=self._commit_files(bucket)))
             bucket = [commit]
             bucket_key = key
 
         if bucket:
-            groups.append(ChangeGroup(pr=None, commits=bucket))
+            groups.append(ChangeGroup(pr=None, commits=bucket, files=self._commit_files(bucket)))
         return groups
 
     def _non_pr_group_key(self, commit: Commit) -> tuple[str, ...]:
@@ -90,3 +90,16 @@ class Grouper:
             split_groups.append(ChangeGroup(pr=area_pr, commits=commits))
 
         return split_groups or [ChangeGroup(pr=pr, commits=commits)]
+
+    @staticmethod
+    def _commit_files(commits: list[Commit]) -> list[ChangedFile]:
+        files: list[ChangedFile] = []
+        seen: set[tuple[str, str, str]] = set()
+        for commit in commits:
+            for file in commit.files:
+                key = (file.path, file.status, file.patch)
+                if key in seen:
+                    continue
+                files.append(ChangedFile(path=file.path, status=file.status, patch=file.patch))
+                seen.add(key)
+        return files

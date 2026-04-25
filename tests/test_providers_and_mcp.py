@@ -105,7 +105,7 @@ def test_run_scan_uses_selected_provider(monkeypatch, tmp_path):
     monkeypatch.setenv("RELEASEPILOT_MODEL_PROVIDER", "mock")
     mock_items = run_scan("v1.0.0", "HEAD", persist=False)
 
-    assert stub_items[0]["content"]["summary"] == "Derived from commit history"
+    assert stub_items[0]["content"]["summary"] == "No file changes detected"
     assert mock_items[0]["content"]["summary"].startswith("Mock summary:")
 
 
@@ -129,3 +129,16 @@ def test_mcp_service_can_update_review_state(monkeypatch, tmp_path):
 
     assert item["status"] == "hidden"
     assert item["summary"] == "Hidden by reviewer"
+
+
+def test_mcp_service_info_includes_mcp_tools(monkeypatch, tmp_path):
+    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(tmp_path / "state.json"))
+
+    info = MCPService().info()
+
+    assert "mcp_tools" in info
+    assert "releasepilot_preview_release_notes" in info["mcp_tools"]
+    assert "mcp_resources" in info
+    assert "releasepilot://overview" in info["mcp_resources"]
+    assert "mcp_prompts" in info
+    assert "releasepilot_review_request" in info["mcp_prompts"]

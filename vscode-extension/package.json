@@ -4,6 +4,11 @@
   "description": "Scan repositories, preview release notes, and apply changelog updates with ReleasePilot.",
   "version": "0.0.1",
   "publisher": "releasepilot",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/n1ckyb/release-pilot.git"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -19,7 +24,11 @@
     "onCommand:releasepilot.markItemReady",
     "onCommand:releasepilot.markItemNeedsReview",
     "onCommand:releasepilot.hideItem",
-    "onCommand:releasepilot.editItemSummary"
+    "onCommand:releasepilot.editItemSummary",
+    "onCommand:releasepilot.showServiceInfo",
+    "onCommand:releasepilot.acceptItem",
+    "onCommand:releasepilot.unhideItem",
+    "onCommand:releasepilot.resetItemSummary"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -76,6 +85,22 @@
       {
         "command": "releasepilot.editItemSummary",
         "title": "ReleasePilot: Edit Item Summary"
+      },
+      {
+        "command": "releasepilot.showServiceInfo",
+        "title": "ReleasePilot: Show Service Info"
+      },
+      {
+        "command": "releasepilot.acceptItem",
+        "title": "ReleasePilot: Accept Item"
+      },
+      {
+        "command": "releasepilot.unhideItem",
+        "title": "ReleasePilot: Unhide Item"
+      },
+      {
+        "command": "releasepilot.resetItemSummary",
+        "title": "ReleasePilot: Reset Item Summary"
       }
     ],
     "configuration": {
@@ -85,25 +110,6 @@
           "type": "string",
           "default": "releasepilot",
           "description": "Path to the ReleasePilot CLI executable."
-        },
-        "releasepilot.preferLocalService": {
-          "type": "boolean",
-          "default": true,
-          "description": "Prefer a persistent local ReleasePilot service over one-off CLI commands."
-        },
-        "releasepilot.serviceArgs": {
-          "type": "array",
-          "default": ["serve"],
-          "items": {
-            "type": "string"
-          },
-          "description": "Arguments passed to the ReleasePilot CLI when starting the local service."
-        },
-        "releasepilot.requestTimeoutMs": {
-          "type": "number",
-          "default": 10000,
-          "minimum": 1000,
-          "description": "Timeout in milliseconds for ReleasePilot service requests."
         }
       }
     },
@@ -138,6 +144,21 @@
         },
         {
           "command": "releasepilot.editItemSummary",
+          "when": "view == releasepilot.items && viewItem == releasepilot.item",
+          "group": "navigation"
+        },
+        {
+          "command": "releasepilot.acceptItem",
+          "when": "view == releasepilot.items && viewItem == releasepilot.item",
+          "group": "inline"
+        },
+        {
+          "command": "releasepilot.unhideItem",
+          "when": "view == releasepilot.items && viewItem == releasepilot.item",
+          "group": "navigation"
+        },
+        {
+          "command": "releasepilot.resetItemSummary",
           "when": "view == releasepilot.items && viewItem == releasepilot.item",
           "group": "navigation"
         }

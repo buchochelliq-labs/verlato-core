@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from releasepilot import __version__
 from releasepilot.config import load_config
 from releasepilot.cli.main import _update_draft_review, build_draft_document, run_scan
 from releasepilot.core.drafts import DraftDocument, DraftItem, DraftSection, DraftService, DraftTarget
+from releasepilot.state.store import StateStore
 
 
 @dataclass
@@ -18,11 +20,32 @@ class ReleasePreviewRequest:
 
 class MCPService:
     """
-    Read-only service interface suitable for MCP integration.
+    Service interface suitable for MCP integration and local agent transports.
     """
 
     def list_unpublished_changes(self, base: str, head: str = "HEAD") -> list[dict]:
         return run_scan(base=base, head=head, persist=False)
+
+    def health(self) -> dict:
+        return {"status": "ok", "version": __version__}
+
+    def info(self) -> dict:
+        config = load_config()
+        store = StateStore(path=config.state_path)
+        state = store.load()
+        from releasepilot.mcp.server import list_prompt_metadata, list_resource_metadata, list_tool_metadata
+
+        return {
+            "status": "ok",
+            "version": __version__,
+            "state_path": config.state_path,
+            "schema_version": state.schema_version,
+            "tracked_items": len(state.items),
+            "targets": list(config.targets.keys()),
+            "mcp_tools": [tool["name"] for tool in list_tool_metadata()],
+            "mcp_resources": [resource["uri"] for resource in list_resource_metadata()],
+            "mcp_prompts": [prompt["name"] for prompt in list_prompt_metadata()],
+        }
 
     def get_draft_document(self, request: ReleasePreviewRequest) -> dict:
         document = build_draft_document(

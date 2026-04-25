@@ -47,7 +47,8 @@ class Classifier:
     def classify(self, group: ChangeGroup, base_ref: str, head_ref: str) -> list[ChangeItem]:
         pr = group.pr
         labels = [label.lower() for label in (pr.labels if pr else [])]
-        diff = self.diff_builder.build(pr.files if pr else [])
+        changed_files = pr.files if pr else group.files
+        diff = self.diff_builder.build(changed_files)
 
         kind = "changed"
         semver = "patch"
@@ -96,7 +97,7 @@ class Classifier:
             commit_signals.append("diff-fallback")
 
         title = (pr.title if pr else group.commits[0].message.splitlines()[0]).strip()
-        summary = diff.summary if pr else "Derived from commit history"
+        summary = diff.summary
 
         if self.provider:
             kind, area, audience, semver, summary, confidence = self._apply_provider_assists(
@@ -122,10 +123,11 @@ class Classifier:
         )
         evidence = Evidence(
             labels=pr.labels if pr else [],
-            files=[f.path for f in pr.files] if pr else [],
+            files=[f.path for f in changed_files],
             commit_signals=commit_signals,
             diff_summary={
                 "files_by_area": diff.files_by_area,
+                "file_statuses": diff.file_statuses,
                 "api_changes": diff.api_changes,
                 "migrations": diff.migration_changes,
                 "config_changes": diff.config_changes,
@@ -171,18 +173,28 @@ class Classifier:
         evidence = {
             "title": title,
             "labels": labels,
+            "pr_body": group.pr.body if group.pr else "",
             "commits": [commit.message for commit in group.commits],
+            "commit_subjects": [commit.message.splitlines()[0] for commit in group.commits],
             "diff_summary": diff.summary,
             "files_by_area": diff.files_by_area,
+            "file_statuses": diff.file_statuses,
             "api_changes": diff.api_changes,
             "migration_changes": diff.migration_changes,
             "config_changes": diff.config_changes,
+            "representative_hunks": diff.representative_hunks,
         }
-        summary_prompt = self._build_summary_prompt(title=title, labels=labels, diff_summary=diff.summary, commits=group.commits)
+        summary_prompt = self._build_summary_prompt(
+            title=title,
+            labels=labels,
+            pr_body=group.pr.body if group.pr else "",
+            diff=diff,
+            commits=group.commits,
+        )
         summary_response = self.provider.summarize(
             ProviderRequest(task="summarize", prompt=summary_prompt, evidence=evidence)
         )
-        if summary_response.content and summary_response.confidence >= 0.5:
+        if summary_response.confidence >= 0.5 and not self._is_low_value_summary(summary_response.content, title, group):
             summary = summary_response.content
             confidence = max(confidence, min(summary_response.confidence, 0.95))
             commit_signals.append(f"provider-summary:{summary_response.model}")
@@ -205,15 +217,27 @@ class Classifier:
 
         return kind, area, audience, semver, summary, confidence
 
-    def _build_summary_prompt(self, *, title: str, labels: list[str], diff_summary: str, commits: list) -> str:
+    def _build_summary_prompt(self, *, title: str, labels: list[str], pr_body: str, diff, commits: list) -> str:
         commit_lines = "; ".join(commit.message.splitlines()[0] for commit in commits)
         label_text = ", ".join(labels) if labels else "none"
+        file_lines = "\n".join(
+            f"- {status} {path}" for path, status in sorted(diff.file_statuses.items())
+        ) or "- none"
+        hunk_lines = []
+        for path, hunks in diff.representative_hunks.items():
+            hunk_lines.append(f"{path}:")
+            hunk_lines.extend(f"  {hunk}" for hunk in hunks)
+        hunk_text = "\n".join(hunk_lines) or "none"
         return (
-            f"Release note summary.\n"
+            f"Write one concise release-note sentence based primarily on the file diffs.\n"
+            f"Describe the user-facing behavior change when one is evident. Avoid generic filler and do not just repeat the title.\n"
             f"Title: {title}\n"
             f"Labels: {label_text}\n"
             f"Commits: {commit_lines}\n"
-            f"Diff: {diff_summary}"
+            f"PR body: {pr_body.strip() or 'none'}\n"
+            f"Changed files:\n{file_lines}\n"
+            f"Diff summary: {diff.summary}\n"
+            f"Representative hunks:\n{hunk_text}"
         )
 
     def _build_classification_prompt(self, *, title: str, labels: list[str], diff_summary: str, commits: list) -> str:
@@ -238,6 +262,17 @@ class Classifier:
         if kind not in self.VALID_KINDS or audience not in self.VALID_AUDIENCES or semver not in self.VALID_SEMVER:
             return None
         return kind, area, audience, semver
+
+    def _is_low_value_summary(self, content: str, title: str, group: ChangeGroup) -> bool:
+        normalized = (content or "").strip()
+        if not normalized:
+            return True
+        lowered = normalized.lower()
+        if lowered.startswith("[github-copilot-") or lowered.startswith("[stub-"):
+            return True
+        candidates = {title.strip().lower()}
+        candidates.update(commit.message.splitlines()[0].strip().lower() for commit in group.commits)
+        return lowered.rstrip(".") in {candidate.rstrip(".") for candidate in candidates if candidate}
 
     def _classify_area(self, labels: list[str], files_by_area: dict[str, list[str]]) -> str:
         for label in labels:

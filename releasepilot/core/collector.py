@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import subprocess
 
-from releasepilot.core.adapters import PullRequestAdapter
-from releasepilot.core.models import Commit, PullRequest
+from releasepilot.core.adapters import PullRequestAdapter, parse_git_show_changed_files
+from releasepilot.core.models import ChangedFile, Commit, PullRequest
 
 
 class Collector:
@@ -16,7 +16,7 @@ class Collector:
         commits: list[Commit] = []
         for line in result.stdout.splitlines():
             sha, message, author = (line.split("\t", 2) + [""])[:3]
-            commits.append(Commit(sha=sha, message=message, author=author))
+            commits.append(Commit(sha=sha, message=message, author=author, files=self.changed_files_for_commit(sha)))
         return list(reversed(commits))
 
     def latest_tag(self, head: str = "HEAD") -> str | None:
@@ -29,3 +29,8 @@ class Collector:
 
     def map_commits_to_prs(self, commits: list[Commit]) -> dict[str, PullRequest]:
         return self.pr_adapter.map_commits_to_prs(commits)
+
+    def changed_files_for_commit(self, commit_sha: str) -> list[ChangedFile]:
+        cmd = ["git", "show", "--format=", "--find-renames", "--name-status", "--patch", commit_sha]
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        return parse_git_show_changed_files(result.stdout)

@@ -5,7 +5,9 @@
     "token_env": "GITHUB_TOKEN"
   },
   "provider": {
-    "name": "stub"
+    "name": "stub",
+    "model": "gpt-4o-mini",
+    "endpoint": "https://models.inference.ai.azure.com/chat/completions"
   },
   "targets": {
     "changelog": {

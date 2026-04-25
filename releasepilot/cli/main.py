@@ -60,8 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("--include-confidence", action="store_true")
     render.add_argument("--include-provenance", action="store_true")
 
-    serve = sub.add_parser("serve")
-    serve.add_argument("--transport", choices=["stdio"], default="stdio")
+    sub.add_parser("serve")
 
     state = sub.add_parser("state")
     state_sub = state.add_subparsers(dest="state_command", required=True)
@@ -95,9 +94,10 @@ def run_scan(base: str, head: str, persist: bool) -> list[dict]:
 
 
 def detect_change_items(base: str, head: str) -> list[ChangeItem]:
+    config = _load_config()
     collector = Collector(pr_adapter=_build_adapter())
     grouper = Grouper()
-    classifier = Classifier(provider=build_provider())
+    classifier = Classifier(provider=build_provider(config.provider))
 
     commits = collector.collect_commits(base, head)
     prs_by_commit = collector.map_commits_to_prs(commits)
@@ -312,11 +312,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "serve":
-        if args.transport != "stdio":
-            raise SystemExit(f"Unsupported transport: {args.transport}")
-        from releasepilot.server import ReleasePilotServer
+        from releasepilot.mcp.server import run_mcp_stdio
 
-        return ReleasePilotServer().serve_stdio()
+        try:
+            return run_mcp_stdio()
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from exc
 
     if args.command == "draft":
         if args.draft_command == "review":

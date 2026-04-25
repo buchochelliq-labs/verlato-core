@@ -60,21 +60,77 @@ class StandardGitAdapter(PullRequestAdapter):
         return None
 
     def _git_changed_files(self, commit_sha: str) -> list[ChangedFile]:
-        raw = self._git(["show", "--pretty=format:", "--name-status", commit_sha])
-        files: list[ChangedFile] = []
-        for line in raw.splitlines():
-            if not line.strip() or "\t" not in line:
-                continue
-            status, path = line.split("\t", 1)
-            normalized = {
-                "A": "added",
-                "M": "modified",
-                "D": "removed",
-                "R": "renamed",
-            }.get(status[:1], "modified")
-            files.append(ChangedFile(path=path, status=normalized))
-        return files
+        raw = self._git(["show", "--format=", "--find-renames", "--name-status", "--patch", commit_sha])
+        return parse_git_show_changed_files(raw)
 
     def _git(self, args: list[str]) -> str:
         result = subprocess.run(["git", *args], cwd=self.repo_path, check=True, capture_output=True, text=True)
         return result.stdout
+
+
+def parse_git_show_changed_files(raw: str) -> list[ChangedFile]:
+    files: list[ChangedFile] = []
+    by_path: dict[str, ChangedFile] = {}
+    patch_by_path: dict[str, list[str]] = {}
+    current_path: str | None = None
+
+    for line in raw.splitlines():
+        if line.startswith("diff --git "):
+            current_path = _path_from_diff_header(line)
+            if current_path:
+                patch_by_path.setdefault(current_path, [line])
+            continue
+
+        if current_path:
+            patch_by_path.setdefault(current_path, []).append(line)
+            if line.startswith("+++ b/"):
+                current_path = line.removeprefix("+++ b/")
+                patch_by_path.setdefault(current_path, []).append(line)
+            continue
+
+        parsed_status = _parse_name_status_line(line)
+        if parsed_status:
+            status, path = parsed_status
+            changed = ChangedFile(path=path, status=status)
+            files.append(changed)
+            by_path[path] = changed
+
+    for path, patch_lines in patch_by_path.items():
+        changed = by_path.get(path)
+        if changed is None:
+            changed = ChangedFile(path=path, status="modified")
+            files.append(changed)
+            by_path[path] = changed
+        changed.patch = "\n".join(patch_lines).strip()
+
+    return files
+
+
+def _parse_name_status_line(line: str) -> tuple[str, str] | None:
+    if not line.strip() or "\t" not in line:
+        return None
+    parts = line.split("\t")
+    status_code = parts[0]
+    if not status_code or status_code.startswith("@@"):
+        return None
+    path = parts[-1]
+    normalized = {
+        "A": "added",
+        "M": "modified",
+        "D": "removed",
+        "R": "renamed",
+        "C": "copied",
+    }.get(status_code[:1])
+    if normalized is None:
+        return None
+    return normalized, path
+
+
+def _path_from_diff_header(line: str) -> str | None:
+    parts = line.split()
+    if len(parts) < 4:
+        return None
+    path = parts[3]
+    if path.startswith("b/"):
+        return path[2:]
+    return path
