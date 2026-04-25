@@ -87,6 +87,9 @@ class _FakeService:
     def update_review_state(self, **kwargs):
         return {"id": kwargs["item_id"], "status": kwargs.get("status") or "ready"}
 
+    def request_model_input(self, **kwargs):
+        return {"id": kwargs["item_id"], "summary": "Model summary"}
+
     def reconcile_preview(self, base: str, head: str = "HEAD"):
         return {"count": 1, "unpublished": [{"id": f"{base}->{head}"}]}
 
@@ -102,6 +105,7 @@ def test_mcp_tool_metadata_lists_agent_facing_tools():
         "releasepilot_preview_release_notes",
         "releasepilot_apply_draft",
         "releasepilot_update_review_state",
+        "releasepilot_request_model_input",
         "releasepilot_reconcile_preview",
     ]
 
@@ -129,6 +133,7 @@ def test_create_fastmcp_server_registers_releasepilot_tools():
         "releasepilot_preview_release_notes",
         "releasepilot_apply_draft",
         "releasepilot_update_review_state",
+        "releasepilot_request_model_input",
         "releasepilot_reconcile_preview",
     }
     assert "releasepilot://overview" in server.resources

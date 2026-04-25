@@ -78,7 +78,7 @@ class MarkdownGenerator:
                     if item.lineage_releases:
                         extras.append(f"prior {', '.join(item.lineage_releases)}")
                 suffix = f" [{'; '.join(extras)}]" if extras else ""
-                if include_summary:
+                if include_summary or item.content.summary:
                     lines.append(f"- {item.content.title}{source}: {item.content.summary}{suffix}")
                 else:
                     lines.append(f"- {item.content.title}{source}{suffix}")

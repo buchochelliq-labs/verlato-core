@@ -25,6 +25,7 @@
     "onCommand:releasepilot.markItemNeedsReview",
     "onCommand:releasepilot.hideItem",
     "onCommand:releasepilot.editItemSummary",
+    "onCommand:releasepilot.requestModelInput",
     "onCommand:releasepilot.showServiceInfo",
     "onCommand:releasepilot.acceptItem",
     "onCommand:releasepilot.unhideItem",
@@ -87,6 +88,10 @@
         "title": "ReleasePilot: Edit Item Summary"
       },
       {
+        "command": "releasepilot.requestModelInput",
+        "title": "ReleasePilot: Ask Model for Item Summary"
+      },
+      {
         "command": "releasepilot.showServiceInfo",
         "title": "ReleasePilot: Show Service Info"
       },
@@ -110,6 +115,17 @@
           "type": "string",
           "default": "releasepilot",
           "description": "Path to the ReleasePilot CLI executable."
+        },
+        "releasepilot.modelProvider": {
+          "type": "string",
+          "default": "configured",
+          "enum": [
+            "configured",
+            "stub",
+            "mock",
+            "github-copilot"
+          ],
+          "description": "Model provider override for LLM-assisted summaries and classifications. Use configured to honor releasepilot.json or environment variables."
         }
       }
     },
@@ -144,6 +160,11 @@
         },
         {
           "command": "releasepilot.editItemSummary",
+          "when": "view == releasepilot.items && viewItem == releasepilot.item",
+          "group": "navigation"
+        },
+        {
+          "command": "releasepilot.requestModelInput",
           "when": "view == releasepilot.items && viewItem == releasepilot.item",
           "group": "navigation"
         },

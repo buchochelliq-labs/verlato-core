@@ -109,6 +109,25 @@ def test_run_scan_uses_selected_provider(monkeypatch, tmp_path):
     assert mock_items[0]["content"]["summary"].startswith("Mock summary:")
 
 
+def test_run_scan_accepts_explicit_provider_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setenv("RELEASEPILOT_PR_ADAPTER", "none")
+    monkeypatch.setenv("RELEASEPILOT_MODEL_PROVIDER", "stub")
+    monkeypatch.setattr(
+        "releasepilot.cli.main.Collector.collect_commits",
+        lambda self, base, head: [Commit(sha="a1", message="update service internals")],
+    )
+    monkeypatch.setattr("releasepilot.cli.main.Collector.map_commits_to_prs", lambda self, commits: {})
+
+    mock_items = run_scan("v1.0.0", "HEAD", persist=False, model_provider="mock")
+
+    assert mock_items[0]["content"]["summary"].startswith("Mock summary:")
+    assert any(
+        signal.startswith("provider-summary:")
+        for signal in mock_items[0]["evidence"]["commit_signals"]
+    )
+
+
 def test_mcp_service_can_update_review_state(monkeypatch, tmp_path):
     state_path = tmp_path / "state.json"
     monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))

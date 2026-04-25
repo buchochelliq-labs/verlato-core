@@ -8,12 +8,17 @@ export interface DraftItem {
   id: string;
   title: string;
   summary: string;
+  original_summary?: string;
+  summary_source?: string;
+  classification_source?: string;
+  evidence_summary?: string;
   kind: string;
   area: string;
   audience: string;
   semver: string;
   confidence: number;
   pr_number: number | null;
+  commit_shas?: string[];
   base_ref: string;
   head_ref: string;
   files: string[];
@@ -34,6 +39,7 @@ export interface DraftSection {
 export interface DraftDocument {
   version: string;
   generated_on: string;
+  repository_url?: string | null;
   base_ref: string;
   head_ref: string;
   targets: DraftTarget[];

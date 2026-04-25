@@ -85,6 +85,7 @@ releasepilot scan --from-latest-published --head <ref>
 releasepilot generate --base <ref> --head <ref>
 releasepilot reconcile --base <ref> --head <ref>
 releasepilot draft preview --base <ref> --head <ref> --version v1.2.0
+releasepilot draft preview --base <ref> --head <ref> --version v1.2.0 --model-provider github-copilot
 releasepilot draft json --base <ref> --head <ref> --version v1.2.0
 releasepilot draft apply --base <ref> --head <ref> --target changelog --version v1.2.0
 releasepilot draft review --base <ref> --id <item-id> --status ready --reviewer alice
@@ -125,7 +126,7 @@ Environment variables:
 - `RELEASEPILOT_MODEL_PROVIDER`: model provider mode: `stub` (default), `mock`, or `github-copilot`.
 - `RELEASEPILOT_GITHUB_MODEL`: model name when using `github-copilot` (default `gpt-4o-mini`).
 - `RELEASEPILOT_GITHUB_MODELS_ENDPOINT`: override chat-completions endpoint for GitHub-hosted models.
-- `GITHUB_TOKEN` or `GH_TOKEN`: API token used when `RELEASEPILOT_PR_ADAPTER=github`. Also used by `github-copilot` provider mode.
+- `GITHUB_TOKEN` or `GH_TOKEN`: API token used when `RELEASEPILOT_PR_ADAPTER=github`. Also used by `github-copilot` provider mode. If neither is set, the provider falls back to `gh auth token` so it can use the logged-in GitHub CLI user.
 
 Provider behavior:
 
@@ -146,6 +147,8 @@ Provider defaults can also be set in `releasepilot.json`; environment variables 
 ```
 
 When a provider is enabled, ReleasePilot sends compact file-diff evidence, representative hunks, PR context, and commit subjects to the summary prompt. If the model returns empty output, an error marker, or text that simply repeats the title/commit subject, ReleasePilot falls back to its deterministic diff summary.
+
+You can also override the provider for one CLI run with `--model-provider mock` or `--model-provider github-copilot` on `scan`, `generate`, `reconcile`, and `draft` commands. The VS Code extension exposes the same override through the `releasepilot.modelProvider` setting; leave it as `configured` to honor `releasepilot.json` or environment variables. The `draft suggest` command defaults to `github-copilot` when no provider is configured because it explicitly asks the model for a summary.
 
 Config targets:
 

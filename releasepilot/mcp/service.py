@@ -16,6 +16,7 @@ class ReleasePreviewRequest:
     version: str = "Unreleased"
     include_confidence: bool = False
     include_provenance: bool = False
+    model_provider: str | None = None
 
 
 class MCPService:
@@ -54,6 +55,7 @@ class MCPService:
             version=request.version,
             include_confidence=request.include_confidence,
             include_provenance=request.include_provenance,
+            model_provider=request.model_provider,
         )
         if hasattr(document, "to_dict"):
             return document.to_dict()
@@ -74,6 +76,7 @@ class MCPService:
             version=request.version,
             include_confidence=request.include_confidence,
             include_provenance=request.include_provenance,
+            model_provider=request.model_provider,
         )
 
     def preview_release_notes(self, request: ReleasePreviewRequest) -> str:
@@ -117,6 +120,31 @@ class MCPService:
                     return item
         raise KeyError(f"Updated review item {item_id} not found in draft document")
 
+    def request_model_input(
+        self,
+        *,
+        base: str,
+        head: str = "HEAD",
+        item_id: str,
+        reviewer: str | None = None,
+        model_provider: str | None = None,
+    ) -> dict:
+        from releasepilot.cli.main import _request_draft_model_input
+
+        _request_draft_model_input(
+            base=base,
+            head=head,
+            item_id=item_id,
+            reviewer=reviewer,
+            model_provider=model_provider,
+        )
+        document = self.get_draft_document(ReleasePreviewRequest(base=base, head=head))
+        for section in document["sections"]:
+            for item in section["items"]:
+                if item["id"] == item_id:
+                    return item
+        raise KeyError(f"Updated review item {item_id} not found in draft document")
+
     def reconcile_preview(self, base: str, head: str = "HEAD") -> dict:
         unpublished = self.list_unpublished_changes(base=base, head=head)
         return {"count": len(unpublished), "unpublished": unpublished}
@@ -125,6 +153,7 @@ class MCPService:
         return DraftDocument(
             version=str(data["version"]),
             generated_on=str(data["generated_on"]),
+            repository_url=data.get("repository_url"),
             base_ref=str(data["base_ref"]),
             head_ref=str(data["head_ref"]),
             targets=[
@@ -153,12 +182,17 @@ class MCPService:
                     id=str(item["id"]),
                     title=str(item["title"]),
                     summary=str(item["summary"]),
+                    original_summary=str(item.get("original_summary") or item["summary"]),
+                    summary_source=str(item.get("summary_source") or ""),
+                    classification_source=str(item.get("classification_source") or ""),
+                    evidence_summary=str(item.get("evidence_summary") or ""),
                     kind=str(item["kind"]),
                     area=str(item["area"]),
                     audience=str(item["audience"]),
                     semver=str(item["semver"]),
                     confidence=float(item["confidence"]),
                     pr_number=item.get("pr_number"),
+                    commit_shas=[str(sha) for sha in item.get("commit_shas", [])],
                     base_ref=str(item["base_ref"]),
                     head_ref=str(item["head_ref"]),
                     files=[str(path) for path in item.get("files", [])],

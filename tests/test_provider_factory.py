@@ -30,3 +30,9 @@ def test_provider_factory_env_overrides_config(monkeypatch):
     monkeypatch.setenv("RELEASEPILOT_MODEL_PROVIDER", "mock")
     provider = build_provider(ProviderConfig(name="github-copilot"))
     assert isinstance(provider, MockProvider)
+
+
+def test_provider_factory_explicit_mode_overrides_env(monkeypatch):
+    monkeypatch.setenv("RELEASEPILOT_MODEL_PROVIDER", "stub")
+    provider = build_provider(ProviderConfig(name="stub"), mode="mock")
+    assert isinstance(provider, MockProvider)

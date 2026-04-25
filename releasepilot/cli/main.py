@@ -18,6 +18,8 @@ from releasepilot.github.adapter import GitHubApiAdapter
 from releasepilot.providers.factory import build_provider
 from releasepilot.state.store import StateStore
 
+MODEL_PROVIDER_CHOICES = ["stub", "mock", "github-copilot"]
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="releasepilot")
@@ -29,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--head", default="HEAD")
         p.add_argument("--from-latest-tag", action="store_true")
         p.add_argument("--from-latest-published", action="store_true")
+        p.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Override the configured model provider.")
 
     draft = sub.add_parser("draft")
     draft_sub = draft.add_subparsers(dest="draft_command", required=True)
@@ -41,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--version", default="Unreleased")
         p.add_argument("--include-confidence", action="store_true")
         p.add_argument("--include-provenance", action="store_true")
+        p.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Override the configured model provider.")
     draft_apply = draft_sub.choices["apply"]
     draft_apply.add_argument("--target", choices=["changelog", "github-release"], default="changelog")
     draft_apply.add_argument("--file")
@@ -53,6 +57,15 @@ def build_parser() -> argparse.ArgumentParser:
     draft_review.add_argument("--status", choices=["needs-review", "ready", "accepted", "edited", "hidden"])
     draft_review.add_argument("--summary")
     draft_review.add_argument("--reviewer")
+    draft_review.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Override the configured model provider.")
+    draft_suggest = draft_sub.add_parser("suggest")
+    draft_suggest.add_argument("--base")
+    draft_suggest.add_argument("--head", default="HEAD")
+    draft_suggest.add_argument("--from-latest-tag", action="store_true")
+    draft_suggest.add_argument("--from-latest-published", action="store_true")
+    draft_suggest.add_argument("--id", required=True)
+    draft_suggest.add_argument("--reviewer")
+    draft_suggest.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Override the configured model provider.")
 
     render = sub.add_parser("render")
     render.add_argument("--format", choices=["github-release", "changelog"], required=True)
@@ -89,15 +102,15 @@ def _build_adapter() -> PullRequestAdapter:
     return StandardGitAdapter()
 
 
-def run_scan(base: str, head: str, persist: bool) -> list[dict]:
-    return [asdict(i) for i in scan_change_items(base, head, persist)]
+def run_scan(base: str, head: str, persist: bool, model_provider: str | None = None) -> list[dict]:
+    return [asdict(i) for i in scan_change_items(base, head, persist, model_provider=model_provider)]
 
 
-def detect_change_items(base: str, head: str) -> list[ChangeItem]:
+def detect_change_items(base: str, head: str, model_provider: str | None = None) -> list[ChangeItem]:
     config = _load_config()
     collector = Collector(pr_adapter=_build_adapter())
     grouper = Grouper()
-    classifier = Classifier(provider=build_provider(config.provider))
+    classifier = Classifier(provider=build_provider(config.provider, mode=model_provider))
 
     commits = collector.collect_commits(base, head)
     prs_by_commit = collector.map_commits_to_prs(commits)
@@ -105,16 +118,38 @@ def detect_change_items(base: str, head: str) -> list[ChangeItem]:
     return [item for group in groups for item in classifier.classify(group, base, head)]
 
 
-def scan_change_items(base: str, head: str, persist: bool) -> list[ChangeItem]:
+def scan_change_items(base: str, head: str, persist: bool, model_provider: str | None = None) -> list[ChangeItem]:
     store = _build_store()
     reconciler = Reconciler()
 
-    detected = detect_change_items(base, head)
+    detected = detect_change_items(base, head, model_provider=model_provider)
     existing = store.load().items
     unpublished = reconciler.unpublished(existing, detected)
     if persist and unpublished:
         store.append_new(unpublished)
     return unpublished
+
+
+def _detect_change_items_with_provider(base: str, head: str, model_provider: str | None) -> list[ChangeItem]:
+    if model_provider:
+        return detect_change_items(base, head, model_provider=model_provider)
+    return detect_change_items(base, head)
+
+
+def _run_scan_with_provider(base: str, head: str, persist: bool, model_provider: str | None) -> list[dict]:
+    if model_provider:
+        return run_scan(base, head, persist=persist, model_provider=model_provider)
+    return run_scan(base, head, persist=persist)
+
+
+def _resolve_suggest_model_provider(model_provider: str | None) -> str | None:
+    if model_provider:
+        return model_provider
+    config = _load_config()
+    configured_name = os.getenv("RELEASEPILOT_MODEL_PROVIDER", config.provider.name).strip().lower()
+    if configured_name and configured_name != "stub":
+        return None
+    return "github-copilot"
 
 
 def build_draft_document(
@@ -124,9 +159,10 @@ def build_draft_document(
     version: str,
     include_confidence: bool = False,
     include_provenance: bool = False,
+    model_provider: str | None = None,
 ) -> DraftDocument:
     config = _load_config()
-    items = _merge_review_state(detect_change_items(base, head))
+    items = _merge_review_state(_detect_change_items_with_provider(base, head, model_provider))
     return DraftService(config=config).build_document(
         items=items,
         base_ref=base,
@@ -163,6 +199,9 @@ def _merge_review_state(items: list[ChangeItem]) -> list[ChangeItem]:
             item.reviewed_at = persisted.reviewed_at
             item.edited_summary = persisted.edited_summary
             item.hidden = persisted.hidden
+            for signal in persisted.evidence.commit_signals:
+                if signal.startswith("provider-summary:") and signal not in item.evidence.commit_signals:
+                    item.evidence.commit_signals.append(signal)
         merged.append(item)
     return merged
 
@@ -175,11 +214,12 @@ def _update_draft_review(
     status: str | None,
     summary: str | None,
     reviewer: str | None,
+    model_provider: str | None = None,
 ) -> ChangeItem:
     if status is None and summary is None and reviewer is None:
         raise SystemExit("Provide at least one review update: --status, --summary, or --reviewer")
 
-    candidates = detect_change_items(base, head)
+    candidates = _detect_change_items_with_provider(base, head, model_provider)
     candidate = next((item for item in candidates if item.id == item_id), None)
     if not candidate:
         raise SystemExit(f"Could not find draft item {item_id} for range {base}..{head}")
@@ -224,6 +264,7 @@ def _run_draft_review(
     status: str | None,
     summary: str | None,
     reviewer: str | None,
+    model_provider: str | None = None,
 ) -> int:
     updated = _update_draft_review(
         base=base,
@@ -232,6 +273,63 @@ def _run_draft_review(
         status=status,
         summary=summary,
         reviewer=reviewer,
+        model_provider=model_provider,
+    )
+    print(json.dumps(updated.to_dict(), indent=2))
+    return 0
+
+
+def _request_draft_model_input(
+    *,
+    base: str,
+    head: str,
+    item_id: str,
+    reviewer: str | None,
+    model_provider: str | None = None,
+) -> ChangeItem:
+    effective_model_provider = _resolve_suggest_model_provider(model_provider)
+    candidates = _detect_change_items_with_provider(base, head, effective_model_provider)
+    candidate = next((item for item in candidates if item.id == item_id), None)
+    if not candidate:
+        raise SystemExit(f"Could not find draft item {item_id} for range {base}..{head}")
+
+    if not any(signal.startswith("provider-summary:") for signal in candidate.evidence.commit_signals):
+        provider_error = next(
+            (signal.removeprefix("provider-error:") for signal in candidate.evidence.commit_signals if signal.startswith("provider-error:")),
+            None,
+        )
+        if provider_error:
+            raise SystemExit(f"No model summary was produced for draft item {item_id}: {provider_error}")
+        raise SystemExit(
+            f"No model summary was produced for draft item {item_id}. "
+            "Configure a model provider or pass --model-provider github-copilot."
+        )
+
+    return _update_draft_review(
+        base=base,
+        head=head,
+        item_id=item_id,
+        status="edited",
+        summary=candidate.content.summary,
+        reviewer=reviewer,
+        model_provider=effective_model_provider,
+    )
+
+
+def _run_draft_suggest(
+    *,
+    base: str,
+    head: str,
+    item_id: str,
+    reviewer: str | None,
+    model_provider: str | None = None,
+) -> int:
+    updated = _request_draft_model_input(
+        base=base,
+        head=head,
+        item_id=item_id,
+        reviewer=reviewer,
+        model_provider=model_provider,
     )
     print(json.dumps(updated.to_dict(), indent=2))
     return 0
@@ -283,18 +381,18 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "scan":
         base, head = _resolve_range(args)
-        print(json.dumps(run_scan(base, head, persist=False), indent=2))
+        print(json.dumps(_run_scan_with_provider(base, head, persist=False, model_provider=args.model_provider), indent=2))
         return 0
 
     if args.command == "generate":
         base, head = _resolve_range(args)
-        items = run_scan(base, head, persist=True)
+        items = _run_scan_with_provider(base, head, persist=True, model_provider=args.model_provider)
         print(json.dumps(items, indent=2))
         return 0
 
     if args.command == "reconcile":
         base, head = _resolve_range(args)
-        items = run_scan(base, head, persist=False)
+        items = _run_scan_with_provider(base, head, persist=False, model_provider=args.model_provider)
         print(json.dumps({"unpublished": items, "count": len(items)}, indent=2))
         return 0
 
@@ -329,6 +427,16 @@ def main(argv: list[str] | None = None) -> int:
                 status=args.status,
                 summary=args.summary,
                 reviewer=args.reviewer,
+                model_provider=args.model_provider,
+            )
+        if args.draft_command == "suggest":
+            base, head = _resolve_range(args)
+            return _run_draft_suggest(
+                base=base,
+                head=head,
+                item_id=args.id,
+                reviewer=args.reviewer,
+                model_provider=args.model_provider,
             )
         base, head = _resolve_range(args)
         document = build_draft_document(
@@ -337,6 +445,7 @@ def main(argv: list[str] | None = None) -> int:
             version=args.version,
             include_confidence=args.include_confidence,
             include_provenance=args.include_provenance,
+            model_provider=args.model_provider,
         )
         if args.draft_command == "preview":
             print(document.rendered["github-release"])

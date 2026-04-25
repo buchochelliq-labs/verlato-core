@@ -126,6 +126,7 @@ class Classifier:
             files=[f.path for f in changed_files],
             commit_signals=commit_signals,
             diff_summary={
+                "summary": diff.summary,
                 "files_by_area": diff.files_by_area,
                 "file_statuses": diff.file_statuses,
                 "api_changes": diff.api_changes,
@@ -198,6 +199,8 @@ class Classifier:
             summary = summary_response.content
             confidence = max(confidence, min(summary_response.confidence, 0.95))
             commit_signals.append(f"provider-summary:{summary_response.model}")
+        elif self._is_provider_error(summary_response.content):
+            commit_signals.append(f"provider-error:{summary_response.model}:{summary_response.content}")
 
         if allow_classification_override:
             classify_prompt = self._build_classification_prompt(
@@ -273,6 +276,10 @@ class Classifier:
         candidates = {title.strip().lower()}
         candidates.update(commit.message.splitlines()[0].strip().lower() for commit in group.commits)
         return lowered.rstrip(".") in {candidate.rstrip(".") for candidate in candidates if candidate}
+
+    def _is_provider_error(self, content: str) -> bool:
+        lowered = (content or "").strip().lower()
+        return lowered.startswith("[github-copilot-")
 
     def _classify_area(self, labels: list[str], files_by_area: dict[str, list[str]]) -> str:
         for label in labels:

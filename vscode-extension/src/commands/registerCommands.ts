@@ -71,6 +71,9 @@ export function registerCommands(
       }
       await updateItemReviewState(client, treeProvider, previewPanel, node, { summary });
     }),
+    vscode.commands.registerCommand("releasepilot.requestModelInput", async (node?: DraftItemNode) => {
+      await requestModelInput(client, treeProvider, previewPanel, node);
+    }),
     vscode.commands.registerCommand("releasepilot.acceptItem", async (node?: DraftItemNode) => {
       await updateItemReviewState(client, treeProvider, previewPanel, node, { status: "accepted" });
     }),
@@ -87,6 +90,43 @@ export function registerCommands(
       );
     }),
   );
+}
+
+async function requestModelInput(
+  client: ReleasePilotClient,
+  treeProvider: ReleasePilotTreeProvider,
+  previewPanel: PreviewPanel,
+  node: DraftItemNode | undefined,
+): Promise<void> {
+  if (!node) {
+    return;
+  }
+  const document = treeProvider.getDocument();
+  if (!document) {
+    return;
+  }
+  const request: DraftRangeRequest = {
+    base: document.base_ref,
+    head: document.head_ref,
+    version: document.version,
+  };
+  try {
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Asking model for "${node.item.title}"`,
+        cancellable: false,
+      },
+      async () => client.requestModelInput(request, node.item.id, "VS Code"),
+    );
+  } catch (error) {
+    vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
+    return;
+  }
+  const nextDocument = await client.getDraft(request);
+  treeProvider.refresh(nextDocument);
+  previewPanel.show(nextDocument);
+  vscode.window.showInformationMessage("ReleasePilot applied the model suggestion to the item summary.");
 }
 
 async function promptForRange(): Promise<DraftRangeRequest | undefined> {

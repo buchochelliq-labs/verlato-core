@@ -57,6 +57,10 @@ _TOOL_METADATA: tuple[MCPToolMetadata, ...] = (
         description="Update review status, summary, or reviewer metadata for a draft item.",
     ),
     MCPToolMetadata(
+        name="releasepilot_request_model_input",
+        description="Ask the configured model provider for a summary suggestion on one draft item and persist it as an edit.",
+    ),
+    MCPToolMetadata(
         name="releasepilot_reconcile_preview",
         description="Return a lightweight unpublished-change preview for a git ref range.",
     ),
@@ -123,6 +127,10 @@ ReviewStatus = Annotated[
 ]
 OptionalSummary = Annotated[str | None, "Optional edited summary to persist for the draft item."]
 OptionalReviewer = Annotated[str | None, "Optional reviewer identity to persist with the update."]
+OptionalModelProvider = Annotated[
+    Literal["stub", "mock", "github-copilot"] | None,
+    "Optional model provider override for LLM-assisted summaries and classifications.",
+]
 GuidanceName = Annotated[
     Literal["readme", "agent", "architecture", "copilot", "skill"],
     "Workspace guidance document to read.",
@@ -278,6 +286,7 @@ def _register_server_components(server, svc: MCPService) -> None:
         version: ReleaseVersion = "Unreleased",
         include_confidence: Annotated[bool, "Whether to include confidence values in the returned draft."] = False,
         include_provenance: Annotated[bool, "Whether to include provenance and evidence details in the draft."] = False,
+        model_provider: OptionalModelProvider = None,
     ) -> dict[str, Any]:
         """Build a structured draft release document for a git ref range."""
 
@@ -288,6 +297,7 @@ def _register_server_components(server, svc: MCPService) -> None:
                 version=version,
                 include_confidence=include_confidence,
                 include_provenance=include_provenance,
+                model_provider=model_provider,
             )
         )
 
@@ -307,6 +317,7 @@ def _register_server_components(server, svc: MCPService) -> None:
         version: ReleaseVersion = "Unreleased",
         include_confidence: Annotated[bool, "Whether to include confidence values in the rendered preview."] = False,
         include_provenance: Annotated[bool, "Whether to include provenance and evidence details in the rendered preview."] = False,
+        model_provider: OptionalModelProvider = None,
     ) -> str:
         """Render GitHub-style release notes for a git ref range."""
 
@@ -317,6 +328,7 @@ def _register_server_components(server, svc: MCPService) -> None:
                 version=version,
                 include_confidence=include_confidence,
                 include_provenance=include_provenance,
+                model_provider=model_provider,
             )
         )
 
@@ -338,6 +350,7 @@ def _register_server_components(server, svc: MCPService) -> None:
         file: OptionalPath = None,
         include_confidence: Annotated[bool, "Whether to include confidence values while generating the draft."] = False,
         include_provenance: Annotated[bool, "Whether to include provenance while generating the draft."] = False,
+        model_provider: OptionalModelProvider = None,
     ) -> dict[str, Any]:
         """Generate and apply a draft release document to a configured target file."""
 
@@ -348,6 +361,7 @@ def _register_server_components(server, svc: MCPService) -> None:
                 version=version,
                 include_confidence=include_confidence,
                 include_provenance=include_provenance,
+                model_provider=model_provider,
             )
         )
         return svc.apply_draft_document(document=document, target_name=target, target_path=file)
@@ -378,6 +392,32 @@ def _register_server_components(server, svc: MCPService) -> None:
             status=status,
             summary=summary,
             reviewer=reviewer,
+        )
+
+    @server.tool(
+        annotations={
+            "title": "Request Model Input",
+            "idempotentHint": True,
+            "openWorldHint": True,
+        },
+        tags={"releasepilot", "review", "model"},
+        version=__version__,
+    )
+    def releasepilot_request_model_input(
+        base: GitRef,
+        item_id: ItemId,
+        head: GitRef = "HEAD",
+        reviewer: OptionalReviewer = None,
+        model_provider: OptionalModelProvider = None,
+    ) -> dict[str, Any]:
+        """Ask the configured model provider for a summary suggestion on one draft item."""
+
+        return svc.request_model_input(
+            base=base,
+            head=head,
+            item_id=item_id,
+            reviewer=reviewer,
+            model_provider=model_provider,
         )
 
     @server.tool(

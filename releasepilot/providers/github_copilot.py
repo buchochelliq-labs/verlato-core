@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from urllib import error, request
 
 from releasepilot.providers.base import ProviderRequest, ProviderResponse, ReleasePilotProvider
@@ -27,7 +28,7 @@ class GitHubCopilotProvider(ReleasePilotProvider):
             "RELEASEPILOT_GITHUB_MODELS_ENDPOINT",
             "https://models.inference.ai.azure.com/chat/completions",
         )
-        self.token = token or os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
+        self.token = token or os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN") or self._load_gh_cli_token()
         self.model = model or os.getenv("RELEASEPILOT_GITHUB_MODEL", "gpt-4o-mini")
         self.timeout_seconds = timeout_seconds
 
@@ -40,7 +41,7 @@ class GitHubCopilotProvider(ReleasePilotProvider):
     def _invoke(self, *, task: str, request_data: ProviderRequest) -> ProviderResponse:
         if not self.token:
             return ProviderResponse(
-                content="[github-copilot-unavailable] missing GITHUB_TOKEN/GH_TOKEN",
+                content="[github-copilot-unavailable] missing GITHUB_TOKEN/GH_TOKEN and no logged-in gh user",
                 confidence=0.0,
                 model=f"github-copilot:{self.model}",
             )
@@ -87,3 +88,20 @@ class GitHubCopilotProvider(ReleasePilotProvider):
             confidence = 0.0
 
         return ProviderResponse(content=content, confidence=confidence, model=f"github-copilot:{self.model}")
+
+    @staticmethod
+    def _load_gh_cli_token() -> str | None:
+        try:
+            result = subprocess.run(
+                ["gh", "auth", "token"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode != 0:
+            return None
+        token = result.stdout.strip()
+        return token or None

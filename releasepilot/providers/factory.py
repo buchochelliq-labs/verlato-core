@@ -9,12 +9,12 @@ from releasepilot.providers.mock import MockProvider
 from releasepilot.providers.stub import StubProvider
 
 
-def build_provider(config: ProviderConfig | None = None) -> ReleasePilotProvider:
+def build_provider(config: ProviderConfig | None = None, *, mode: str | None = None) -> ReleasePilotProvider:
     config = config or ProviderConfig()
-    mode = os.getenv("RELEASEPILOT_MODEL_PROVIDER", config.name).lower()
-    if mode == "mock":
+    selected_mode = (mode or os.getenv("RELEASEPILOT_MODEL_PROVIDER", config.name)).lower()
+    if selected_mode == "mock":
         return MockProvider()
-    if mode in {"github-copilot", "github", "copilot"}:
+    if selected_mode in {"github-copilot", "github", "copilot"}:
         return GitHubCopilotProvider(
             model=os.getenv("RELEASEPILOT_GITHUB_MODEL", config.model or ""),
             endpoint=os.getenv("RELEASEPILOT_GITHUB_MODELS_ENDPOINT", config.endpoint or ""),
