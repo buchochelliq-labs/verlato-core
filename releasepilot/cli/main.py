@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from dataclasses import asdict
 from datetime import date
 
@@ -16,6 +17,7 @@ from releasepilot.core.grouper import Grouper
 from releasepilot.core.models import ChangeItem
 from releasepilot.core.reconciler import Reconciler
 from releasepilot.github.adapter import GitHubApiAdapter
+from releasepilot.providers.base import ProviderRequest
 from releasepilot.providers.factory import build_provider
 from releasepilot.state.store import StateStore
 
@@ -64,7 +66,10 @@ def build_parser() -> argparse.ArgumentParser:
     draft_suggest.add_argument("--head", default="HEAD")
     draft_suggest.add_argument("--from-latest-tag", action="store_true")
     draft_suggest.add_argument("--from-latest-published", action="store_true")
-    draft_suggest.add_argument("--id", required=True)
+    draft_suggest.add_argument("--id")
+    draft_suggest.add_argument("--all-visible", action="store_true")
+    draft_suggest.add_argument("--preview", action="store_true")
+    draft_suggest.add_argument("--count", type=int)
     draft_suggest.add_argument("--reviewer")
     draft_suggest.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Override the configured model provider.")
     draft_prompt = draft_sub.add_parser("prompt")
@@ -221,6 +226,17 @@ def _resolve_max_model_items(configured: int) -> int:
         return configured
 
 
+def _resolve_suggestion_count(configured: int, requested: int | None = None) -> int:
+    raw = str(requested) if requested is not None else os.getenv("RELEASEPILOT_SUGGESTION_COUNT")
+    value = configured
+    if raw is not None:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = configured
+    return max(1, min(value, 5))
+
+
 def _merge_review_state(items: list[ChangeItem]) -> list[ChangeItem]:
     existing = _build_store().load().items
     by_checksum = {(item.checksum_version, item.checksum): item for item in existing}
@@ -328,6 +344,114 @@ def _request_draft_model_input(
         summary=candidate.content.summary,
         reviewer=reviewer,
     )
+
+
+def _preview_draft_model_suggestions(
+    *,
+    base: str,
+    head: str,
+    item_id: str | None,
+    all_visible: bool,
+    count: int | None,
+    model_provider: str | None = None,
+) -> dict:
+    if all_visible == bool(item_id):
+        raise SystemExit("Provide exactly one suggestion target: --id or --all-visible")
+
+    config = _load_config()
+    suggestion_count = _resolve_suggestion_count(config.suggestion_count, requested=count)
+    effective_model_provider = _resolve_suggest_model_provider(model_provider)
+    groups = _collect_groups(base, head)
+    baseline_classifier = Classifier()
+    provider = build_provider(config.provider, mode=effective_model_provider)
+    provider_classifier = Classifier(provider=provider)
+
+    targets = []
+    for group in groups:
+        baseline_item = baseline_classifier.classify(group, base, head)[0]
+        if item_id and baseline_item.id != item_id:
+            continue
+        targets.append((group, baseline_item))
+
+    if item_id and not targets:
+        raise SystemExit(f"Could not find draft item {item_id} for range {base}..{head}")
+
+    merged = _merge_review_state([item for _group, item in targets])
+    merged_by_id = {item.id: item for item in merged}
+    if all_visible:
+        visible_ids = {item.id for item in merged if not item.hidden}
+        targets = [(group, merged_by_id.get(item.id, item)) for group, item in targets if item.id in visible_ids]
+    else:
+        targets = [(group, merged_by_id.get(item.id, item)) for group, item in targets]
+
+    items = []
+    for group, baseline_item in targets:
+        diff = provider_classifier.diff_builder.build(group.pr.files if group.pr else group.files)
+        prompt = provider_classifier._build_summary_prompt(
+            title=baseline_item.content.title,
+            labels=[label.lower() for label in (group.pr.labels if group.pr else [])],
+            pr_body=group.pr.body if group.pr else "",
+            diff=diff,
+            commits=group.commits,
+            suggestion_count=suggestion_count,
+        )
+        evidence = {
+            "title": baseline_item.content.title,
+            "item_id": baseline_item.id,
+            "suggestion_count": suggestion_count,
+            "diff_summary": diff.summary,
+            "representative_hunks": diff.representative_hunks,
+        }
+        response = provider.summarize(ProviderRequest(task="suggest", prompt=prompt, evidence=evidence))
+        if provider_classifier._is_provider_error(response.content):
+            raise SystemExit(f"No model suggestions were produced for draft item {baseline_item.id}: {response.content}")
+        suggestions = _parse_suggestion_variants(response.content, suggestion_count, baseline_item, group)
+        if not suggestions:
+            raise SystemExit(f"No model suggestions were produced for draft item {baseline_item.id}.")
+        items.append(
+            {
+                "item_id": baseline_item.id,
+                "title": baseline_item.content.title,
+                "current_summary": baseline_item.edited_summary or baseline_item.content.summary,
+                "provider": response.model,
+                "suggestions": suggestions,
+            }
+        )
+
+    return {
+        "base_ref": base,
+        "head_ref": head,
+        "provider": effective_model_provider or "configured",
+        "count": suggestion_count,
+        "items": items,
+    }
+
+
+def _parse_suggestion_variants(content: str, count: int, item: ChangeItem, group: ChangeGroup) -> list[str]:
+    normalized = (content or "").strip()
+    if not normalized:
+        return []
+    lines = []
+    for raw in normalized.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        line = re.sub(r"^\s*(?:[-*]|\d+[\.)])\s*", "", line).strip()
+        line = line.strip("\"'")
+        if line:
+            lines.append(line)
+    if not lines:
+        lines = [normalized]
+    suggestions: list[str] = []
+    classifier = Classifier()
+    for line in lines:
+        if classifier._is_low_value_summary(line, item.content.title, group):
+            continue
+        if line not in suggestions:
+            suggestions.append(line)
+        if len(suggestions) >= count:
+            break
+    return suggestions
 
 
 def _build_draft_model_prompt(
@@ -528,6 +652,21 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.draft_command == "suggest":
             base, head = _resolve_range(args)
+            if args.preview:
+                suggestions = _preview_draft_model_suggestions(
+                    base=base,
+                    head=head,
+                    item_id=args.id,
+                    all_visible=args.all_visible,
+                    count=args.count,
+                    model_provider=args.model_provider,
+                )
+                print(json.dumps(suggestions, indent=2))
+                return 0
+            if args.all_visible:
+                raise SystemExit("--all-visible requires --preview")
+            if not args.id:
+                raise SystemExit("Provide --id for draft suggest")
             return _run_draft_suggest(
                 base=base,
                 head=head,

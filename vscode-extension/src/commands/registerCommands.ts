@@ -1,14 +1,20 @@
 import * as vscode from "vscode";
 
 import { ReleasePilotClient } from "../client/releasePilotClient";
-import { DraftRangeRequest } from "../client/types";
-import { DraftItemNode, ReleasePilotTreeProvider } from "../tree/releasePilotTreeProvider";
+import { DraftDocument, DraftItem, DraftRangeRequest, ModelSettings, RepositoryOverview } from "../client/types";
 import { PreviewPanel } from "../webview/previewPanel";
+
+interface ReleaseViewState {
+  refresh(document?: DraftDocument, overview?: RepositoryOverview, modelSettings?: ModelSettings): void;
+  getDocument(): DraftDocument | undefined;
+}
+
+type DraftItemNode = { item: DraftItem };
 
 export function registerCommands(
   context: vscode.ExtensionContext,
   client: ReleasePilotClient,
-  treeProvider: ReleasePilotTreeProvider,
+  treeProvider: ReleaseViewState,
   previewPanel: PreviewPanel,
 ): void {
   context.subscriptions.push(
@@ -80,6 +86,9 @@ export function registerCommands(
       }
       await updateItemReviewState(client, treeProvider, previewPanel, node, { summary });
     }),
+    vscode.commands.registerCommand("releasepilot.suggestItemSummary", async (node?: DraftItemNode) => {
+      await suggestItemSummary(client, treeProvider, previewPanel, node);
+    }),
     vscode.commands.registerCommand("releasepilot.requestModelInput", async (node?: DraftItemNode) => {
       await requestModelInput(client, treeProvider, previewPanel, node);
     }),
@@ -104,9 +113,55 @@ export function registerCommands(
   );
 }
 
+async function suggestItemSummary(
+  client: ReleasePilotClient,
+  treeProvider: ReleaseViewState,
+  previewPanel: PreviewPanel,
+  node: DraftItemNode | undefined,
+): Promise<void> {
+  if (!node) {
+    return;
+  }
+  const document = treeProvider.getDocument();
+  if (!document) {
+    return;
+  }
+  const request: DraftRangeRequest = {
+    base: document.base_ref,
+    head: document.head_ref,
+    version: document.version,
+  };
+  try {
+    const preview = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Suggesting descriptions for "${node.item.title}"`,
+        cancellable: false,
+      },
+      async () => client.previewDraftSuggestions(request, node.item.id),
+    );
+    const suggestions = preview.items[0]?.suggestions ?? [];
+    const picked = await vscode.window.showQuickPick(
+      suggestions.map((summary, index) => ({ label: summary, description: index === 0 ? "best" : undefined })),
+      {
+        title: "Choose ReleasePilot suggestion",
+        placeHolder: "Pick a generated description to apply",
+      },
+    );
+    if (!picked) {
+      return;
+    }
+    await updateItemReviewState(client, treeProvider, previewPanel, node, { summary: picked.label });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    vscode.window.showErrorMessage(message);
+    await vscode.commands.executeCommand("releasepilot.changeModel");
+  }
+}
+
 async function requestModelInput(
   client: ReleasePilotClient,
-  treeProvider: ReleasePilotTreeProvider,
+  treeProvider: ReleaseViewState,
   previewPanel: PreviewPanel,
   node: DraftItemNode | undefined,
 ): Promise<void> {
@@ -184,7 +239,7 @@ async function promptForRange(client: ReleasePilotClient): Promise<DraftRangeReq
 
 async function changeModelSettings(
   client: ReleasePilotClient,
-  treeProvider: ReleasePilotTreeProvider,
+  treeProvider: ReleaseViewState,
 ): Promise<void> {
   const current = client.getModelSettings();
   const provider = await vscode.window.showQuickPick(
@@ -229,11 +284,24 @@ async function changeModelSettings(
     return;
   }
 
+  const suggestionCountRaw = await vscode.window.showInputBox({
+    prompt: "Number of suggestions to generate per item (1-5)",
+    value: String(current.suggestionCount),
+    validateInput: (value) => {
+      const parsed = Number(value);
+      return Number.isInteger(parsed) && parsed >= 1 && parsed <= 5 ? undefined : "Enter an integer from 1 to 5.";
+    },
+  });
+  if (suggestionCountRaw === undefined) {
+    return;
+  }
+
   await client.updateModelSettings({
     provider,
     model,
     endpoint,
     maxModelItems: Number(maxRaw),
+    suggestionCount: Number(suggestionCountRaw),
   });
   await client.initialize();
   treeProvider.refresh(undefined, undefined, client.getModelSettings());
@@ -242,7 +310,7 @@ async function changeModelSettings(
 
 async function updateItemReviewState(
   client: ReleasePilotClient,
-  treeProvider: ReleasePilotTreeProvider,
+  treeProvider: ReleaseViewState,
   previewPanel: PreviewPanel,
   node: DraftItemNode | undefined,
   update: { status?: "needs-review" | "ready" | "accepted" | "hidden"; summary?: string },

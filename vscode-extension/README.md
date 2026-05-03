@@ -10,8 +10,8 @@ This extension is the first UI scaffold for ReleasePilot.
 
 ## Current scaffold
 
-- Activity Bar view for ReleasePilot items
-- Tree view for draft sections and items
+- Activity Bar view for ReleasePilot release control
+- Webview interface for draft sections, repository activity, and release actions
 - Repository activity view for branches, tags, recent commits, and release associations
 - CLI-backed client abstraction
 - Configurable AI provider/model controls with an LLM fanout guard
@@ -106,8 +106,10 @@ The extension looks for the ReleasePilot CLI in this order:
 
 1. The `releasepilot.cliPath` VS Code setting, if you set it.
 2. A workspace-local `.venv\Scripts\releasepilot.exe` on Windows, or `.venv/bin/releasepilot` on macOS/Linux.
-3. During extension development, the checked-out ReleasePilot repo beside `vscode-extension/`.
+3. The installed extension's `.venv`, or during extension development, the checked-out ReleasePilot repo beside `vscode-extension/`.
 4. `releasepilot` on VS Code's inherited `PATH`.
+
+On Windows, the repo-level `scripts\install_vscode_extension.ps1` script installs the backend into the ReleasePilot checkout's `.venv` and writes the matching `releasepilot.cliPath` VS Code user setting. That setting is needed when you open the extension from another repository that does not have ReleasePilot installed in its own `.venv`.
 
 If scanning fails with `spawn releasepilot ENOENT`, install the backend into the
 workspace virtual environment:

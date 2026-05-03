@@ -108,6 +108,23 @@ export interface ModelSettings {
   model: string;
   endpoint: string;
   maxModelItems: number;
+  suggestionCount: number;
+}
+
+export interface DraftSuggestionItem {
+  item_id: string;
+  title: string;
+  current_summary: string;
+  provider: string;
+  suggestions: string[];
+}
+
+export interface DraftSuggestionPreview {
+  base_ref: string;
+  head_ref: string;
+  provider: string;
+  count: number;
+  items: DraftSuggestionItem[];
 }
 
 export type ClientMode = "cli";

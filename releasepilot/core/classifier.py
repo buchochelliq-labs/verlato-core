@@ -222,7 +222,16 @@ class Classifier:
 
         return kind, area, audience, semver, summary, confidence
 
-    def _build_summary_prompt(self, *, title: str, labels: list[str], pr_body: str, diff, commits: list) -> str:
+    def _build_summary_prompt(
+        self,
+        *,
+        title: str,
+        labels: list[str],
+        pr_body: str,
+        diff,
+        commits: list,
+        suggestion_count: int = 1,
+    ) -> str:
         commit_lines = "; ".join(commit.message.splitlines()[0] for commit in commits)
         label_text = ", ".join(labels) if labels else "none"
         file_lines = "\n".join(
@@ -233,9 +242,16 @@ class Classifier:
             hunk_lines.append(f"{path}:")
             hunk_lines.extend(f"  {hunk}" for hunk in hunks)
         hunk_text = "\n".join(hunk_lines) or "none"
+        output_instruction = (
+            "Return exactly one sentence."
+            if suggestion_count <= 1
+            else f"Return exactly {suggestion_count} distinct options as a numbered list, one sentence per option."
+        )
         return (
-            f"Write one concise release-note sentence based primarily on the file diffs.\n"
-            f"Describe the user-facing behavior change when one is evident. Avoid generic filler and do not just repeat the title.\n"
+            f"Write concise ReleasePilot description suggestions based primarily on the file diffs.\n"
+            f"Lead with observable impact, not file names. Avoid generic filler and do not just repeat the title or commits.\n"
+            f"For external/user-facing changes, use polished release-note wording. For internal, docs, tests, or maintenance changes, use concise commit-like wording.\n"
+            f"{output_instruction}\n"
             f"Title: {title}\n"
             f"Labels: {label_text}\n"
             f"Commits: {commit_lines}\n"

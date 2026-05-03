@@ -11,6 +11,7 @@ import {
   DraftItem,
   DraftPromptPreview,
   DraftRangeRequest,
+  DraftSuggestionPreview,
   ModelSettings,
   RepositoryCommit,
   RepositoryOverview,
@@ -113,6 +114,22 @@ export class ReleasePilotClient implements vscode.Disposable {
     ]);
   }
 
+  async previewDraftSuggestions(request: DraftRangeRequest, itemId?: string): Promise<DraftSuggestionPreview> {
+    const settings = this.getModelSettings();
+    return this.runJsonCommand<DraftSuggestionPreview>([
+      "draft",
+      "suggest",
+      "--base",
+      request.base,
+      "--head",
+      request.head ?? "HEAD",
+      "--preview",
+      "--count",
+      String(settings.suggestionCount),
+      ...(itemId ? ["--id", itemId] : ["--all-visible"]),
+    ]);
+  }
+
   async getRepositoryOverview(): Promise<RepositoryOverview> {
     const [branchesRaw, tagsRaw, commitsRaw, state] = await Promise.all([
       this.runGitCommand(["branch", "--format=%(refname:short)%09%(objectname:short)"]),
@@ -139,6 +156,7 @@ export class ReleasePilotClient implements vscode.Disposable {
       model: config.get<string>("ollamaModel") || "gemma4:31b",
       endpoint: config.get<string>("ollamaEndpoint") || "http://127.0.0.1:11434/api/chat",
       maxModelItems: config.get<number>("maxModelItems") ?? 25,
+      suggestionCount: config.get<number>("suggestionCount") ?? 3,
     };
   }
 
@@ -155,6 +173,9 @@ export class ReleasePilotClient implements vscode.Disposable {
     }
     if (settings.maxModelItems !== undefined) {
       await config.update("maxModelItems", settings.maxModelItems, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.suggestionCount !== undefined) {
+      await config.update("suggestionCount", settings.suggestionCount, vscode.ConfigurationTarget.Workspace);
     }
   }
 
@@ -243,8 +264,9 @@ export class ReleasePilotClient implements vscode.Disposable {
     }
 
     const workspaceCli = getVenvExecutable(this.workspaceFolder.uri.fsPath);
+    const extensionCli = getVenvExecutable(this.extensionPath);
     const extensionCheckoutCli = getVenvExecutable(path.dirname(this.extensionPath));
-    const candidates = [workspaceCli, extensionCheckoutCli];
+    const candidates = [workspaceCli, extensionCli, extensionCheckoutCli];
     const executable = candidates.find((candidate) => fs.existsSync(candidate)) ?? configuredPath;
 
     this.lastResolution = { executable, searched: [...candidates, configuredPath] };
@@ -263,6 +285,7 @@ export class ReleasePilotClient implements vscode.Disposable {
     env.RELEASEPILOT_OLLAMA_MODEL = settings.model;
     env.RELEASEPILOT_OLLAMA_ENDPOINT = settings.endpoint;
     env.RELEASEPILOT_MODEL_MAX_ITEMS = String(settings.maxModelItems);
+    env.RELEASEPILOT_SUGGESTION_COUNT = String(settings.suggestionCount);
     if (provider === "configured") {
       return this.withGithubAuthToken(env, args, provider);
     }
@@ -387,5 +410,5 @@ function mapReleaseByCommit(items: StateItem[]): Map<string, string> {
 
 function formatModelSettings(settings: ModelSettings): string {
   const model = settings.provider === "ollama" ? `/${settings.model}` : "";
-  return `${settings.provider}${model}; fanout guard: ${settings.maxModelItems}`;
+  return `${settings.provider}${model}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}`;
 }

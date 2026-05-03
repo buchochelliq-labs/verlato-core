@@ -29,6 +29,7 @@ class ProviderConfig:
 class ReleasePilotConfig:
     state_path: str = ".releasepilot_state.json"
     provider: ProviderConfig = field(default_factory=ProviderConfig)
+    suggestion_count: int = 3
     targets: dict[str, OutputTargetConfig] = field(
         default_factory=lambda: {
             "changelog": OutputTargetConfig(path="CHANGELOG.md", format="changelog"),
@@ -51,6 +52,8 @@ def load_config(cwd: str | None = None) -> ReleasePilotConfig:
     config = ReleasePilotConfig(raw=raw)
     if raw.get("state_path"):
         config.state_path = str(raw["state_path"])
+    if raw.get("suggestion_count") is not None:
+        config.suggestion_count = int(raw["suggestion_count"])
 
     provider = raw.get("provider")
     if isinstance(provider, dict):

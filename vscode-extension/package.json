@@ -20,12 +20,14 @@
     "onCommand:releasepilot.scanRepository",
     "onCommand:releasepilot.previewReleaseNotes",
     "onCommand:releasepilot.refreshRepository",
+    "onCommand:releasepilot.refreshItems",
     "onCommand:releasepilot.applyToChangelog",
     "onCommand:releasepilot.applyToReleaseFile",
     "onCommand:releasepilot.markItemReady",
     "onCommand:releasepilot.markItemNeedsReview",
     "onCommand:releasepilot.hideItem",
     "onCommand:releasepilot.editItemSummary",
+    "onCommand:releasepilot.suggestItemSummary",
     "onCommand:releasepilot.requestModelInput",
     "onCommand:releasepilot.showServiceInfo",
     "onCommand:releasepilot.changeModel",
@@ -48,7 +50,8 @@
       "releasepilot": [
         {
           "id": "releasepilot.items",
-          "name": "Release Notes"
+          "name": "Release Control",
+          "type": "webview"
         }
       ]
     },
@@ -92,6 +95,10 @@
       {
         "command": "releasepilot.editItemSummary",
         "title": "ReleasePilot: Edit Item Summary"
+      },
+      {
+        "command": "releasepilot.suggestItemSummary",
+        "title": "ReleasePilot: Suggest Item Summary"
       },
       {
         "command": "releasepilot.requestModelInput",
@@ -153,6 +160,13 @@
           "default": 25,
           "minimum": -1,
           "description": "Maximum grouped changes in a scan before ReleasePilot disables LLM calls to avoid fanout. Use -1 to disable the guard."
+        },
+        "releasepilot.suggestionCount": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 5,
+          "description": "Number of AI description suggestions to generate for each release item."
         }
       }
     },
@@ -196,6 +210,11 @@
           "group": "navigation"
         },
         {
+          "command": "releasepilot.suggestItemSummary",
+          "when": "view == releasepilot.items && viewItem == releasepilot.item",
+          "group": "inline"
+        },
+        {
           "command": "releasepilot.requestModelInput",
           "when": "view == releasepilot.items && viewItem == releasepilot.item",
           "group": "navigation"
@@ -220,7 +239,8 @@
   },
   "scripts": {
     "build": "tsc -p ./",
-    "watch": "tsc -w -p ./"
+    "watch": "tsc -w -p ./",
+    "test": "npm run build && node --test test/*.test.js"
   },
   "devDependencies": {
     "@types/node": "^20.16.0",

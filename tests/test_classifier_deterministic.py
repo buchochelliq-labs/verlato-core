@@ -95,9 +95,37 @@ def test_provider_summary_prompt_includes_diff_hunks_and_files():
     item = Classifier(provider=provider).classify(group, base_ref="v1.0.0", head_ref="main")[0]
 
     assert item.content.summary == "Search now ranks matching results"
+    assert "Lead with observable impact, not file names." in provider.summary_request.prompt
+    assert "use polished release-note wording" in provider.summary_request.prompt
     assert "src/search.py" in provider.summary_request.prompt
     assert "+return ranked_results" in provider.summary_request.prompt
     assert provider.summary_request.evidence["representative_hunks"]["src/search.py"]
+
+
+def test_provider_summary_prompt_supports_configurable_variants():
+    group = ChangeGroup(
+        pr=PullRequest(
+            number=8,
+            title="Improve search",
+            labels=["internal"],
+            files=[ChangedFile(path="tests/test_search.py", status="modified", patch="+assert ranked_results")],
+        ),
+        commits=[Commit(sha="abc", message="test: update search coverage")],
+    )
+    classifier = Classifier()
+    diff = classifier.diff_builder.build(group.pr.files)
+
+    prompt = classifier._build_summary_prompt(
+        title="Improve search",
+        labels=["internal"],
+        pr_body="",
+        diff=diff,
+        commits=group.commits,
+        suggestion_count=3,
+    )
+
+    assert "Return exactly 3 distinct options as a numbered list" in prompt
+    assert "internal, docs, tests, or maintenance changes, use concise commit-like wording" in prompt
 
 
 def test_classifier_rejects_low_value_provider_summary():

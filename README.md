@@ -197,16 +197,53 @@ MCP setup:
 
 VS Code extension local testing:
 
+Install into VS Code from this checkout:
+
+```powershell
+.\scripts\install_vscode_extension.ps1
+```
+
+The script installs the Python backend in editable mode, installs the extension dependencies, builds the TypeScript, packages a local VSIX, and installs it into VS Code with `--force`. It uses `code.cmd` when available, which is more reliable on Windows than accidentally resolving `code` to `Code.exe`.
+
+Useful script options:
+
+```powershell
+.\scripts\install_vscode_extension.ps1 -SkipPythonInstall
+.\scripts\install_vscode_extension.ps1 -SkipNpmInstall
+.\scripts\install_vscode_extension.ps1 -SkipPackage
+.\scripts\install_vscode_extension.ps1 -PreRelease
+```
+
+Manual install path:
+
 1. Install the Python package for the repo:
    `python -m pip install -e .`
 2. Install the extension dependencies:
    `cd vscode-extension && npm install`
 3. Build the extension:
    `npm run build`
-4. Open the repo root in VS Code and press `F5`.
+4. Package the extension:
+   `npx @vscode/vsce package`
+5. Install the generated VSIX:
+   `code --install-extension .\vscode-extension\releasepilot-vscode-0.0.1.vsix --force`
+
+Development host path:
+
+1. Follow steps 1-3 above.
+2. Open the repo root in VS Code and press `F5`.
    The checked-in [.vscode/launch.json](.vscode/launch.json) starts an Extension Development Host using `vscode-extension/`.
-5. In the Extension Development Host, open the `ReleasePilot` view and run `ReleasePilot: Scan Repository`.
-6. To exercise the MCP server in the same workspace, ensure `fastmcp>=3` is installed and keep [.vscode/mcp.json](.vscode/mcp.json) enabled.
+3. In the Extension Development Host, open the `ReleasePilot` activity bar view.
+
+After installation, open a repository and use the `ReleasePilot` activity bar view. The extension expects the `releasepilot` CLI to be available through one of these paths:
+
+1. The `releasepilot.cliPath` VS Code setting.
+2. A workspace-local `.venv\Scripts\releasepilot.exe` on Windows, or `.venv/bin/releasepilot` on macOS/Linux.
+3. The installed extension's `.venv`, or the checked-out repo's `.venv` when developing this extension.
+4. `releasepilot` on VS Code's inherited `PATH`.
+
+On Windows, `scripts\install_vscode_extension.ps1` installs the backend into this repo's `.venv` and writes the matching `releasepilot.cliPath` VS Code user setting so the extension can run from other repositories.
+
+To exercise the MCP server in the same workspace, ensure `fastmcp>=3` is installed and keep [.vscode/mcp.json](.vscode/mcp.json) enabled.
 
 ## Testing
 

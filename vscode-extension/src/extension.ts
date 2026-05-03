@@ -2,8 +2,8 @@ import * as vscode from "vscode";
 
 import { registerCommands } from "./commands/registerCommands";
 import { ReleasePilotClient } from "./client/releasePilotClient";
-import { ReleasePilotTreeProvider } from "./tree/releasePilotTreeProvider";
 import { PreviewPanel } from "./webview/previewPanel";
+import { ReleaseControlViewProvider } from "./webview/releaseControlView";
 
 export function activate(context: vscode.ExtensionContext): void {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -13,8 +13,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const output = vscode.window.createOutputChannel("ReleasePilot");
   const client = new ReleasePilotClient(workspaceFolder, context.extensionPath, output);
-  const treeProvider = new ReleasePilotTreeProvider();
   const previewPanel = new PreviewPanel();
+  const releaseControlView = new ReleaseControlViewProvider(client, previewPanel);
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBarItem.command = "releasepilot.showServiceInfo";
   statusBarItem.text = `ReleasePilot: ${client.getModelSettings().provider}`;
@@ -25,7 +25,7 @@ export function activate(context: vscode.ExtensionContext): void {
     output,
     client,
     statusBarItem,
-    vscode.window.registerTreeDataProvider("releasepilot.items", treeProvider),
+    vscode.window.registerWebviewViewProvider("releasepilot.items", releaseControlView),
   );
 
   client.onDidChangeStatus((status) => {
@@ -33,8 +33,8 @@ export function activate(context: vscode.ExtensionContext): void {
     statusBarItem.tooltip = status.detail;
   });
 
-  registerCommands(context, client, treeProvider, previewPanel);
-  treeProvider.refresh(undefined, undefined, client.getModelSettings());
+  registerCommands(context, client, releaseControlView, previewPanel);
+  releaseControlView.refresh(undefined, undefined, client.getModelSettings());
   void client.initialize();
 }
 
