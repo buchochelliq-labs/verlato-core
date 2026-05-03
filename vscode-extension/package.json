@@ -147,7 +147,7 @@
         },
         "releasepilot.ollamaModel": {
           "type": "string",
-          "default": "gemma4:31b",
+          "default": "gemma4:latest",
           "description": "Ollama model used when ReleasePilot runs with the Ollama provider. Defaults to Google's latest Gemma family."
         },
         "releasepilot.ollamaEndpoint": {

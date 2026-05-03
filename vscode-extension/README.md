@@ -56,11 +56,11 @@ npm run build
 5. Open the Run and Debug view, select `ReleasePilot Extension`, and start debugging.
 6. In the Extension Development Host window, open the `ReleasePilot` activity bar view and run `ReleasePilot: Scan Repository`.
 
-The default provider is local Ollama with `gemma4:31b`. Change it from `ReleasePilot: Change AI Model` or with these workspace settings:
+The default provider is local Ollama with `gemma4:latest`. Change it from `ReleasePilot: Change AI Model` or with these workspace settings:
 
 ```json
 "releasepilot.modelProvider": "ollama",
-"releasepilot.ollamaModel": "gemma4:31b",
+"releasepilot.ollamaModel": "gemma4:latest",
 "releasepilot.ollamaEndpoint": "http://127.0.0.1:11434/api/chat",
 "releasepilot.maxModelItems": 25
 ```

@@ -20,7 +20,7 @@ class OutputTargetConfig:
 @dataclass
 class ProviderConfig:
     name: str = "ollama"
-    model: str | None = "gemma4:31b"
+    model: str | None = "gemma4:latest"
     endpoint: str | None = None
     max_items_per_scan: int = 25
 

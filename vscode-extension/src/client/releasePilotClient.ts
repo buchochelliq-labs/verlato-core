@@ -153,7 +153,7 @@ export class ReleasePilotClient implements vscode.Disposable {
     const provider = config.get<string>("modelProvider") || "ollama";
     return {
       provider,
-      model: config.get<string>("ollamaModel") || "gemma4:31b",
+      model: config.get<string>("ollamaModel") || "gemma4:latest",
       endpoint: config.get<string>("ollamaEndpoint") || "http://127.0.0.1:11434/api/chat",
       maxModelItems: config.get<number>("maxModelItems") ?? 25,
       suggestionCount: config.get<number>("suggestionCount") ?? 3,

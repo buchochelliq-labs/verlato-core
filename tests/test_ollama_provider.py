@@ -1,4 +1,5 @@
 import json
+from http import client
 from urllib import error
 
 from releasepilot.providers.base import ProviderRequest
@@ -46,6 +47,43 @@ def test_ollama_provider_sends_local_chat_request(monkeypatch):
     assert captured["timeout"] == 5.0
     assert captured["body"]["model"] == DEFAULT_OLLAMA_MODEL
     assert captured["body"]["stream"] is False
+
+
+def test_ollama_provider_falls_back_to_generate_when_chat_disconnects(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        @staticmethod
+        def read():
+            return json.dumps({"response": "Generated summary"}).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        captured.setdefault("urls", []).append(req.full_url)
+        captured["timeout"] = timeout
+        if req.full_url.endswith("/api/chat"):
+            raise client.RemoteDisconnected("remote end closed connection without response")
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr("releasepilot.providers.ollama.request.urlopen", fake_urlopen)
+
+    provider = OllamaProvider()
+    response = provider.summarize(ProviderRequest(task="summarize", prompt="Summarize this change"))
+
+    assert response.content == "Generated summary"
+    assert captured["urls"] == [
+        DEFAULT_OLLAMA_ENDPOINT,
+        "http://127.0.0.1:11434/api/generate",
+    ]
+    assert captured["body"]["model"] == DEFAULT_OLLAMA_MODEL
+    assert captured["body"]["stream"] is False
+    assert captured["body"]["prompt"] == "Summarize this change"
 
 
 def test_ollama_provider_reports_unavailable_server(monkeypatch):

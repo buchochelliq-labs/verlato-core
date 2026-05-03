@@ -258,8 +258,8 @@ async function changeModelSettings(
   if (provider === "ollama") {
     const nextModel = await vscode.window.showInputBox({
       prompt: "Ollama model",
-      value: current.model || "gemma4:31b",
-      placeHolder: "gemma4:31b",
+      value: current.model || "gemma4:latest",
+      placeHolder: "gemma4:latest",
     });
     if (!nextModel) {
       return;

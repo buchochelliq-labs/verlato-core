@@ -6,7 +6,7 @@
   },
   "provider": {
     "name": "ollama",
-    "model": "gemma4:31b",
+    "model": "gemma4:latest",
     "endpoint": "http://127.0.0.1:11434/api/chat",
     "max_items_per_scan": 25
   },

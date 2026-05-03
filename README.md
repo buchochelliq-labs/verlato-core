@@ -126,7 +126,7 @@ Environment variables:
 - `RELEASEPILOT_PR_ADAPTER`: PR mapping mode: `standard-git` (default), `github`, or `none`.
 - `RELEASEPILOT_GITHUB_REPO`: repository slug (`owner/repo`) for GitHub API enrichment.
 - `RELEASEPILOT_MODEL_PROVIDER`: model provider mode: `ollama` (default), `stub`, `mock`, or `github-copilot`.
-- `RELEASEPILOT_OLLAMA_MODEL`: model name when using `ollama` (default `gemma4:31b`).
+- `RELEASEPILOT_OLLAMA_MODEL`: model name when using `ollama` (default `gemma4:latest`).
 - `RELEASEPILOT_OLLAMA_ENDPOINT`: override the local Ollama chat endpoint (default `http://127.0.0.1:11434/api/chat`).
 - `RELEASEPILOT_MODEL_MAX_ITEMS`: maximum grouped changes before ReleasePilot disables provider calls for that scan (default `25`; use `-1` to disable the fanout guard).
 - `RELEASEPILOT_GITHUB_MODEL`: model name when using `github-copilot` (default `openai/gpt-4o-mini`; legacy values such as `gpt-4o-mini` are normalized).
@@ -146,7 +146,7 @@ Provider defaults can also be set in `releasepilot.json`; environment variables 
 {
   "provider": {
     "name": "ollama",
-    "model": "gemma4:31b",
+    "model": "gemma4:latest",
     "endpoint": "http://127.0.0.1:11434/api/chat",
     "max_items_per_scan": 25
   }
