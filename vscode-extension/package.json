@@ -19,6 +19,7 @@
     "onView:releasepilot.items",
     "onCommand:releasepilot.scanRepository",
     "onCommand:releasepilot.previewReleaseNotes",
+    "onCommand:releasepilot.refreshRepository",
     "onCommand:releasepilot.applyToChangelog",
     "onCommand:releasepilot.applyToReleaseFile",
     "onCommand:releasepilot.markItemReady",
@@ -27,6 +28,7 @@
     "onCommand:releasepilot.editItemSummary",
     "onCommand:releasepilot.requestModelInput",
     "onCommand:releasepilot.showServiceInfo",
+    "onCommand:releasepilot.changeModel",
     "onCommand:releasepilot.acceptItem",
     "onCommand:releasepilot.unhideItem",
     "onCommand:releasepilot.resetItemSummary"
@@ -60,6 +62,10 @@
         "title": "ReleasePilot: Preview Release Notes"
       },
       {
+        "command": "releasepilot.refreshRepository",
+        "title": "ReleasePilot: Refresh Repository Activity"
+      },
+      {
         "command": "releasepilot.applyToChangelog",
         "title": "ReleasePilot: Apply to CHANGELOG"
       },
@@ -89,11 +95,15 @@
       },
       {
         "command": "releasepilot.requestModelInput",
-        "title": "ReleasePilot: Ask Model for Item Summary"
+        "title": "ReleasePilot: Preview Model Prompt"
       },
       {
         "command": "releasepilot.showServiceInfo",
         "title": "ReleasePilot: Show Service Info"
+      },
+      {
+        "command": "releasepilot.changeModel",
+        "title": "ReleasePilot: Change AI Model"
       },
       {
         "command": "releasepilot.acceptItem",
@@ -118,14 +128,31 @@
         },
         "releasepilot.modelProvider": {
           "type": "string",
-          "default": "configured",
+          "default": "ollama",
           "enum": [
             "configured",
             "stub",
             "mock",
+            "ollama",
             "github-copilot"
           ],
           "description": "Model provider override for LLM-assisted summaries and classifications. Use configured to honor releasepilot.json or environment variables."
+        },
+        "releasepilot.ollamaModel": {
+          "type": "string",
+          "default": "gemma4:31b",
+          "description": "Ollama model used when ReleasePilot runs with the Ollama provider. Defaults to Google's latest Gemma family."
+        },
+        "releasepilot.ollamaEndpoint": {
+          "type": "string",
+          "default": "http://127.0.0.1:11434/api/chat",
+          "description": "Ollama chat endpoint used by ReleasePilot."
+        },
+        "releasepilot.maxModelItems": {
+          "type": "number",
+          "default": 25,
+          "minimum": -1,
+          "description": "Maximum grouped changes in a scan before ReleasePilot disables LLM calls to avoid fanout. Use -1 to disable the guard."
         }
       }
     },
@@ -133,6 +160,11 @@
       "view/title": [
         {
           "command": "releasepilot.scanRepository",
+          "when": "view == releasepilot.items",
+          "group": "navigation"
+        },
+        {
+          "command": "releasepilot.refreshRepository",
           "when": "view == releasepilot.items",
           "group": "navigation"
         },

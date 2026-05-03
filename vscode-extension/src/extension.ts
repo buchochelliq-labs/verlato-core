@@ -17,8 +17,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const previewPanel = new PreviewPanel();
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBarItem.command = "releasepilot.showServiceInfo";
-  statusBarItem.text = "ReleasePilot: CLI";
-  statusBarItem.tooltip = "ReleasePilot extension mode";
+  statusBarItem.text = `ReleasePilot: ${client.getModelSettings().provider}`;
+  statusBarItem.tooltip = "ReleasePilot model and service information";
   statusBarItem.show();
 
   context.subscriptions.push(
@@ -34,6 +34,7 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   registerCommands(context, client, treeProvider, previewPanel);
+  treeProvider.refresh(undefined, undefined, client.getModelSettings());
   void client.initialize();
 }
 

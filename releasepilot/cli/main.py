@@ -11,6 +11,7 @@ from releasepilot.core.adapters import NullPullRequestAdapter, PullRequestAdapte
 from releasepilot.core.classifier import Classifier
 from releasepilot.core.collector import Collector
 from releasepilot.core.drafts import DraftDocument, DraftService
+from releasepilot.core.models import ChangeGroup
 from releasepilot.core.grouper import Grouper
 from releasepilot.core.models import ChangeItem
 from releasepilot.core.reconciler import Reconciler
@@ -18,7 +19,7 @@ from releasepilot.github.adapter import GitHubApiAdapter
 from releasepilot.providers.factory import build_provider
 from releasepilot.state.store import StateStore
 
-MODEL_PROVIDER_CHOICES = ["stub", "mock", "github-copilot"]
+MODEL_PROVIDER_CHOICES = ["stub", "mock", "ollama", "github-copilot"]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -66,6 +67,13 @@ def build_parser() -> argparse.ArgumentParser:
     draft_suggest.add_argument("--id", required=True)
     draft_suggest.add_argument("--reviewer")
     draft_suggest.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Override the configured model provider.")
+    draft_prompt = draft_sub.add_parser("prompt")
+    draft_prompt.add_argument("--base")
+    draft_prompt.add_argument("--head", default="HEAD")
+    draft_prompt.add_argument("--from-latest-tag", action="store_true")
+    draft_prompt.add_argument("--from-latest-published", action="store_true")
+    draft_prompt.add_argument("--id", required=True)
+    draft_prompt.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Optional provider hint for the previewed prompt.")
 
     render = sub.add_parser("render")
     render.add_argument("--format", choices=["github-release", "changelog"], required=True)
@@ -108,14 +116,31 @@ def run_scan(base: str, head: str, persist: bool, model_provider: str | None = N
 
 def detect_change_items(base: str, head: str, model_provider: str | None = None) -> list[ChangeItem]:
     config = _load_config()
+    groups = _collect_groups(base, head)
+    provider = build_provider(config.provider, mode=model_provider)
+    max_model_items = _resolve_max_model_items(config.provider.max_items_per_scan)
+    if max_model_items >= 0 and len(groups) > max_model_items:
+        provider = None
+    classifier = Classifier(provider=provider)
+    return [item for group in groups for item in classifier.classify(group, base, head)]
+
+
+def _collect_groups(base: str, head: str):
     collector = Collector(pr_adapter=_build_adapter())
     grouper = Grouper()
-    classifier = Classifier(provider=build_provider(config.provider, mode=model_provider))
-
     commits = collector.collect_commits(base, head)
     prs_by_commit = collector.map_commits_to_prs(commits)
-    groups = grouper.group(commits, prs_by_commit)
-    return [item for group in groups for item in classifier.classify(group, base, head)]
+    return grouper.group(commits, prs_by_commit)
+
+
+def _find_group_for_item_id(base: str, head: str, item_id: str) -> ChangeGroup:
+    groups = _collect_groups(base, head)
+    baseline_classifier = Classifier()
+    for group in groups:
+        baseline_item = baseline_classifier.classify(group, base, head)[0]
+        if baseline_item.id == item_id:
+            return group
+    raise SystemExit(f"Could not find draft item {item_id} for range {base}..{head}")
 
 
 def scan_change_items(base: str, head: str, persist: bool, model_provider: str | None = None) -> list[ChangeItem]:
@@ -148,8 +173,8 @@ def _resolve_suggest_model_provider(model_provider: str | None) -> str | None:
     config = _load_config()
     configured_name = os.getenv("RELEASEPILOT_MODEL_PROVIDER", config.provider.name).strip().lower()
     if configured_name and configured_name != "stub":
-        return None
-    return "github-copilot"
+        return configured_name
+    return "ollama"
 
 
 def build_draft_document(
@@ -184,6 +209,16 @@ def _latest_published_version() -> str | None:
 
 def _load_config() -> ReleasePilotConfig:
     return load_config()
+
+
+def _resolve_max_model_items(configured: int) -> int:
+    raw = os.getenv("RELEASEPILOT_MODEL_MAX_ITEMS")
+    if raw is None:
+        return configured
+    try:
+        return int(raw)
+    except ValueError:
+        return configured
 
 
 def _merge_review_state(items: list[ChangeItem]) -> list[ChangeItem]:
@@ -234,26 +269,7 @@ def _update_draft_review(
         ),
         None,
     )
-    if match is None:
-        candidate.lineage_releases = list(state.area_release_lineage.get(candidate.classification.area, []))
-        state.items.append(candidate)
-        match = candidate
-
-    if summary is not None:
-        normalized_summary = summary.strip()
-        match.edited_summary = normalized_summary or None
-        if normalized_summary and status is None and match.status != "hidden":
-            match.status = "edited"
-    if status is not None:
-        match.status = status
-        match.hidden = status == "hidden"
-    if reviewer is not None:
-        match.reviewed_by = reviewer.strip() or None
-    if status is not None or summary is not None or reviewer is not None:
-        match.reviewed_at = date.today().isoformat()
-
-    store.save(state)
-    return match
+    return _persist_review_update(candidate=match or candidate, status=status, summary=summary, reviewer=reviewer)
 
 
 def _run_draft_review(
@@ -288,10 +304,11 @@ def _request_draft_model_input(
     model_provider: str | None = None,
 ) -> ChangeItem:
     effective_model_provider = _resolve_suggest_model_provider(model_provider)
-    candidates = _detect_change_items_with_provider(base, head, effective_model_provider)
-    candidate = next((item for item in candidates if item.id == item_id), None)
-    if not candidate:
-        raise SystemExit(f"Could not find draft item {item_id} for range {base}..{head}")
+    target_group = _find_group_for_item_id(base, head, item_id)
+
+    config = _load_config()
+    provider_classifier = Classifier(provider=build_provider(config.provider, mode=effective_model_provider))
+    candidate = provider_classifier.classify(target_group, base, head, summary_only=True)[0]
 
     if not any(signal.startswith("provider-summary:") for signal in candidate.evidence.commit_signals):
         provider_error = next(
@@ -302,18 +319,81 @@ def _request_draft_model_input(
             raise SystemExit(f"No model summary was produced for draft item {item_id}: {provider_error}")
         raise SystemExit(
             f"No model summary was produced for draft item {item_id}. "
-            "Configure a model provider or pass --model-provider github-copilot."
+            "Configure a local model provider or pass --model-provider ollama."
         )
 
-    return _update_draft_review(
-        base=base,
-        head=head,
-        item_id=item_id,
+    return _persist_review_update(
+        candidate=candidate,
         status="edited",
         summary=candidate.content.summary,
         reviewer=reviewer,
-        model_provider=effective_model_provider,
     )
+
+
+def _build_draft_model_prompt(
+    *,
+    base: str,
+    head: str,
+    item_id: str,
+    model_provider: str | None = None,
+) -> dict[str, str]:
+    effective_model_provider = _resolve_suggest_model_provider(model_provider)
+    target_group = _find_group_for_item_id(base, head, item_id)
+    classifier = Classifier()
+    draft_item = classifier.classify(target_group, base, head)[0]
+    diff = classifier.diff_builder.build(target_group.pr.files if target_group.pr else target_group.files)
+    prompt = classifier._build_summary_prompt(
+        title=draft_item.content.title,
+        labels=[label.lower() for label in (target_group.pr.labels if target_group.pr else [])],
+        pr_body=target_group.pr.body if target_group.pr else "",
+        diff=diff,
+        commits=target_group.commits,
+    )
+    return {
+        "item_id": draft_item.id,
+        "title": draft_item.content.title,
+        "provider": effective_model_provider or "configured",
+        "prompt": prompt,
+    }
+
+
+def _persist_review_update(
+    *,
+    candidate: ChangeItem,
+    status: str | None,
+    summary: str | None,
+    reviewer: str | None,
+) -> ChangeItem:
+    store = _build_store()
+    state = store.load()
+    match = next(
+        (
+            item
+            for item in state.items
+            if (item.checksum_version, item.checksum) == (candidate.checksum_version, candidate.checksum) or item.id == candidate.id
+        ),
+        None,
+    )
+    if match is None:
+        candidate.lineage_releases = list(state.area_release_lineage.get(candidate.classification.area, []))
+        state.items.append(candidate)
+        match = candidate
+
+    if summary is not None:
+        normalized_summary = summary.strip()
+        match.edited_summary = normalized_summary or None
+        if normalized_summary and status is None and match.status != "hidden":
+            match.status = "edited"
+    if status is not None:
+        match.status = status
+        match.hidden = status == "hidden"
+    if reviewer is not None:
+        match.reviewed_by = reviewer.strip() or None
+    if status is not None or summary is not None or reviewer is not None:
+        match.reviewed_at = date.today().isoformat()
+
+    store.save(state)
+    return match
 
 
 def _run_draft_suggest(
@@ -332,6 +412,23 @@ def _run_draft_suggest(
         model_provider=model_provider,
     )
     print(json.dumps(updated.to_dict(), indent=2))
+    return 0
+
+
+def _run_draft_prompt(
+    *,
+    base: str,
+    head: str,
+    item_id: str,
+    model_provider: str | None = None,
+) -> int:
+    prompt_preview = _build_draft_model_prompt(
+        base=base,
+        head=head,
+        item_id=item_id,
+        model_provider=model_provider,
+    )
+    print(json.dumps(prompt_preview, indent=2))
     return 0
 
 
@@ -436,6 +533,14 @@ def main(argv: list[str] | None = None) -> int:
                 head=head,
                 item_id=args.id,
                 reviewer=args.reviewer,
+                model_provider=args.model_provider,
+            )
+        if args.draft_command == "prompt":
+            base, head = _resolve_range(args)
+            return _run_draft_prompt(
+                base=base,
+                head=head,
+                item_id=args.id,
                 model_provider=args.model_provider,
             )
         base, head = _resolve_range(args)

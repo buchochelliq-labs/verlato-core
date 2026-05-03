@@ -16,7 +16,7 @@ It is **PR-first by default**: the primary analysis unit is a pull request (or g
   - GitHub release notes
   - CHANGELOG-style entries
 - Persist state in JSON.
-- Provider abstraction with stub, mock, and GitHub Copilot-backed model support for summary enrichment and low-confidence classification assists.
+- Provider abstraction with stub, mock, local Ollama-backed model support, and an optional GitHub-backed provider for summary enrichment and low-confidence classification assists.
 - Versioned checksums and area-level release lineage provenance in persisted state.
 - MCP tool server for agent-facing scan, draft, review, and apply operations.
 
@@ -85,7 +85,8 @@ releasepilot scan --from-latest-published --head <ref>
 releasepilot generate --base <ref> --head <ref>
 releasepilot reconcile --base <ref> --head <ref>
 releasepilot draft preview --base <ref> --head <ref> --version v1.2.0
-releasepilot draft preview --base <ref> --head <ref> --version v1.2.0 --model-provider github-copilot
+releasepilot draft preview --base <ref> --head <ref> --version v1.2.0 --model-provider ollama
+releasepilot draft prompt --base <ref> --head <ref> --id <item-id>
 releasepilot draft json --base <ref> --head <ref> --version v1.2.0
 releasepilot draft apply --base <ref> --head <ref> --target changelog --version v1.2.0
 releasepilot draft review --base <ref> --id <item-id> --status ready --reviewer alice
@@ -103,6 +104,7 @@ releasepilot state mark-published --version v1.2.0 --all-unpublished
 - `render`: renders markdown from persisted items.
 - `draft preview`: renders release notes directly from the requested range.
 - `draft json`: returns a structured draft document for editor and automation clients.
+- `draft prompt`: builds the exact summary prompt for one draft item without sending it to any model.
 - `draft apply`: updates a configured or explicit release-note target file.
 - `draft review`: persists review metadata such as status, hidden state, reviewer, and edited summary for a draft item.
 - `serve`: starts the FastMCP stdio server.
@@ -123,8 +125,11 @@ Environment variables:
 - `RELEASEPILOT_CONFIG_PATH`: overrides the repo config file path.
 - `RELEASEPILOT_PR_ADAPTER`: PR mapping mode: `standard-git` (default), `github`, or `none`.
 - `RELEASEPILOT_GITHUB_REPO`: repository slug (`owner/repo`) for GitHub API enrichment.
-- `RELEASEPILOT_MODEL_PROVIDER`: model provider mode: `stub` (default), `mock`, or `github-copilot`.
-- `RELEASEPILOT_GITHUB_MODEL`: model name when using `github-copilot` (default `gpt-4o-mini`).
+- `RELEASEPILOT_MODEL_PROVIDER`: model provider mode: `ollama` (default), `stub`, `mock`, or `github-copilot`.
+- `RELEASEPILOT_OLLAMA_MODEL`: model name when using `ollama` (default `gemma4:31b`).
+- `RELEASEPILOT_OLLAMA_ENDPOINT`: override the local Ollama chat endpoint (default `http://127.0.0.1:11434/api/chat`).
+- `RELEASEPILOT_MODEL_MAX_ITEMS`: maximum grouped changes before ReleasePilot disables provider calls for that scan (default `25`; use `-1` to disable the fanout guard).
+- `RELEASEPILOT_GITHUB_MODEL`: model name when using `github-copilot` (default `openai/gpt-4o-mini`; legacy values such as `gpt-4o-mini` are normalized).
 - `RELEASEPILOT_GITHUB_MODELS_ENDPOINT`: override chat-completions endpoint for GitHub-hosted models.
 - `GITHUB_TOKEN` or `GH_TOKEN`: API token used when `RELEASEPILOT_PR_ADAPTER=github`. Also used by `github-copilot` provider mode. If neither is set, the provider falls back to `gh auth token` so it can use the logged-in GitHub CLI user.
 
@@ -132,6 +137,7 @@ Provider behavior:
 
 - `stub`: deterministic no-op provider that preserves the built-in classifier summary.
 - `mock`: deterministic local provider that enriches summaries and can assist low-confidence classification.
+- `ollama`: local provider that calls a locally running Ollama model and keeps AI requests on your machine.
 - `github-copilot`: remote provider that enriches summaries and can assist low-confidence classification.
 
 Provider defaults can also be set in `releasepilot.json`; environment variables override these values:
@@ -139,16 +145,19 @@ Provider defaults can also be set in `releasepilot.json`; environment variables 
 ```json
 {
   "provider": {
-    "name": "github-copilot",
-    "model": "gpt-4o-mini",
-    "endpoint": "https://models.inference.ai.azure.com/chat/completions"
+    "name": "ollama",
+    "model": "gemma4:31b",
+    "endpoint": "http://127.0.0.1:11434/api/chat",
+    "max_items_per_scan": 25
   }
 }
 ```
 
-When a provider is enabled, ReleasePilot sends compact file-diff evidence, representative hunks, PR context, and commit subjects to the summary prompt. If the model returns empty output, an error marker, or text that simply repeats the title/commit subject, ReleasePilot falls back to its deterministic diff summary.
+When a provider is enabled, ReleasePilot sends compact file-diff evidence, representative hunks, PR context, and commit subjects to the summary prompt. If the model returns empty output, an error marker, or text that simply repeats the title/commit subject, ReleasePilot falls back to its deterministic diff summary. If a scan expands beyond `max_items_per_scan`, ReleasePilot skips provider calls for that scan to avoid hammering the selected model.
 
-You can also override the provider for one CLI run with `--model-provider mock` or `--model-provider github-copilot` on `scan`, `generate`, `reconcile`, and `draft` commands. The VS Code extension exposes the same override through the `releasepilot.modelProvider` setting; leave it as `configured` to honor `releasepilot.json` or environment variables. The `draft suggest` command defaults to `github-copilot` when no provider is configured because it explicitly asks the model for a summary.
+You can also override the provider for one CLI run with `--model-provider mock`, `--model-provider ollama`, or `--model-provider github-copilot` on `scan`, `generate`, `reconcile`, and `draft` commands. The VS Code extension exposes the same override through the `releasepilot.modelProvider` setting; leave it as `configured` to honor `releasepilot.json` or environment variables. The `draft suggest` command defaults to `ollama` when no provider is configured because it explicitly asks the model for a summary.
+
+For local AI use, run Ollama locally and make sure the selected model is pulled before using `draft suggest`. For prompt debugging or manual model use, prefer `draft prompt`, which only returns the generated prompt and does not call any LLM. GitHub auth is no longer requested by default for configured/local flows.
 
 Config targets:
 

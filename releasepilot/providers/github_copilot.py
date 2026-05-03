@@ -3,9 +3,14 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from http import HTTPStatus
 from urllib import error, request
 
 from releasepilot.providers.base import ProviderRequest, ProviderResponse, ReleasePilotProvider
+
+DEFAULT_GITHUB_MODELS_ENDPOINT = "https://models.github.ai/inference/chat/completions"
+DEFAULT_GITHUB_MODELS_MODEL = "openai/gpt-4o-mini"
+GITHUB_MODELS_API_VERSION = "2022-11-28"
 
 
 class GitHubCopilotProvider(ReleasePilotProvider):
@@ -26,10 +31,10 @@ class GitHubCopilotProvider(ReleasePilotProvider):
     ) -> None:
         self.endpoint = endpoint or os.getenv(
             "RELEASEPILOT_GITHUB_MODELS_ENDPOINT",
-            "https://models.inference.ai.azure.com/chat/completions",
+            DEFAULT_GITHUB_MODELS_ENDPOINT,
         )
         self.token = token or os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN") or self._load_gh_cli_token()
-        self.model = model or os.getenv("RELEASEPILOT_GITHUB_MODEL", "gpt-4o-mini")
+        self.model = self._normalize_model_id(model or os.getenv("RELEASEPILOT_GITHUB_MODEL", DEFAULT_GITHUB_MODELS_MODEL))
         self.timeout_seconds = timeout_seconds
 
     def summarize(self, request_data: ProviderRequest) -> ProviderResponse:
@@ -62,17 +67,25 @@ class GitHubCopilotProvider(ReleasePilotProvider):
 
         payload = json.dumps(body).encode("utf-8")
         headers = {
-            "Content-Type": "application/json",
+            "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json",
+            "X-GitHub-Api-Version": GITHUB_MODELS_API_VERSION,
         }
         req = request.Request(self.endpoint, data=payload, headers=headers, method="POST")
 
         try:
             with request.urlopen(req, timeout=self.timeout_seconds) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-        except (error.URLError, TimeoutError, json.JSONDecodeError):
+        except error.HTTPError as exc:
             return ProviderResponse(
-                content="[github-copilot-error] request failed",
+                content=f"[github-copilot-error] {self._format_http_error(exc)}",
+                confidence=0.0,
+                model=f"github-copilot:{self.model}",
+            )
+        except (error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            return ProviderResponse(
+                content=f"[github-copilot-error] request failed: {exc}",
                 confidence=0.0,
                 model=f"github-copilot:{self.model}",
             )
@@ -88,6 +101,45 @@ class GitHubCopilotProvider(ReleasePilotProvider):
             confidence = 0.0
 
         return ProviderResponse(content=content, confidence=confidence, model=f"github-copilot:{self.model}")
+
+    @staticmethod
+    def _normalize_model_id(model: str) -> str:
+        normalized = model.strip()
+        if not normalized:
+            return DEFAULT_GITHUB_MODELS_MODEL
+        if "/" in normalized:
+            return normalized
+        if normalized.startswith(("gpt-", "o1", "o3", "o4")):
+            return f"openai/{normalized}"
+        return normalized
+
+    @staticmethod
+    def _format_http_error(exc: error.HTTPError) -> str:
+        try:
+            reason = HTTPStatus(exc.code).phrase
+        except ValueError:
+            reason = "HTTP error"
+        details = ""
+        try:
+            body = exc.read().decode("utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            body = ""
+        if body:
+            try:
+                parsed = json.loads(body)
+            except json.JSONDecodeError:
+                details = body
+            else:
+                message = parsed.get("message") if isinstance(parsed, dict) else None
+                details = str(message or body)
+        if exc.code in {401, 403}:
+            hint = "check that the token has access to GitHub Models"
+        elif exc.code == 429:
+            hint = "GitHub Models rate limit exceeded"
+        else:
+            hint = "GitHub Models request failed"
+        suffix = f": {details}" if details else ""
+        return f"{hint} ({exc.code} {reason}){suffix}"
 
     @staticmethod
     def _load_gh_cli_token() -> str | None:

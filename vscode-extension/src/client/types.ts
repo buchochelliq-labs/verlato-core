@@ -70,6 +70,46 @@ export interface ReviewUpdateRequest {
   reviewer?: string;
 }
 
+export interface DraftPromptPreview {
+  item_id: string;
+  title: string;
+  provider: string;
+  prompt: string;
+}
+
+export interface RepositoryRef {
+  name: string;
+  detail?: string;
+}
+
+export interface RepositoryCommit {
+  sha: string;
+  subject: string;
+  author: string;
+  prNumber: number | null;
+  release: string | null;
+}
+
+export interface ReleaseMarker {
+  version: string;
+  itemCount: number;
+}
+
+export interface RepositoryOverview {
+  branches: RepositoryRef[];
+  tags: RepositoryRef[];
+  commits: RepositoryCommit[];
+  releases: ReleaseMarker[];
+  unpublishedCount: number;
+}
+
+export interface ModelSettings {
+  provider: string;
+  model: string;
+  endpoint: string;
+  maxModelItems: number;
+}
+
 export type ClientMode = "cli";
 
 export interface ClientStatus {

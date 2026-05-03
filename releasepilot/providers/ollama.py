@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+import json
+import os
+from urllib import error, request
+
+from releasepilot.providers.base import ProviderRequest, ProviderResponse, ReleasePilotProvider
+
+DEFAULT_OLLAMA_ENDPOINT = "http://127.0.0.1:11434/api/chat"
+DEFAULT_OLLAMA_MODEL = "gemma4:31b"
+
+
+class OllamaProvider(ReleasePilotProvider):
+    """
+    Local provider backed by a local Ollama server.
+    """
+
+    def __init__(
+        self,
+        *,
+        endpoint: str | None = None,
+        model: str | None = None,
+        timeout_seconds: float = 20.0,
+    ) -> None:
+        self.endpoint = endpoint or os.getenv("RELEASEPILOT_OLLAMA_ENDPOINT", DEFAULT_OLLAMA_ENDPOINT)
+        self.model = model or os.getenv("RELEASEPILOT_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
+        self.timeout_seconds = timeout_seconds
+
+    def summarize(self, request_data: ProviderRequest) -> ProviderResponse:
+        return self._invoke(task="summarize", request_data=request_data)
+
+    def classify(self, request_data: ProviderRequest) -> ProviderResponse:
+        return self._invoke(task="classify", request_data=request_data)
+
+    def _invoke(self, *, task: str, request_data: ProviderRequest) -> ProviderResponse:
+        system_prompt = (
+            "You are ReleasePilot. Return concise output for the requested task."
+            if task == "summarize"
+            else "You are ReleasePilot. Return one line: kind/area/audience/semver."
+        )
+        body = {
+            "model": self.model,
+            "stream": False,
+            "options": {"temperature": 0.1},
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": request_data.prompt},
+            ],
+        }
+
+        payload = json.dumps(body).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+        }
+        req = request.Request(self.endpoint, data=payload, headers=headers, method="POST")
+
+        try:
+            with request.urlopen(req, timeout=self.timeout_seconds) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            return ProviderResponse(
+                content=f"[ollama-error] local model request failed ({exc.code}): {exc.reason}",
+                confidence=0.0,
+                model=f"ollama:{self.model}",
+            )
+        except (error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            return ProviderResponse(
+                content=f"[ollama-unavailable] unable to reach local Ollama at {self.endpoint}: {exc}",
+                confidence=0.0,
+                model=f"ollama:{self.model}",
+            )
+
+        message = data.get("message") or {}
+        content = str(message.get("content") or "").strip()
+        if not content:
+            return ProviderResponse(
+                content="[ollama-empty] no content",
+                confidence=0.0,
+                model=f"ollama:{self.model}",
+            )
+        return ProviderResponse(content=content, confidence=0.75, model=f"ollama:{self.model}")

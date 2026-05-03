@@ -44,7 +44,7 @@ class Classifier:
         self.diff_builder = DiffEvidenceBuilder()
         self.provider = provider
 
-    def classify(self, group: ChangeGroup, base_ref: str, head_ref: str) -> list[ChangeItem]:
+    def classify(self, group: ChangeGroup, base_ref: str, head_ref: str, *, summary_only: bool = False) -> list[ChangeItem]:
         pr = group.pr
         labels = [label.lower() for label in (pr.labels if pr else [])]
         changed_files = pr.files if pr else group.files
@@ -112,7 +112,9 @@ class Classifier:
                 semver=semver,
                 confidence=confidence,
                 commit_signals=commit_signals,
-                allow_classification_override=not parsed and not has_security_signal and not (diff.docs_only or diff.tests_only),
+                allow_classification_override=(
+                    not summary_only and not parsed and not has_security_signal and not (diff.docs_only or diff.tests_only)
+                ),
             )
 
         source = SourceRef(
@@ -271,7 +273,7 @@ class Classifier:
         if not normalized:
             return True
         lowered = normalized.lower()
-        if lowered.startswith("[github-copilot-") or lowered.startswith("[stub-"):
+        if lowered.startswith(("[github-copilot-", "[ollama-", "[stub-")):
             return True
         candidates = {title.strip().lower()}
         candidates.update(commit.message.splitlines()[0].strip().lower() for commit in group.commits)
@@ -279,7 +281,7 @@ class Classifier:
 
     def _is_provider_error(self, content: str) -> bool:
         lowered = (content or "").strip().lower()
-        return lowered.startswith("[github-copilot-")
+        return lowered.startswith(("[github-copilot-", "[ollama-"))
 
     def _classify_area(self, labels: list[str], files_by_area: dict[str, list[str]]) -> str:
         for label in labels:

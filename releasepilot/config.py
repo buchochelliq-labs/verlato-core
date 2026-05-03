@@ -19,15 +19,16 @@ class OutputTargetConfig:
 
 @dataclass
 class ProviderConfig:
-    name: str = "stub"
-    model: str | None = None
+    name: str = "ollama"
+    model: str | None = "gemma4:31b"
     endpoint: str | None = None
+    max_items_per_scan: int = 25
 
 
 @dataclass
 class ReleasePilotConfig:
     state_path: str = ".releasepilot_state.json"
-    provider: ProviderConfig = field(default_factory=lambda: ProviderConfig(name="stub"))
+    provider: ProviderConfig = field(default_factory=ProviderConfig)
     targets: dict[str, OutputTargetConfig] = field(
         default_factory=lambda: {
             "changelog": OutputTargetConfig(path="CHANGELOG.md", format="changelog"),
@@ -56,10 +57,12 @@ def load_config(cwd: str | None = None) -> ReleasePilotConfig:
         name = str(provider.get("name") or config.provider.name).strip() or "stub"
         model = provider.get("model")
         endpoint = provider.get("endpoint")
+        max_items_per_scan = provider.get("max_items_per_scan", config.provider.max_items_per_scan)
         config.provider = ProviderConfig(
             name=name,
             model=str(model).strip() if model else None,
             endpoint=str(endpoint).strip() if endpoint else None,
+            max_items_per_scan=int(max_items_per_scan),
         )
 
     targets = raw.get("targets")

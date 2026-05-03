@@ -12,7 +12,9 @@ This extension is the first UI scaffold for ReleasePilot.
 
 - Activity Bar view for ReleasePilot items
 - Tree view for draft sections and items
+- Repository activity view for branches, tags, recent commits, and release associations
 - CLI-backed client abstraction
+- Configurable AI provider/model controls with an LLM fanout guard
 - Preview panel for rendered notes
 - Apply commands for changelog and GitHub release-note targets
 
@@ -53,6 +55,17 @@ npm run build
 
 5. Open the Run and Debug view, select `ReleasePilot Extension`, and start debugging.
 6. In the Extension Development Host window, open the `ReleasePilot` activity bar view and run `ReleasePilot: Scan Repository`.
+
+The default provider is local Ollama with `gemma4:31b`. Change it from `ReleasePilot: Change AI Model` or with these workspace settings:
+
+```json
+"releasepilot.modelProvider": "ollama",
+"releasepilot.ollamaModel": "gemma4:31b",
+"releasepilot.ollamaEndpoint": "http://127.0.0.1:11434/api/chat",
+"releasepilot.maxModelItems": 25
+```
+
+`releasepilot.maxModelItems` prevents a large comparison range from sending one LLM request per grouped change. Set it to `-1` only when you intentionally want no fanout guard.
 
 If the launch config does not appear, open `.vscode/launch.json` from the repo root and start the `ReleasePilot Extension` configuration from the editor's debug controls.
 

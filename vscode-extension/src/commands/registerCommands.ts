@@ -13,25 +13,34 @@ export function registerCommands(
 ): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("releasepilot.scanRepository", async () => {
-      const request = await promptForRange();
+      const request = await promptForRange(client);
       if (!request) {
         return;
       }
       const document = await client.getDraft(request);
-      treeProvider.refresh(document);
+      const overview = await client.getRepositoryOverview();
+      treeProvider.refresh(document, overview, client.getModelSettings());
       vscode.window.showInformationMessage(`ReleasePilot loaded ${document.item_count} item(s).`);
     }),
     vscode.commands.registerCommand("releasepilot.previewReleaseNotes", async () => {
-      const request = await promptForRange();
+      const request = await promptForRange(client);
       if (!request) {
         return;
       }
       const document = await client.getDraft(request);
-      treeProvider.refresh(document);
+      const overview = await client.getRepositoryOverview();
+      treeProvider.refresh(document, overview, client.getModelSettings());
       previewPanel.show(document);
     }),
+    vscode.commands.registerCommand("releasepilot.refreshRepository", async () => {
+      const overview = await client.getRepositoryOverview();
+      treeProvider.refresh(undefined, overview, client.getModelSettings());
+      vscode.window.showInformationMessage(
+        `ReleasePilot found ${overview.branches.length} branch(es), ${overview.tags.length} tag(s), and ${overview.unpublishedCount} unpublished item(s).`,
+      );
+    }),
     vscode.commands.registerCommand("releasepilot.applyToChangelog", async () => {
-      const request = await promptForRange();
+      const request = await promptForRange(client);
       if (!request) {
         return;
       }
@@ -39,7 +48,7 @@ export function registerCommands(
       vscode.window.showInformationMessage(`Updated ${result.path}`);
     }),
     vscode.commands.registerCommand("releasepilot.applyToReleaseFile", async () => {
-      const request = await promptForRange();
+      const request = await promptForRange(client);
       if (!request) {
         return;
       }
@@ -47,7 +56,7 @@ export function registerCommands(
       vscode.window.showInformationMessage(`Updated ${result.path}`);
     }),
     vscode.commands.registerCommand("releasepilot.refreshItems", async () => {
-      treeProvider.refresh();
+      treeProvider.refresh(undefined, undefined, client.getModelSettings());
     }),
     vscode.commands.registerCommand("releasepilot.markItemReady", async (node?: DraftItemNode) => {
       await updateItemReviewState(client, treeProvider, previewPanel, node, { status: "ready" });
@@ -89,6 +98,9 @@ export function registerCommands(
         { modal: true },
       );
     }),
+    vscode.commands.registerCommand("releasepilot.changeModel", async () => {
+      await changeModelSettings(client, treeProvider);
+    }),
   );
 }
 
@@ -111,29 +123,44 @@ async function requestModelInput(
     version: document.version,
   };
   try {
-    await vscode.window.withProgress(
+    const promptPreview = await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: `Asking model for "${node.item.title}"`,
+        title: `Preparing model prompt for "${node.item.title}"`,
         cancellable: false,
       },
-      async () => client.requestModelInput(request, node.item.id, "VS Code"),
+      async () => client.getModelPrompt(request, node.item.id),
     );
+    await showPromptPreview(promptPreview);
   } catch (error) {
     vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
     return;
   }
-  const nextDocument = await client.getDraft(request);
-  treeProvider.refresh(nextDocument);
-  previewPanel.show(nextDocument);
-  vscode.window.showInformationMessage("ReleasePilot applied the model suggestion to the item summary.");
+  vscode.window.showInformationMessage("ReleasePilot opened the prompt preview and copied the prompt to the clipboard.");
 }
 
-async function promptForRange(): Promise<DraftRangeRequest | undefined> {
+async function promptForRange(client: ReleasePilotClient): Promise<DraftRangeRequest | undefined> {
+  const overview = await client.getRepositoryOverview();
+  const refPick = await vscode.window.showQuickPick(
+    [
+      ...overview.tags.slice(0, 10).map((tag) => ({ label: tag.name, description: "tag" })),
+      ...overview.branches.slice(0, 10).map((branch) => ({ label: branch.name, description: "branch" })),
+      ...overview.commits.slice(0, 10).map((commit) => ({
+        label: commit.sha,
+        description: "commit",
+        detail: commit.subject,
+      })),
+      { label: "HEAD~10", description: "manual default" },
+    ],
+    {
+      title: "ReleasePilot base ref",
+      placeHolder: "Pick the previous release tag, branch, or commit to compare from",
+    },
+  );
   const base = await vscode.window.showInputBox({
     prompt: "ReleasePilot base ref",
     placeHolder: "v1.0.0",
-    value: "HEAD~10",
+    value: refPick?.label ?? "HEAD~10",
   });
   if (!base) {
     return undefined;
@@ -153,6 +180,64 @@ async function promptForRange(): Promise<DraftRangeRequest | undefined> {
     head: head || "HEAD",
     version: version || "Unreleased",
   };
+}
+
+async function changeModelSettings(
+  client: ReleasePilotClient,
+  treeProvider: ReleasePilotTreeProvider,
+): Promise<void> {
+  const current = client.getModelSettings();
+  const provider = await vscode.window.showQuickPick(
+    ["ollama", "configured", "github-copilot", "mock", "stub"],
+    {
+      title: "ReleasePilot AI provider",
+      placeHolder: "Choose the provider used for summaries and classification assists",
+    },
+  );
+  if (!provider) {
+    return;
+  }
+
+  let model = current.model;
+  let endpoint = current.endpoint;
+  if (provider === "ollama") {
+    const nextModel = await vscode.window.showInputBox({
+      prompt: "Ollama model",
+      value: current.model || "gemma4:31b",
+      placeHolder: "gemma4:31b",
+    });
+    if (!nextModel) {
+      return;
+    }
+    model = nextModel;
+    const nextEndpoint = await vscode.window.showInputBox({
+      prompt: "Ollama chat endpoint",
+      value: current.endpoint || "http://127.0.0.1:11434/api/chat",
+    });
+    if (!nextEndpoint) {
+      return;
+    }
+    endpoint = nextEndpoint;
+  }
+
+  const maxRaw = await vscode.window.showInputBox({
+    prompt: "Maximum grouped changes before LLM calls are disabled (-1 disables the guard)",
+    value: String(current.maxModelItems),
+    validateInput: (value) => Number.isInteger(Number(value)) ? undefined : "Enter an integer.",
+  });
+  if (maxRaw === undefined) {
+    return;
+  }
+
+  await client.updateModelSettings({
+    provider,
+    model,
+    endpoint,
+    maxModelItems: Number(maxRaw),
+  });
+  await client.initialize();
+  treeProvider.refresh(undefined, undefined, client.getModelSettings());
+  vscode.window.showInformationMessage(`ReleasePilot model set to ${provider}${provider === "ollama" ? ` / ${model}` : ""}.`);
 }
 
 async function updateItemReviewState(
@@ -178,4 +263,26 @@ async function updateItemReviewState(
   const nextDocument = await client.getDraft(request);
   treeProvider.refresh(nextDocument);
   previewPanel.show(nextDocument);
+}
+
+async function showPromptPreview(promptPreview: { title: string; provider: string; prompt: string; item_id: string }): Promise<void> {
+  const content = [
+    `# ReleasePilot Model Prompt`,
+    ``,
+    `Item: ${promptPreview.title}`,
+    `Item ID: ${promptPreview.item_id}`,
+    `Provider Hint: ${promptPreview.provider}`,
+    ``,
+    `## Prompt`,
+    ``,
+    promptPreview.prompt,
+    ``,
+    `ReleasePilot does not send this prompt automatically. Use it manually with your preferred model.`,
+  ].join("\n");
+  await vscode.env.clipboard.writeText(promptPreview.prompt);
+  const document = await vscode.workspace.openTextDocument({
+    content,
+    language: "markdown",
+  });
+  await vscode.window.showTextDocument(document, vscode.ViewColumn.Beside, true);
 }

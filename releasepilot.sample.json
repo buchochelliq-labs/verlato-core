@@ -5,9 +5,10 @@
     "token_env": "GITHUB_TOKEN"
   },
   "provider": {
-    "name": "stub",
-    "model": "gpt-4o-mini",
-    "endpoint": "https://models.inference.ai.azure.com/chat/completions"
+    "name": "ollama",
+    "model": "gemma4:31b",
+    "endpoint": "http://127.0.0.1:11434/api/chat",
+    "max_items_per_scan": 25
   },
   "targets": {
     "changelog": {
