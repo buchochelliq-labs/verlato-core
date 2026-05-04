@@ -115,6 +115,15 @@ export interface RepositoryCommit {
 export interface ReleaseMarker {
   version: string;
   itemCount: number;
+  items?: ReleaseNoteItem[];
+}
+
+export interface ReleaseNoteItem {
+  id: string;
+  title: string;
+  summary: string;
+  status?: string;
+  source?: string;
 }
 
 export interface RepositoryOverview {

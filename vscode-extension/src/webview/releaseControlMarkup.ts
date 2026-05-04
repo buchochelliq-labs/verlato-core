@@ -57,7 +57,6 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
         ${renderModelPanel(state)}
       </aside>
       <div class="workspace">
-        ${renderSuggestions(state.suggestions)}
         <section class="meta" aria-label="Release item filters">
           <button class="meta-card" data-action="filterItems" data-filter="visible" title="Show visible draft items">
             <strong>${visibleItemCount}</strong><span>visible</span>
@@ -69,6 +68,7 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
             <strong>${releasedCount}</strong><span>released</span>
           </button>
         </section>
+        ${renderReleasesPanel(state)}
         <section class="section changes-panel" id="changes-panel">
           <div class="section-title">CHANGES</div>
           ${sections.length ? sections.map(renderSection).join("") : `<p class="empty">Draft a release to see unreleased PRs, commits, and release-note items.</p>`}
@@ -99,7 +99,7 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
         const filter = button.dataset.filter || 'all';
         document.body.dataset.filter = filter;
         document.querySelectorAll('.meta-card').forEach((card) => card.classList.toggle('active', card.dataset.filter === filter));
-        const target = filter === 'released' ? document.getElementById('sources-panel') : document.getElementById('changes-panel');
+        const target = filter === 'released' || filter === 'unreleased' ? document.getElementById('releases-panel') : document.getElementById('changes-panel');
         target?.scrollIntoView({ block: 'start', behavior: 'smooth' });
         vscode.setState({ ...getStoredState(), releaseFilter: filter });
       }
@@ -261,7 +261,7 @@ function renderSuggestions(preview: DraftSuggestionPreview | undefined): string 
   if (!preview || !preview.items.length) {
     return "";
   }
-  return `<section class="section suggestions">
+  return `<section class="sub-panel suggestions">
     <div class="section-title">SUGGESTIONS <button class="inline-action" data-action="regenerateAll">Regenerate</button></div>
     ${preview.items.map((item) => `<article class="suggestion">
       <div class="item-head">
@@ -287,6 +287,113 @@ function renderSuggestions(preview: DraftSuggestionPreview | undefined): string 
       </div>
     </article>`).join("")}
   </section>`;
+}
+
+function renderReleasesPanel(state: ReleaseControlRenderState): string {
+  const released = state.overview?.releases ?? [];
+  const releaseCount = released.length + 1;
+  return `<section class="section tree-section releases-panel" id="releases-panel">
+    <div class="section-title">RELEASES <span>${releaseCount}</span></div>
+    ${renderUnreleasedRelease(state.document, state.suggestions, state.overview)}
+    ${renderReleasedReleases(state.overview)}
+  </section>`;
+}
+
+function renderUnreleasedRelease(
+  document: DraftDocument | undefined,
+  suggestions: DraftSuggestionPreview | undefined,
+  overview: RepositoryOverview | undefined,
+): string {
+  const version = document?.version ?? "Unreleased";
+  const items = document?.sections.flatMap((section) => section.items) ?? [];
+  const visibleItems = items.filter((item) => !item.hidden);
+  const commits = overview?.commits.filter((commit) => commit.release === null) ?? [];
+  const suggestionCount = suggestions?.items.reduce((sum, item) => sum + item.suggestions.length, 0) ?? 0;
+  return `<details class="release-card" open data-release-state="unreleased">
+    <summary>
+      <span>${escapeHtml(version)}</span>
+      <small>${visibleItems.length} visible item(s) | ${commits.length} unreleased commit(s) | ${suggestionCount} suggestion(s)</small>
+    </summary>
+    <div class="sub-panel release-note-panel">
+      <div class="sub-panel-title">Release Note</div>
+      ${renderDraftReleaseNote(document)}
+    </div>
+    ${renderSuggestions(suggestions)}
+    <div class="sub-panel">
+      <div class="sub-panel-title">Draft Items</div>
+      ${visibleItems.length ? visibleItems.map(renderReleaseDraftRow).join("") : `<p class="empty">Draft a release to review unreleased release-note items.</p>`}
+    </div>
+    ${renderReleaseCommits(commits, "Unreleased commits")}
+  </details>`;
+}
+
+function renderReleasedReleases(overview: RepositoryOverview | undefined): string {
+  if (!overview) {
+    return `<div class="sub-panel"><p class="empty">Refresh repository activity to load released versions and their commits.</p></div>`;
+  }
+  if (!overview.releases.length) {
+    return `<div class="sub-panel"><p class="empty">No published release associations were found in local ReleasePilot state.</p></div>`;
+  }
+  return overview.releases.map((release) => {
+    const commits = overview.commits.filter((commit) => commit.release === release.version);
+    return `<details class="release-card" data-release-state="released">
+      <summary>
+        <span>${escapeHtml(release.version)}</span>
+        <small>${release.itemCount} release-note item(s) | ${commits.length} commit(s)</small>
+      </summary>
+      <div class="sub-panel release-note-panel">
+        <div class="sub-panel-title">Release Note</div>
+        ${renderPublishedReleaseNotes(release.items ?? [])}
+      </div>
+      ${renderReleaseCommits(commits, "Commits in release")}
+    </details>`;
+  }).join("");
+}
+
+function renderDraftReleaseNote(document: DraftDocument | undefined): string {
+  const rendered = document?.rendered["github-release"] ?? document?.rendered.changelog;
+  if (rendered?.trim()) {
+    return `<pre class="release-note" tabindex="0" data-scroll-key="release-note-unreleased">${escapeHtml(rendered.trim())}</pre>`;
+  }
+  const items = document?.sections.flatMap((section) => section.items).filter((item) => !item.hidden) ?? [];
+  if (!items.length) {
+    return `<p class="empty">Draft a release to generate the unreleased release note preview.</p>`;
+  }
+  return `<div class="release-note-list">${items.map((item) => `<p><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.summary)}</span></p>`).join("")}</div>`;
+}
+
+function renderReleaseDraftRow(item: DraftItem): string {
+  const suggestionSource = item.summary_source === "model-suggestion" || item.summary_provenance?.source === "model-suggestion"
+    ? "model suggestion"
+    : item.summary_source ?? "draft";
+  return `<div class="release-row">
+    <span>${escapeHtml(item.title)}</span>
+    <small>${escapeHtml(item.status)} | ${escapeHtml(suggestionSource)}</small>
+  </div>`;
+}
+
+function renderPublishedReleaseNotes(items: { id: string; title: string; summary: string; status?: string; source?: string }[]): string {
+  if (!items.length) {
+    return `<p class="empty">No release-note entries are available for this version.</p>`;
+  }
+  return `<div class="release-note-list">${items.map((item) => `<p>
+    <strong>${escapeHtml(item.title)}</strong>
+    <span>${escapeHtml(item.summary)}</span>
+    <small>${escapeHtml([item.status, item.source].filter(Boolean).join(" | ") || item.id)}</small>
+  </p>`).join("")}</div>`;
+}
+
+function renderReleaseCommits(commits: { sha: string; subject: string; prNumber: number | null }[], title: string): string {
+  return `<div class="sub-panel">
+    <div class="sub-panel-title">${escapeHtml(title)} <span>${commits.length}</span></div>
+    ${commits.length ? commits.slice(0, 12).map((commit) => `<div class="source-row release-commit">
+      <button class="source-main" data-action="useBase" data-ref="${escapeHtml(commit.sha)}" title="Use as base ref">
+        <span>${escapeHtml(commit.prNumber ? `PR #${commit.prNumber}` : commit.sha)}</span>
+        <small>${escapeHtml(commit.subject)}</small>
+      </button>
+      <button class="source-slot" data-action="useHead" data-ref="${escapeHtml(commit.sha)}" title="Use as head ref">HEAD</button>
+    </div>`).join("") : `<p class="empty">No recent commits are currently mapped to this release.</p>`}
+  </div>`;
 }
 
 function renderSuggestionComparison(item: DraftSuggestionItem): string {
@@ -717,32 +824,13 @@ function renderSources(overview: RepositoryOverview | undefined): string {
     ref: commit.sha,
     detail: commit.release ? `released in ${commit.release}` : commit.subject,
   }));
-  const releases = overview.releases.slice(0, 6).map((release) => ({
-    label: release.version,
-    ref: release.version,
-    detail: `${release.itemCount} associated item(s)`,
-  }));
   const groups = [
     renderSourceGroup("PRs From Commits", prs),
     renderSourceGroup("Tags", tags),
     renderSourceGroup("Branches", branches),
     renderSourceGroup("Recent Commits", commits),
-    renderSourceGroup("Associated Releases", releases),
   ].filter(Boolean);
   return groups.length ? groups.join("") : `<p class="empty">Repository refresh succeeded, but no refs or commits were returned.</p>`;
-}
-
-function sourceGroupCount(overview: RepositoryOverview | undefined): number {
-  if (!overview) {
-    return 0;
-  }
-  return [
-    overview.commits.some((commit) => commit.prNumber !== null),
-    overview.tags.length > 0,
-    overview.branches.length > 0,
-    overview.commits.length > 0,
-    overview.releases.length > 0,
-  ].filter(Boolean).length;
 }
 
 function renderSourceGroup(title: string, refs: { label: string; ref: string; detail: string }[]): string {
@@ -900,6 +988,9 @@ function styles(): string {
     .sources-panel {
       border-left-color: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 72%, var(--vscode-focusBorder, #3794ff));
     }
+    .releases-panel {
+      border-left-color: color-mix(in srgb, var(--vscode-charts-green, #89d185) 62%, var(--vscode-focusBorder, #3794ff));
+    }
     .section-title {
       margin: 0 0 5px;
       color: var(--vscode-sideBarSectionHeader-foreground);
@@ -956,6 +1047,8 @@ function styles(): string {
     .meta span, small, .item-meta, .empty { color: var(--vscode-descriptionForeground); font-size: 11px; }
     body[data-filter="visible"] .item[data-visibility="hidden"] { display: none; }
     body[data-filter="released"] .changes-panel { display: none; }
+    body[data-filter="released"] .release-card[data-release-state="unreleased"] { display: none; }
+    body[data-filter="unreleased"] .release-card[data-release-state="released"] { display: none; }
     body[data-filter="visible"] .sources-panel,
     body[data-filter="unreleased"] .sources-panel { opacity: .72; }
     .model, .telemetry-toggle { width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 4px 6px; text-align: left; }
@@ -1045,6 +1138,63 @@ function styles(): string {
     .actions button { min-height: 22px; font-size: 11px; }
     .suggestions { border-left: 2px solid var(--vscode-focusBorder, #3794ff); padding-left: 6px; background: color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 8%, transparent); }
     .suggestion { padding: 6px 0; border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.18)); }
+    .release-card {
+      margin: 5px 0;
+      border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.18));
+    }
+    .release-card > summary {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      text-transform: none;
+    }
+    .release-card > summary span { color: var(--vscode-foreground); margin-left: 0; }
+    .release-card > summary small {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .release-note {
+      max-height: 220px;
+      overflow: auto;
+      margin: 0;
+      padding: 5px;
+      color: var(--vscode-editor-foreground);
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-input-border, transparent);
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 10px;
+      line-height: 1.4;
+    }
+    .release-note-list {
+      display: grid;
+      gap: 4px;
+    }
+    .release-note-list p {
+      margin: 0;
+      display: grid;
+      gap: 2px;
+    }
+    .release-note-list span {
+      color: var(--vscode-descriptionForeground);
+      line-height: 1.35;
+    }
+    .release-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) max-content;
+      gap: 6px;
+      padding: 3px 0;
+      border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.12));
+    }
+    .release-row span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .release-commit .source-main { grid-template-columns: 72px minmax(0, 1fr); }
     .requests { border-left-color: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 65%, var(--vscode-focusBorder, #3794ff)); }
     .request { border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.18)); padding: 4px 0; }
     .request summary { display: flex; align-items: center; gap: 5px; text-transform: none; }

@@ -592,6 +592,15 @@ interface StateItem {
   id: string;
   published?: boolean;
   published_in?: string | null;
+  status?: string;
+  edited_summary?: string | null;
+  summary_provenance?: {
+    source?: string;
+  } | null;
+  content?: {
+    title?: string;
+    summary?: string;
+  };
   source?: {
     pr_number?: number | null;
     commit_shas?: string[];
@@ -630,15 +639,27 @@ function extractPrNumber(subject: string): number | null {
   return value ? Number(value) : null;
 }
 
-function summarizeReleases(items: StateItem[]): { version: string; itemCount: number }[] {
-  const counts = new Map<string, number>();
+function summarizeReleases(items: StateItem[]): { version: string; itemCount: number; items: { id: string; title: string; summary: string; status?: string; source?: string }[] }[] {
+  const releases = new Map<string, { id: string; title: string; summary: string; status?: string; source?: string }[]>();
   for (const item of items) {
     if (!item.published || !item.published_in) {
       continue;
     }
-    counts.set(item.published_in, (counts.get(item.published_in) ?? 0) + 1);
+    const releaseItems = releases.get(item.published_in) ?? [];
+    releaseItems.push({
+      id: item.id,
+      title: item.content?.title ?? item.id,
+      summary: item.edited_summary ?? item.content?.summary ?? "",
+      status: item.status,
+      source: item.summary_provenance?.source,
+    });
+    releases.set(item.published_in, releaseItems);
   }
-  return [...counts.entries()].map(([version, itemCount]) => ({ version, itemCount }));
+  return [...releases.entries()].map(([version, releaseItems]) => ({
+    version,
+    itemCount: releaseItems.length,
+    items: releaseItems,
+  }));
 }
 
 function mapReleaseByCommit(items: StateItem[]): Map<string, string> {

@@ -100,6 +100,7 @@ test("renders repository sources as clickable data in the release control view",
   });
 
   assert.match(html, /Repository activity loaded: 1 recent commit/);
+  assert.match(html, /RELEASES/);
   assert.match(html, /SOURCES/);
   assert.match(html, /data-action="openSources"/);
   assert.match(html, /PRs From Commits/);
@@ -107,6 +108,96 @@ test("renders repository sources as clickable data in the release control view",
   assert.match(html, /Add release control UX/);
   assert.match(html, /data-action="useBase" data-ref="f954ba2"/);
   assert.match(html, /data-action="useHead" data-ref="f954ba2"/);
+});
+
+test("renders releases as a dedicated sub-panel with notes, commits, and suggestions", () => {
+  const html = buildReleaseControlHtml({
+    modelSettings,
+    range,
+    busy: false,
+    document: {
+      version: "Unreleased",
+      generated_on: "2026-05-03",
+      base_ref: "v1.0.0",
+      head_ref: "HEAD",
+      targets: [],
+      rendered: { "github-release": "## Unreleased\n\n- Improve API review" },
+      item_count: 1,
+      sections: [{ kind: "changed", title: "Changed", items: [draftItem({ id: "ci_1", title: "Improve API" })] }],
+    },
+    overview: {
+      branches: [],
+      tags: [],
+      commits: [
+        {
+          sha: "abc1234",
+          subject: "Improve API review",
+          author: "alice, 2026-05-03",
+          prNumber: 12,
+          release: null,
+        },
+        {
+          sha: "def5678",
+          subject: "Ship previous release",
+          author: "bob, 2026-05-02",
+          prNumber: 10,
+          release: "v1.0.0",
+        },
+      ],
+      releases: [
+        {
+          version: "v1.0.0",
+          itemCount: 2,
+          items: [
+            {
+              id: "published_1",
+              title: "Previous release note",
+              summary: "Shipped the previous release",
+              status: "accepted",
+              source: "model-suggestion",
+            },
+          ],
+        },
+      ],
+      unpublishedCount: 1,
+    },
+    suggestions: {
+      base_ref: "v1.0.0",
+      head_ref: "HEAD",
+      provider: "mock",
+      count: 1,
+      items: [
+        {
+          item_id: "ci_1",
+          title: "Improve API",
+          current_summary: "A concise release note",
+          provider: "mock-local",
+          suggestions: ["Improve API review for release notes"],
+        },
+      ],
+    },
+  });
+
+  assert.match(html, /id="releases-panel"/);
+  assert.match(html, /data-release-state="unreleased"/);
+  assert.match(html, /Release Note/);
+  assert.match(html, /## Unreleased/);
+  assert.match(html, /Draft Items/);
+  assert.match(html, /Improve API/);
+  assert.match(html, /SUGGESTIONS/);
+  assert.match(html, /Improve API review for release notes/);
+  assert.match(html, /Unreleased commits/);
+  assert.match(html, /data-action="useBase" data-ref="abc1234"/);
+  assert.match(html, /data-release-state="released"/);
+  assert.match(html, /v1\.0\.0/);
+  assert.match(html, /Previous release note/);
+  assert.match(html, /Shipped the previous release/);
+  assert.match(html, /accepted \| model-suggestion/);
+  assert.match(html, /Commits in release/);
+  assert.match(html, /data-action="useBase" data-ref="def5678"/);
+  assert.match(html, /body\[data-filter="released"\] \.release-card\[data-release-state="unreleased"\]/);
+  assert.match(html, /body\[data-filter="unreleased"\] \.release-card\[data-release-state="released"\]/);
+  assert.doesNotMatch(html, /Associated Releases/);
 });
 
 test("counts visible draft items separately from hidden reviewed items", () => {
