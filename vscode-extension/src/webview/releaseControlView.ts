@@ -9,6 +9,7 @@ import {
   ModelSettings,
   RepositoryOverview,
 } from "../client/types";
+import { handleNotificationAction, showErrorNotification, showSuccessNotification } from "../notifications";
 import { buildReleaseControlHtml } from "./releaseControlMarkup";
 import { PreviewPanel } from "./previewPanel";
 
@@ -27,6 +28,11 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly client: ReleasePilotClient,
     private readonly previewPanel: PreviewPanel,
+    private readonly onDidRefresh?: (
+      document?: DraftDocument,
+      overview?: RepositoryOverview,
+      modelSettings?: ModelSettings,
+    ) => void,
   ) {
     this.modelSettings = client.getModelSettings();
     this.requests = client.getCommandRequests();
@@ -58,6 +64,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       this.modelSettings = modelSettings;
     }
     this.render();
+    this.onDidRefresh?.(document, overview, modelSettings);
   }
 
   getDocument(): DraftDocument | undefined {
@@ -164,6 +171,13 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       if (showPreview) {
         this.previewPanel.show(document);
       }
+      await handleNotificationAction(
+        await showSuccessNotification(
+          `ReleasePilot loaded ${document.item_count} draft item(s).`,
+          showPreview ? "View Activity" : "Open ReleasePilot",
+          showPreview ? "Open ReleasePilot" : "View Activity",
+        ),
+      );
     });
   }
 
@@ -176,8 +190,12 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       this.statusMessage = `Repository activity loaded: ${overview.commits.length} recent commit(s), ${overview.branches.length} branch(es), ${overview.tags.length} tag(s).`;
       this.refresh(undefined, overview, this.client.getModelSettings());
       if (showToast) {
-        vscode.window.showInformationMessage(
-          `ReleasePilot found ${overview.branches.length} branch(es), ${overview.tags.length} tag(s), and ${overview.unpublishedCount} unpublished item(s).`,
+        await handleNotificationAction(
+          await showSuccessNotification(
+            `ReleasePilot found ${overview.branches.length} branch(es), ${overview.tags.length} tag(s), and ${overview.unpublishedCount} unpublished item(s).`,
+            "Open ReleasePilot",
+            "View Activity",
+          ),
         );
       }
     });
@@ -186,7 +204,21 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   private async apply(target: "changelog" | "github-release"): Promise<void> {
     await this.runBusy(async () => {
       const result = await this.client.applyDraft(this.range, target);
-      vscode.window.showInformationMessage(`Updated ${result.path}`);
+      await handleNotificationAction(
+        await showSuccessNotification(`Updated ${result.path}`, "Open File", "Preview", "View Activity"),
+        {
+          "Open File": async () => {
+            const folder = vscode.workspace.workspaceFolders?.[0];
+            const uri = folder ? vscode.Uri.joinPath(folder.uri, result.path) : vscode.Uri.file(result.path);
+            const document = await vscode.workspace.openTextDocument(uri);
+            await vscode.window.showTextDocument(document, vscode.ViewColumn.Beside, true);
+          },
+          Preview: async () => {
+            const document = await this.client.getDraft(this.range);
+            this.previewPanel.show(document);
+          },
+        },
+      );
     });
   }
 
@@ -199,11 +231,13 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
         this.statusMessage = itemId
           ? generatedCount === 1 ? "Generated one suggested description." : `Generated ${generatedCount} suggestions.`
           : `Generated suggestions for ${suggestions.items.length} item(s).`;
+        await handleNotificationAction(
+          await showSuccessNotification(this.statusMessage, "Review Suggestions", "View Activity"),
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.errorMessage = message;
-        vscode.window.showErrorMessage(message);
-        await vscode.commands.executeCommand("releasepilot.changeModel");
+        await handleNotificationAction(await showErrorNotification(message, "View Activity", "Change Model"));
       }
     });
   }
@@ -355,7 +389,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
         this.statusMessage = "Stopped current ReleasePilot command.";
       } else {
         this.errorMessage = message;
-        vscode.window.showErrorMessage(this.errorMessage);
+        await handleNotificationAction(await showErrorNotification(this.errorMessage, "View Activity"));
       }
     } finally {
       this.busy = false;

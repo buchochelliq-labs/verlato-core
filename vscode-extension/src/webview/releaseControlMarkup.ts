@@ -21,6 +21,10 @@ export interface ReleaseControlRenderState {
   errorMessage?: string;
 }
 
+export interface ReleaseActivityRenderState {
+  requests: CommandRequestSnapshot[];
+}
+
 export function buildReleaseControlHtml(state: ReleaseControlRenderState): string {
   const nonce = String(Date.now());
   const sections = state.document?.sections ?? [];
@@ -51,7 +55,6 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
       <aside class="operations">
         ${renderDraftPanel(state)}
         ${renderModelPanel(state)}
-        ${renderRequests(state.requests ?? [])}
       </aside>
       <div class="workspace">
         ${renderSuggestions(state.suggestions)}
@@ -64,10 +67,6 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
           <div class="section-title">CHANGES</div>
           ${sections.length ? sections.map(renderSection).join("") : `<p class="empty">Draft a release to see unreleased PRs, commits, and release-note items.</p>`}
         </section>
-        <details class="section tree-section sources-panel">
-          <summary class="section-title">SOURCES <span>${sourceGroupCount(state.overview)} groups</span></summary>
-          ${renderSources(state.overview)}
-        </details>
       </div>
     </div>
   </main>
@@ -115,6 +114,39 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
       if (action === 'regenerateAll') vscode.postMessage({ type: 'regenerateAll' });
       if (action === 'feedbackPositive') vscode.postMessage({ type: 'feedbackPositive', itemId: button.dataset.item });
       if (action === 'feedbackNegative') vscode.postMessage({ type: 'feedbackNegative', itemId: button.dataset.item });
+    });
+  </script>
+</body>
+</html>`;
+}
+
+export function buildReleaseActivityHtml(state: ReleaseActivityRenderState): string {
+  const nonce = String(Date.now());
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>${styles()}</style>
+</head>
+<body>
+  <main>
+    <div class="toolbar">
+      <span class="title">ACTIVITY</span>
+    </div>
+    ${state.requests.length ? renderRequests(state.requests, true) : `<p class="empty">Run a ReleasePilot command to see request and model activity.</p>`}
+  </main>
+  <script nonce="${nonce}">
+    const vscode = acquireVsCodeApi();
+    document.addEventListener('click', (event) => {
+      const button = event.target.closest('button');
+      if (!button) return;
+      const action = button.dataset.action;
+      if (action === 'cancelRequest') vscode.postMessage({ type: 'cancelRequest', requestId: Number(button.dataset.request) });
+      if (action === 'copyText') {
+        const block = button.closest('details')?.querySelector('pre');
+        vscode.postMessage({ type: 'copyText', text: block?.textContent || '', label: button.dataset.copyLabel || 'payload' });
+      }
     });
   </script>
 </body>
@@ -295,12 +327,12 @@ function renderRejectedSuggestions(item: DraftSuggestionItem): string {
   </details>`;
 }
 
-function renderRequests(requests: CommandRequestSnapshot[]): string {
+function renderRequests(requests: CommandRequestSnapshot[], openWhenIdle = false): string {
   if (!requests.length) {
     return "";
   }
   const runningCount = requests.filter((request) => request.status === "running").length;
-  return `<details class="section tree-section requests" ${runningCount ? "open" : ""}>
+  return `<details class="section tree-section requests" ${runningCount || openWhenIdle ? "open" : ""}>
     <summary class="section-title">REQUESTS <span>${runningCount ? `${runningCount} running` : `${requests.length} recent`}</span></summary>
     ${requests.slice(0, 8).map(renderRequest).join("")}
   </details>`;
@@ -328,8 +360,10 @@ function renderRequestStatus(status: CommandRequestSnapshot["status"]): string {
 }
 
 function renderActivity(activity: NonNullable<CommandRequestSnapshot["activity"]>): string {
+  const latest = activity.slice(-20).reverse();
   return `<ol class="activity">
-    ${activity.slice(-20).map((entry) => `<li class="${escapeHtml(entry.category)}">
+    <li class="activity-heading">Latest activity</li>
+    ${latest.map((entry) => `<li class="${escapeHtml(entry.category)}">
       <time>${escapeHtml(formatActivityTime(entry.receivedAt))}</time>
       <span>
         ${escapeHtml(formatActivityMessage(entry))}
@@ -925,6 +959,15 @@ function styles(): string {
       padding: 3px 4px;
       border-left: 2px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.24));
       background: color-mix(in srgb, var(--vscode-input-background, #1f1f1f) 88%, var(--vscode-focusBorder, #3794ff) 12%);
+    }
+    .activity-heading {
+      display: block !important;
+      color: var(--vscode-descriptionForeground);
+      background: transparent !important;
+      border-left: 0 !important;
+      padding: 0 0 2px !important;
+      text-transform: uppercase;
+      font-weight: 700;
     }
     .activity li.model { border-left-color: var(--vscode-focusBorder); }
     .activity time { color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; }

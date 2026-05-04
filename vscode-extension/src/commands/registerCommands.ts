@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 
 import { ReleasePilotClient } from "../client/releasePilotClient";
 import { DraftDocument, DraftItem, DraftRangeRequest, ModelSettings, RepositoryOverview } from "../client/types";
+import { handleNotificationAction, showErrorNotification, showSuccessNotification } from "../notifications";
 import { PreviewPanel } from "../webview/previewPanel";
 
 interface ReleaseViewState {
@@ -26,7 +27,9 @@ export function registerCommands(
       const document = await client.getDraft(request);
       const overview = await client.getRepositoryOverview();
       treeProvider.refresh(document, overview, client.getModelSettings());
-      vscode.window.showInformationMessage(`ReleasePilot loaded ${document.item_count} item(s).`);
+      await handleNotificationAction(
+        await showSuccessNotification(`ReleasePilot loaded ${document.item_count} item(s).`, "Open ReleasePilot", "View Activity"),
+      );
     }),
     vscode.commands.registerCommand("releasepilot.previewReleaseNotes", async () => {
       const request = await promptForRange(client);
@@ -37,12 +40,19 @@ export function registerCommands(
       const overview = await client.getRepositoryOverview();
       treeProvider.refresh(document, overview, client.getModelSettings());
       previewPanel.show(document);
+      await handleNotificationAction(
+        await showSuccessNotification(`ReleasePilot previewed ${document.item_count} item(s).`, "Open ReleasePilot", "View Activity"),
+      );
     }),
     vscode.commands.registerCommand("releasepilot.refreshRepository", async () => {
       const overview = await client.getRepositoryOverview();
       treeProvider.refresh(undefined, overview, client.getModelSettings());
-      vscode.window.showInformationMessage(
-        `ReleasePilot found ${overview.branches.length} branch(es), ${overview.tags.length} tag(s), and ${overview.unpublishedCount} unpublished item(s).`,
+      await handleNotificationAction(
+        await showSuccessNotification(
+          `ReleasePilot found ${overview.branches.length} branch(es), ${overview.tags.length} tag(s), and ${overview.unpublishedCount} unpublished item(s).`,
+          "Open ReleasePilot",
+          "View Activity",
+        ),
       );
     }),
     vscode.commands.registerCommand("releasepilot.applyToChangelog", async () => {
@@ -51,7 +61,7 @@ export function registerCommands(
         return;
       }
       const result = await client.applyDraft(request, "changelog");
-      vscode.window.showInformationMessage(`Updated ${result.path}`);
+      await showApplyNotification(client, request, previewPanel, result.path);
     }),
     vscode.commands.registerCommand("releasepilot.applyToReleaseFile", async () => {
       const request = await promptForRange(client);
@@ -59,7 +69,7 @@ export function registerCommands(
         return;
       }
       const result = await client.applyDraft(request, "github-release");
-      vscode.window.showInformationMessage(`Updated ${result.path}`);
+      await showApplyNotification(client, request, previewPanel, result.path);
     }),
     vscode.commands.registerCommand("releasepilot.refreshItems", async () => {
       treeProvider.refresh(undefined, undefined, client.getModelSettings());
@@ -154,8 +164,7 @@ async function suggestItemSummary(
     await updateItemReviewState(client, treeProvider, previewPanel, node, { summary: picked.label });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    vscode.window.showErrorMessage(message);
-    await vscode.commands.executeCommand("releasepilot.changeModel");
+    await handleNotificationAction(await showErrorNotification(message, "View Activity", "Change Model"));
   }
 }
 
@@ -188,10 +197,14 @@ async function requestModelInput(
     );
     await showPromptPreview(promptPreview);
   } catch (error) {
-    vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
+    await handleNotificationAction(
+      await showErrorNotification(error instanceof Error ? error.message : String(error), "View Activity"),
+    );
     return;
   }
-  vscode.window.showInformationMessage("ReleasePilot opened the prompt preview and copied the prompt to the clipboard.");
+  await handleNotificationAction(
+    await showSuccessNotification("ReleasePilot opened the prompt preview and copied it to the clipboard.", "View Activity"),
+  );
 }
 
 async function promptForRange(client: ReleasePilotClient): Promise<DraftRangeRequest | undefined> {
@@ -330,7 +343,31 @@ async function changeModelSettings(
   });
   await client.initialize();
   treeProvider.refresh(undefined, undefined, client.getModelSettings());
-  vscode.window.showInformationMessage(`ReleasePilot model set to ${provider}${provider === "ollama" ? ` / ${model}` : ""}.`);
+  await handleNotificationAction(
+    await showSuccessNotification(
+      `ReleasePilot model set to ${provider}${provider === "ollama" ? ` / ${model}` : ""}.`,
+      "Open ReleasePilot",
+    ),
+  );
+}
+
+async function showApplyNotification(
+  client: ReleasePilotClient,
+  request: DraftRangeRequest,
+  previewPanel: PreviewPanel,
+  resultPath: string,
+): Promise<void> {
+  await handleNotificationAction(await showSuccessNotification(`Updated ${resultPath}`, "Open File", "Preview", "View Activity"), {
+    "Open File": async () => {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      const uri = folder ? vscode.Uri.joinPath(folder.uri, resultPath) : vscode.Uri.file(resultPath);
+      const document = await vscode.workspace.openTextDocument(uri);
+      await vscode.window.showTextDocument(document, vscode.ViewColumn.Beside, true);
+    },
+    Preview: async () => {
+      previewPanel.show(await client.getDraft(request));
+    },
+  });
 }
 
 async function updateItemReviewState(

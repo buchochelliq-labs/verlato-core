@@ -2,6 +2,8 @@ import * as vscode from "vscode";
 
 import { registerCommands } from "./commands/registerCommands";
 import { ReleasePilotClient } from "./client/releasePilotClient";
+import { ReleaseSourcesProvider } from "./tree/releaseSourcesProvider";
+import { ReleaseActivityViewProvider } from "./webview/releaseActivityView";
 import { PreviewPanel } from "./webview/previewPanel";
 import { ReleaseControlViewProvider } from "./webview/releaseControlView";
 
@@ -14,7 +16,19 @@ export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("ReleasePilot");
   const client = new ReleasePilotClient(workspaceFolder, context.extensionPath, output);
   const previewPanel = new PreviewPanel();
-  const releaseControlView = new ReleaseControlViewProvider(client, previewPanel);
+  const releaseSourcesProvider = new ReleaseSourcesProvider();
+  const releaseControlView = new ReleaseControlViewProvider(client, previewPanel, (_document, overview) => {
+    releaseSourcesProvider.refresh(overview);
+  });
+  const releaseActivityView = new ReleaseActivityViewProvider(client);
+  const releaseViewState = {
+    refresh: (...args: Parameters<ReleaseControlViewProvider["refresh"]>) => {
+      const [_document, overview] = args;
+      releaseControlView.refresh(...args);
+      releaseSourcesProvider.refresh(overview);
+    },
+    getDocument: () => releaseControlView.getDocument(),
+  };
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBarItem.command = "releasepilot.showServiceInfo";
   statusBarItem.text = `ReleasePilot: ${client.getModelSettings().provider}`;
@@ -25,7 +39,15 @@ export function activate(context: vscode.ExtensionContext): void {
     output,
     client,
     statusBarItem,
-    vscode.window.registerWebviewViewProvider("releasepilot.items", releaseControlView),
+    vscode.window.registerWebviewViewProvider("releasepilot.control", releaseControlView),
+    vscode.window.registerWebviewViewProvider("releasepilot.activity", releaseActivityView),
+    vscode.window.createTreeView("releasepilot.sources", { treeDataProvider: releaseSourcesProvider }),
+    vscode.commands.registerCommand("releasepilot.openControl", () => {
+      void vscode.commands.executeCommand("releasepilot.control.focus");
+    }),
+    vscode.commands.registerCommand("releasepilot.openActivity", () => {
+      releaseActivityView.reveal();
+    }),
   );
 
   client.onDidChangeStatus((status) => {
@@ -33,8 +55,8 @@ export function activate(context: vscode.ExtensionContext): void {
     statusBarItem.tooltip = status.detail;
   });
 
-  registerCommands(context, client, releaseControlView, previewPanel);
-  releaseControlView.refresh(undefined, undefined, client.getModelSettings());
+  registerCommands(context, client, releaseViewState, previewPanel);
+  releaseViewState.refresh(undefined, undefined, client.getModelSettings());
   void client.initialize();
 }
 

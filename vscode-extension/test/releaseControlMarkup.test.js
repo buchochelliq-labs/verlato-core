@@ -1,7 +1,8 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { buildReleaseControlHtml } = require("../dist/webview/releaseControlMarkup");
+const { buildReleaseActivityHtml, buildReleaseControlHtml } = require("../dist/webview/releaseControlMarkup");
+const manifest = require("../package.json");
 
 const modelSettings = {
   provider: "mock",
@@ -75,7 +76,7 @@ test("renders current model as a clickable hover badge", () => {
   assert.match(html, /Streaming: on/);
 });
 
-test("renders repository sources after refresh even before a draft exists", () => {
+test("keeps repository sources out of the release control view", () => {
   const html = buildReleaseControlHtml({
     modelSettings,
     range,
@@ -99,9 +100,8 @@ test("renders repository sources after refresh even before a draft exists", () =
   });
 
   assert.match(html, /Repository activity loaded: 1 recent commit/);
-  assert.match(html, /PRs From Commits/);
-  assert.match(html, /Add release control UX/);
-  assert.match(html, /v1\.0\.0/);
+  assert.doesNotMatch(html, /PRs From Commits/);
+  assert.doesNotMatch(html, /Add release control UX/);
 });
 
 test("counts visible draft items separately from hidden reviewed items", () => {
@@ -224,8 +224,31 @@ test("renders suggestion actions and review variants", () => {
   assert.match(html, /data-action="feedbackNegative" data-item="ci_1"/);
 });
 
-test("renders live request inspection and per-request stop controls", () => {
+test("keeps request inspection out of the release control view", () => {
   const html = buildReleaseControlHtml({
+    modelSettings,
+    range,
+    busy: true,
+    requests: [
+      {
+        id: 42,
+        command: "releasepilot",
+        args: ["draft", "suggest", "--all-visible"],
+        label: "draft suggest",
+        status: "running",
+        startedAt: "2026-05-03T12:00:00.000Z",
+        stdout: "",
+        stderr: "[releasepilot:model] starting suggest provider=ollama title=Improve API",
+      },
+    ],
+  });
+
+  assert.doesNotMatch(html, /REQUESTS/);
+  assert.doesNotMatch(html, /releasepilot draft suggest --all-visible/);
+});
+
+test("renders live request inspection and per-request stop controls in activity view", () => {
+  const html = buildReleaseActivityHtml({
     modelSettings,
     range,
     busy: true,
@@ -252,8 +275,8 @@ test("renders live request inspection and per-request stop controls", () => {
   assert.match(html, /data-action="cancelRequest" data-request="42"/);
 });
 
-test("collapses completed request groups until expanded", () => {
-  const html = buildReleaseControlHtml({
+test("opens completed request groups in the dedicated activity view", () => {
+  const html = buildReleaseActivityHtml({
     modelSettings,
     range,
     busy: false,
@@ -271,13 +294,13 @@ test("collapses completed request groups until expanded", () => {
     ],
   });
 
-  assert.match(html, /<details class="section tree-section requests" >/);
+  assert.match(html, /<details class="section tree-section requests" open>/);
   assert.match(html, /<span class="badge request-status completed"><span>completed<\/span><\/span>/);
   assert.match(html, /1 recent/);
 });
 
-test("renders model activity as a timeline with raw output preserved", () => {
-  const html = buildReleaseControlHtml({
+test("renders model activity newest first with raw output preserved", () => {
+  const html = buildReleaseActivityHtml({
     modelSettings,
     range,
     busy: true,
@@ -339,6 +362,9 @@ test("renders model activity as a timeline with raw output preserved", () => {
   });
 
   assert.match(html, /<ol class="activity">/);
+  assert.match(html, /Latest activity/);
+  assert.ok(html.indexOf("prompt budget files=12/24") < html.indexOf("prompt preview"));
+  assert.ok(html.indexOf("prompt preview") < html.indexOf("response provider=ollama"));
   assert.match(html, /provider=ollama task=suggest model=gemma4/);
   assert.match(html, /response provider=ollama task=suggest content_chars=88/);
   assert.match(html, /prompt preview/);
@@ -351,7 +377,7 @@ test("renders model activity as a timeline with raw output preserved", () => {
 });
 
 test("renders semantic status badge colors and running spinner hooks", () => {
-  const html = buildReleaseControlHtml({
+  const controlHtml = buildReleaseControlHtml({
     modelSettings,
     range,
     busy: true,
@@ -387,18 +413,32 @@ test("renders semantic status badge colors and running spinner hooks", () => {
       },
     ],
   });
+  const activityHtml = buildReleaseActivityHtml({
+    requests: [
+      {
+        id: 50,
+        command: "releasepilot",
+        args: ["draft", "preview"],
+        label: "draft preview",
+        status: "failed",
+        startedAt: "2026-05-03T12:00:00.000Z",
+        stdout: "",
+        stderr: "failed",
+      },
+    ],
+  });
 
-  assert.match(html, /<span class="badge ready">ready<\/span>/);
-  assert.match(html, /<span class="badge needs-review">needs-review<\/span>/);
-  assert.match(html, /<span class="badge request-status failed"><span>failed<\/span><\/span>/);
-  assert.match(html, /\.request \.badge\.completed[\s\S]*var\(--vscode-charts-green/);
-  assert.match(html, /\.request \.badge\.running[\s\S]*var\(--vscode-charts-yellow/);
-  assert.match(html, /\.request \.badge\.failed[\s\S]*var\(--vscode-errorForeground/);
-  assert.match(html, /@keyframes releasepilot-spin/);
+  assert.match(controlHtml, /<span class="badge ready">ready<\/span>/);
+  assert.match(controlHtml, /<span class="badge needs-review">needs-review<\/span>/);
+  assert.match(activityHtml, /<span class="badge request-status failed"><span>failed<\/span><\/span>/);
+  assert.match(activityHtml, /\.request \.badge\.completed[\s\S]*var\(--vscode-charts-green/);
+  assert.match(activityHtml, /\.request \.badge\.running[\s\S]*var\(--vscode-charts-yellow/);
+  assert.match(activityHtml, /\.request \.badge\.failed[\s\S]*var\(--vscode-errorForeground/);
+  assert.match(activityHtml, /@keyframes releasepilot-spin/);
 });
 
 test("renders coalesced stream chunk activity as live blocks", () => {
-  const html = buildReleaseControlHtml({
+  const html = buildReleaseActivityHtml({
     modelSettings,
     range,
     busy: true,
@@ -445,6 +485,35 @@ test("renders coalesced stream chunk activity as live blocks", () => {
   assert.match(html, /<details class="payload stream-payload" open>/);
   assert.match(html, /Thinking through diff/);
   assert.match(html, /Adds model tracing/);
+});
+
+test("contributes focused ReleasePilot views and optional walkthrough", () => {
+  const views = manifest.contributes.views.releasepilot;
+
+  assert.deepEqual(views.map((view) => view.id), [
+    "releasepilot.control",
+    "releasepilot.activity",
+    "releasepilot.sources",
+  ]);
+  assert.equal(views[0].contextualTitle, "ReleasePilot Control");
+  assert.equal(views[1].contextualTitle, "ReleasePilot Activity");
+  assert.equal(views[2].contextualTitle, "ReleasePilot Sources");
+  assert.equal(manifest.contributes.configuration.properties["releasepilot.notifications.successLevel"].default, "visible");
+  assert.deepEqual(manifest.contributes.configuration.properties["releasepilot.notifications.successLevel"].enum, [
+    "visible",
+    "quiet",
+  ]);
+  assert.equal(manifest.contributes.walkthroughs[0].title, "Get started with ReleasePilot");
+  assert.match(manifest.contributes.walkthroughs[0].description, /Optional shortcuts/);
+  assert.deepEqual(
+    manifest.contributes.walkthroughs[0].steps.map((step) => step.completionEvents[0]),
+    [
+      "onView:releasepilot.control",
+      "onCommand:releasepilot.changeModel",
+      "onCommand:releasepilot.scanRepository",
+      "onCommand:releasepilot.previewReleaseNotes",
+    ],
+  );
 });
 
 function draftItem(overrides) {

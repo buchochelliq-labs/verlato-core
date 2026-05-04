@@ -16,7 +16,11 @@
     "Other"
   ],
   "activationEvents": [
-    "onView:releasepilot.items",
+    "onView:releasepilot.control",
+    "onView:releasepilot.activity",
+    "onView:releasepilot.sources",
+    "onCommand:releasepilot.openControl",
+    "onCommand:releasepilot.openActivity",
     "onCommand:releasepilot.scanRepository",
     "onCommand:releasepilot.previewReleaseNotes",
     "onCommand:releasepilot.refreshRepository",
@@ -49,13 +53,36 @@
     "views": {
       "releasepilot": [
         {
-          "id": "releasepilot.items",
-          "name": "Release Control",
+          "id": "releasepilot.control",
+          "name": "Control",
+          "contextualTitle": "ReleasePilot Control",
+          "icon": "media/releasepilot.svg",
           "type": "webview"
+        },
+        {
+          "id": "releasepilot.activity",
+          "name": "Activity",
+          "contextualTitle": "ReleasePilot Activity",
+          "icon": "media/releasepilot.svg",
+          "type": "webview"
+        },
+        {
+          "id": "releasepilot.sources",
+          "name": "Sources",
+          "contextualTitle": "ReleasePilot Sources",
+          "icon": "media/releasepilot.svg"
         }
       ]
     },
     "commands": [
+      {
+        "command": "releasepilot.openControl",
+        "title": "ReleasePilot: Open Control"
+      },
+      {
+        "command": "releasepilot.openActivity",
+        "title": "ReleasePilot: View Activity"
+      },
       {
         "command": "releasepilot.scanRepository",
         "title": "ReleasePilot: Scan Repository"
@@ -242,71 +269,126 @@
           "type": "string",
           "default": "",
           "description": "Optional JSONL file path for model telemetry debugging. Leave empty to keep telemetry ephemeral in the VS Code session."
+        },
+        "releasepilot.notifications.successLevel": {
+          "type": "string",
+          "default": "visible",
+          "enum": [
+            "visible",
+            "quiet"
+          ],
+          "description": "Controls success notifications for user-initiated ReleasePilot actions. Use quiet to rely on in-view status updates."
         }
       }
     },
+    "walkthroughs": [
+      {
+        "id": "releasepilot.getStarted",
+        "title": "Get started with ReleasePilot",
+        "description": "Optional shortcuts for scanning changes, reviewing suggestions, and applying draft notes from VS Code.",
+        "steps": [
+          {
+            "id": "releasepilot.openControl",
+            "title": "Open ReleasePilot",
+            "description": "Open the ReleasePilot Activity Bar view to start drafting release notes.\n[Open ReleasePilot](command:releasepilot.openControl)",
+            "completionEvents": [
+              "onView:releasepilot.control"
+            ]
+          },
+          {
+            "id": "releasepilot.configureModel",
+            "title": "Configure the model",
+            "description": "Choose the model provider and tone used for generated release-note suggestions.\n[Change AI Model](command:releasepilot.changeModel)",
+            "completionEvents": [
+              "onCommand:releasepilot.changeModel"
+            ]
+          },
+          {
+            "id": "releasepilot.scanRange",
+            "title": "Scan a range",
+            "description": "Pick a base ref and scan the repository for candidate release-note items.\n[Scan Repository](command:releasepilot.scanRepository)",
+            "completionEvents": [
+              "onCommand:releasepilot.scanRepository"
+            ]
+          },
+          {
+            "id": "releasepilot.reviewApply",
+            "title": "Review and apply notes",
+            "description": "Preview generated release notes, then apply them to your configured changelog or release file.\n[Preview Release Notes](command:releasepilot.previewReleaseNotes)",
+            "completionEvents": [
+              "onCommand:releasepilot.previewReleaseNotes"
+            ]
+          }
+        ]
+      }
+    ],
     "menus": {
       "view/title": [
         {
           "command": "releasepilot.scanRepository",
-          "when": "view == releasepilot.items",
+          "when": "view == releasepilot.control",
           "group": "navigation"
         },
         {
           "command": "releasepilot.refreshRepository",
-          "when": "view == releasepilot.items",
+          "when": "view == releasepilot.control || view == releasepilot.sources",
           "group": "navigation"
         },
         {
           "command": "releasepilot.refreshItems",
-          "when": "view == releasepilot.items",
+          "when": "view == releasepilot.control",
+          "group": "navigation"
+        },
+        {
+          "command": "releasepilot.openActivity",
+          "when": "view == releasepilot.control",
           "group": "navigation"
         }
       ],
       "view/item/context": [
         {
           "command": "releasepilot.markItemReady",
-          "when": "view == releasepilot.items && viewItem == releasepilot.item",
+          "when": "view == releasepilot.control && viewItem == releasepilot.item",
           "group": "inline"
         },
         {
           "command": "releasepilot.markItemNeedsReview",
-          "when": "view == releasepilot.items && viewItem == releasepilot.item",
+          "when": "view == releasepilot.control && viewItem == releasepilot.item",
           "group": "inline"
         },
         {
           "command": "releasepilot.hideItem",
-          "when": "view == releasepilot.items && viewItem == releasepilot.item",
+          "when": "view == releasepilot.control && viewItem == releasepilot.item",
           "group": "inline"
         },
         {
           "command": "releasepilot.editItemSummary",
-          "when": "view == releasepilot.items && viewItem == releasepilot.item",
+          "when": "view == releasepilot.control && viewItem == releasepilot.item",
           "group": "navigation"
         },
         {
           "command": "releasepilot.suggestItemSummary",
-          "when": "view == releasepilot.items && viewItem == releasepilot.item",
+          "when": "view == releasepilot.control && viewItem == releasepilot.item",
           "group": "inline"
         },
         {
           "command": "releasepilot.requestModelInput",
-          "when": "view == releasepilot.items && viewItem == releasepilot.item",
+          "when": "view == releasepilot.control && viewItem == releasepilot.item",
           "group": "navigation"
         },
         {
           "command": "releasepilot.acceptItem",
-          "when": "view == releasepilot.items && viewItem == releasepilot.item",
+          "when": "view == releasepilot.control && viewItem == releasepilot.item",
           "group": "inline"
         },
         {
           "command": "releasepilot.unhideItem",
-          "when": "view == releasepilot.items && viewItem == releasepilot.item",
+          "when": "view == releasepilot.control && viewItem == releasepilot.item",
           "group": "navigation"
         },
         {
           "command": "releasepilot.resetItemSummary",
-          "when": "view == releasepilot.items && viewItem == releasepilot.item",
+          "when": "view == releasepilot.control && viewItem == releasepilot.item",
           "group": "navigation"
         }
       ]
