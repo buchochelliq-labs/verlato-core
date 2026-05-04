@@ -313,13 +313,18 @@ function renderRequest(request: CommandRequestSnapshot): string {
   return `<details class="request" ${request.status === "running" ? "open" : ""}>
     <summary>
       <span class="request-label">${escapeHtml(request.label || request.command)}</span>
-      <span class="badge ${escapeHtml(request.status)}">${escapeHtml(request.status)}</span>
+      ${renderRequestStatus(request.status)}
       ${request.status === "running" ? `<button class="request-stop" data-action="cancelRequest" data-request="${request.id}" title="Stop this request">Stop</button>` : ""}
     </summary>
     <code>${escapeHtml(command)}</code>
     ${activity.length ? renderActivity(activity) : `<small>No model activity yet.</small>`}
     ${output ? `<details class="raw"><summary>Raw output</summary><pre>${escapeHtml(output)}</pre></details>` : ""}
   </details>`;
+}
+
+function renderRequestStatus(status: CommandRequestSnapshot["status"]): string {
+  const spinner = status === "running" ? `<span class="spinner" aria-hidden="true"></span>` : "";
+  return `<span class="badge request-status ${escapeHtml(status)}">${spinner}<span>${escapeHtml(status)}</span></span>`;
 }
 
 function renderActivity(activity: NonNullable<CommandRequestSnapshot["activity"]>): string {
@@ -838,7 +843,29 @@ function styles(): string {
     .item-head { display: flex; gap: 6px; align-items: baseline; }
     .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .badge { color: var(--vscode-descriptionForeground); font-size: 10px; }
+    .item .badge {
+      padding: 1px 5px;
+      border-radius: 999px;
+      background: var(--vscode-badge-background, var(--vscode-button-secondaryBackground));
+    }
+    .item .badge.ready,
+    .item .badge.accepted {
+      color: var(--vscode-editor-background);
+      background: var(--vscode-charts-green, #89d185);
+    }
+    .item .badge.needs-review,
+    .item .badge.edited {
+      color: var(--vscode-editor-background);
+      background: var(--vscode-charts-yellow, #cca700);
+    }
+    .item .badge.hidden {
+      color: var(--vscode-descriptionForeground);
+      background: var(--vscode-button-secondaryBackground, #2a2d2e);
+    }
     .request .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
       padding: 1px 5px;
       border-radius: 999px;
       color: var(--vscode-descriptionForeground);
@@ -846,11 +873,11 @@ function styles(): string {
     }
     .request .badge.running {
       color: var(--vscode-editor-background);
-      background: var(--vscode-charts-green, #89d185);
+      background: var(--vscode-charts-yellow, #cca700);
     }
     .request .badge.completed {
       color: var(--vscode-editor-background);
-      background: var(--vscode-charts-blue, #3794ff);
+      background: var(--vscode-charts-green, #89d185);
     }
     .request .badge.failed {
       color: var(--vscode-button-foreground);
@@ -859,6 +886,17 @@ function styles(): string {
     .request .badge.cancelled {
       color: var(--vscode-editor-background);
       background: var(--vscode-charts-yellow, #cca700);
+    }
+    .spinner {
+      width: 9px;
+      height: 9px;
+      border: 1.5px solid currentColor;
+      border-top-color: transparent;
+      border-radius: 999px;
+      animation: releasepilot-spin .8s linear infinite;
+    }
+    @keyframes releasepilot-spin {
+      to { transform: rotate(360deg); }
     }
     .item p { margin: 3px 0; color: var(--vscode-descriptionForeground); line-height: 1.35; }
     .actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-top: 5px; }

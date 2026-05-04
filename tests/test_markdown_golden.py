@@ -62,3 +62,16 @@ def test_changelog_golden(monkeypatch):
     )
     expected = Path("tests/fixtures/golden/changelog.md").read_text().strip() + "\n"
     assert rendered == expected
+
+
+def test_github_release_empty_document_has_markdown_subheading(monkeypatch):
+    monkeypatch.setattr("releasepilot.core.generator.date", _FixedDate)
+
+    rendered = MarkdownGenerator().render_github_release([], version="v2.0.0")
+
+    assert rendered == (
+        "## v2.0.0 - 2026-04-22\n"
+        "\n"
+        "### No Changes\n"
+        "- No notable changes were detected for this range.\n"
+    )

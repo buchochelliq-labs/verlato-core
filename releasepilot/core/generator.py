@@ -83,4 +83,6 @@ class MarkdownGenerator:
                 else:
                     lines.append(f"- {item.content.title}{source}{suffix}")
             lines.append("")
+        if not lines:
+            lines.extend(["### No Changes", "- No notable changes were detected for this range.", ""])
         return lines

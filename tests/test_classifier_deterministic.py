@@ -96,6 +96,7 @@ def test_provider_summary_prompt_includes_diff_hunks_and_files():
 
     assert item.content.summary == "Search now ranks matching results"
     assert "Lead with what changed and why it matters" in provider.summary_request.prompt
+    assert "renders the final release note as Markdown" in provider.summary_request.prompt
     assert "use polished release-note wording" in provider.summary_request.prompt
     assert "src/search.py" in provider.summary_request.prompt
     assert "+return ranked_results" in provider.summary_request.prompt

@@ -246,7 +246,7 @@ test("renders live request inspection and per-request stop controls", () => {
   assert.match(html, /REQUESTS/);
   assert.match(html, /1 running/);
   assert.match(html, /<details class="section tree-section requests" open>/);
-  assert.match(html, /<span class="badge running">running<\/span>/);
+  assert.match(html, /<span class="badge request-status running"><span class="spinner" aria-hidden="true"><\/span><span>running<\/span><\/span>/);
   assert.match(html, /releasepilot draft suggest --all-visible/);
   assert.match(html, /starting suggest provider=ollama/);
   assert.match(html, /data-action="cancelRequest" data-request="42"/);
@@ -272,7 +272,7 @@ test("collapses completed request groups until expanded", () => {
   });
 
   assert.match(html, /<details class="section tree-section requests" >/);
-  assert.match(html, /<span class="badge completed">completed<\/span>/);
+  assert.match(html, /<span class="badge request-status completed"><span>completed<\/span><\/span>/);
   assert.match(html, /1 recent/);
 });
 
@@ -348,6 +348,53 @@ test("renders model activity as a timeline with raw output preserved", () => {
   assert.match(html, /Summarize the changed API behavior/);
   assert.match(html, /Raw output/);
   assert.doesNotMatch(html, /\[releasepilot:model\] provider=ollama task=suggest model=gemma4<\/span>/);
+});
+
+test("renders semantic status badge colors and running spinner hooks", () => {
+  const html = buildReleaseControlHtml({
+    modelSettings,
+    range,
+    busy: true,
+    document: {
+      version: "Unreleased",
+      generated_on: "2026-05-03",
+      base_ref: "v1.0.0",
+      head_ref: "HEAD",
+      targets: [],
+      rendered: {},
+      item_count: 2,
+      sections: [
+        {
+          kind: "changed",
+          title: "Changed",
+          items: [
+            draftItem({ id: "ready", title: "Ready item", status: "ready" }),
+            draftItem({ id: "review", title: "Review item", status: "needs-review" }),
+          ],
+        },
+      ],
+    },
+    requests: [
+      {
+        id: 50,
+        command: "releasepilot",
+        args: ["draft", "preview"],
+        label: "draft preview",
+        status: "failed",
+        startedAt: "2026-05-03T12:00:00.000Z",
+        stdout: "",
+        stderr: "failed",
+      },
+    ],
+  });
+
+  assert.match(html, /<span class="badge ready">ready<\/span>/);
+  assert.match(html, /<span class="badge needs-review">needs-review<\/span>/);
+  assert.match(html, /<span class="badge request-status failed"><span>failed<\/span><\/span>/);
+  assert.match(html, /\.request \.badge\.completed[\s\S]*var\(--vscode-charts-green/);
+  assert.match(html, /\.request \.badge\.running[\s\S]*var\(--vscode-charts-yellow/);
+  assert.match(html, /\.request \.badge\.failed[\s\S]*var\(--vscode-errorForeground/);
+  assert.match(html, /@keyframes releasepilot-spin/);
 });
 
 test("renders coalesced stream chunk activity as live blocks", () => {

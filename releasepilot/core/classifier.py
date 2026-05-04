@@ -406,6 +406,8 @@ class Classifier:
         style_text = f"{style_lines}\n" if style_lines else ""
         prompt = (
             f"Write a useful ReleasePilot release-note description based primarily on the file diffs.\n"
+            f"ReleasePilot renders the final release note as Markdown with a version heading and change-type "
+            f"subheadings; return only the entry body for this change, without top-level Markdown headings.\n"
             f"Lead with what changed and why it matters. Name the observable behavior, workflow, API, docs, "
             f"test, or maintenance impact.\n"
             f"Prefer concrete active verbs such as Adds, Fixes, Clarifies, Reduces, Preserves, Documents, "
