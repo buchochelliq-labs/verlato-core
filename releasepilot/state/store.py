@@ -16,6 +16,7 @@ class StateData:
     items: list[ChangeItem] = field(default_factory=list)
     schema_version: str = "v3"
     area_release_lineage: dict[str, list[str]] = field(default_factory=dict)
+    feedback_events: list[dict] = field(default_factory=list)
 
 
 class StateStore:
@@ -38,12 +39,14 @@ class StateStore:
         elif schema_version in {"v2", self.CURRENT_SCHEMA_VERSION}:
             items = [ChangeItem.from_dict(i) for i in raw.get("items", [])]
             lineage = raw.get("area_release_lineage") or self._derive_lineage(items)
+            feedback_events = [event for event in raw.get("feedback_events", []) if isinstance(event, dict)]
         else:
             raise StateStoreError(f"Unsupported state schema version: {schema_version}")
         return StateData(
             items=items,
             schema_version=schema_version,
             area_release_lineage=lineage,
+            feedback_events=feedback_events if schema_version in {"v2", self.CURRENT_SCHEMA_VERSION} else [],
         )
 
     def save(self, data: StateData) -> None:
@@ -51,6 +54,7 @@ class StateStore:
         payload = {
             "schema_version": self.CURRENT_SCHEMA_VERSION,
             "area_release_lineage": lineage,
+            "feedback_events": data.feedback_events,
             "items": [i.to_dict() for i in data.items],
         }
         self.path.write_text(json.dumps(payload, indent=2, sort_keys=True))

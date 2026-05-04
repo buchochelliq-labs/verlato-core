@@ -78,10 +78,21 @@ class Classifier:
         "suggested wording",
     }
 
-    def __init__(self, provider: ReleasePilotProvider | None = None, *, summary_tone: str = "release-note") -> None:
+    def __init__(
+        self,
+        provider: ReleasePilotProvider | None = None,
+        *,
+        summary_tone: str = "release-note",
+        style_guidance: str = "",
+        project_vocabulary: list[str] | None = None,
+        banned_phrases: list[str] | None = None,
+    ) -> None:
         self.diff_builder = DiffEvidenceBuilder()
         self.provider = provider
         self.summary_tone = summary_tone
+        self.style_guidance = style_guidance
+        self.project_vocabulary = project_vocabulary or []
+        self.banned_phrases = banned_phrases or []
 
     def classify(self, group: ChangeGroup, base_ref: str, head_ref: str, *, summary_only: bool = False) -> list[ChangeItem]:
         pr = group.pr
@@ -239,6 +250,9 @@ class Classifier:
             kind=kind,
             audience=audience,
             tone=self.summary_tone,
+            style_guidance=self.style_guidance,
+            project_vocabulary=self.project_vocabulary,
+            banned_phrases=self.banned_phrases,
         )
         self._trace_model_call_start("summarize", title)
         summary_response = provider.summarize(
@@ -303,6 +317,9 @@ class Classifier:
         kind: str | None = None,
         audience: str | None = None,
         tone: str = "release-note",
+        style_guidance: str = "",
+        project_vocabulary: list[str] | None = None,
+        banned_phrases: list[str] | None = None,
     ) -> str:
         return self._build_summary_prompt_with_budget(
             title=title,
@@ -314,6 +331,9 @@ class Classifier:
             kind=kind,
             audience=audience,
             tone=tone,
+            style_guidance=style_guidance,
+            project_vocabulary=project_vocabulary,
+            banned_phrases=banned_phrases,
         ).prompt
 
     def _build_summary_prompt_with_budget(
@@ -328,6 +348,9 @@ class Classifier:
         kind: str | None = None,
         audience: str | None = None,
         tone: str = "release-note",
+        style_guidance: str = "",
+        project_vocabulary: list[str] | None = None,
+        banned_phrases: list[str] | None = None,
     ) -> SummaryPrompt:
         commit_subjects = [commit.message.splitlines()[0] for commit in commits[:MAX_PROMPT_COMMITS]]
         commit_lines = "; ".join(commit_subjects) or "none"
@@ -372,6 +395,12 @@ class Classifier:
             else f"Return exactly {suggestion_count} distinct options as a numbered list, one sentence per option."
         )
         tone_instruction = _summary_tone_instruction(tone)
+        style_lines = _summary_style_lines(
+            guidance=style_guidance,
+            project_vocabulary=project_vocabulary or [],
+            banned_phrases=banned_phrases or [],
+        )
+        style_text = f"{style_lines}\n" if style_lines else ""
         prompt = (
             f"Write concise ReleasePilot description suggestions based primarily on the file diffs.\n"
             f"Lead with what changed and why it matters. Name the observable behavior, workflow, API, docs, "
@@ -382,6 +411,7 @@ class Classifier:
             f"For external/user-facing changes, use polished release-note wording. For internal, docs, tests, "
             f"or maintenance changes, use concise commit-like wording.\n"
             f"Tone: {tone_instruction}\n"
+            f"{style_text}"
             f"{output_instruction}\n"
             f"Title: {title}\n"
             f"Release context: {context_text}\n"
@@ -502,3 +532,16 @@ def _truncate_prompt_text(value: str, limit: int) -> str:
     if len(normalized) <= limit:
         return normalized
     return f"{normalized[:limit].rstrip()}..."
+
+
+def _summary_style_lines(*, guidance: str, project_vocabulary: list[str], banned_phrases: list[str]) -> str:
+    lines: list[str] = []
+    if guidance.strip():
+        lines.append(f"Project style guidance: {_truncate_prompt_text(guidance, 300)}")
+    vocabulary = [term.strip() for term in project_vocabulary if term.strip()]
+    if vocabulary:
+        lines.append("Preferred project vocabulary: " + ", ".join(vocabulary[:20]))
+    banned = [phrase.strip() for phrase in banned_phrases if phrase.strip()]
+    if banned:
+        lines.append("Avoid these phrases exactly: " + ", ".join(banned[:20]))
+    return "\n".join(lines)

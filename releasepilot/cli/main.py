@@ -103,6 +103,17 @@ def build_parser() -> argparse.ArgumentParser:
     model_logs_export.add_argument("--output", help="Optional output path. Defaults to stdout.")
     model_logs_export.add_argument("--event", action="append", help="Filter to one event name. Can be provided more than once.")
 
+    feedback = sub.add_parser("feedback")
+    feedback_sub = feedback.add_subparsers(dest="feedback_command", required=True)
+    feedback_record = feedback_sub.add_parser("record")
+    feedback_record.add_argument("--event", required=True)
+    feedback_record.add_argument("--item-id", required=True)
+    feedback_record.add_argument("--metadata-json")
+    feedback_export = feedback_sub.add_parser("export")
+    feedback_export.add_argument("--format", choices=["json", "jsonl"], default="json")
+    feedback_export.add_argument("--output")
+    feedback_export.add_argument("--event", action="append", help="Filter to one feedback event type. Can be provided more than once.")
+
     state = sub.add_parser("state")
     state_sub = state.add_subparsers(dest="state_command", required=True)
     state_sub.add_parser("show")
@@ -141,7 +152,14 @@ def detect_change_items(base: str, head: str, model_provider: str | None = None)
     provider = None
     if max_model_items < 0 or len(groups) <= max_model_items:
         provider = build_provider(config.provider, mode=model_provider)
-    classifier = Classifier(provider=provider, summary_tone=_resolve_suggestion_tone(config.suggestion_tone))
+    style = _resolve_suggestion_style(config)
+    classifier = Classifier(
+        provider=provider,
+        summary_tone=_resolve_suggestion_tone(config.suggestion_tone),
+        style_guidance=str(style["guidance"]),
+        project_vocabulary=list(style["project_vocabulary"]),
+        banned_phrases=list(style["banned_phrases"]),
+    )
     return [item for group in groups for item in classifier.classify(group, base, head)]
 
 
@@ -258,6 +276,32 @@ def _resolve_suggestion_tone(configured: str, requested: str | None = None) -> s
     return tone if tone in SUGGESTION_TONE_CHOICES else "release-note"
 
 
+def _resolve_suggestion_style(config: ReleasePilotConfig) -> dict[str, object]:
+    guidance = os.getenv("RELEASEPILOT_STYLE_GUIDANCE") or config.suggestion_style.guidance
+    vocabulary = _env_list("RELEASEPILOT_PROJECT_VOCABULARY") or config.suggestion_style.project_vocabulary
+    banned = _env_list("RELEASEPILOT_BANNED_PHRASES") or config.suggestion_style.banned_phrases
+    floor_raw = os.getenv("RELEASEPILOT_SPECIFICITY_FLOOR")
+    specificity_floor = config.suggestion_style.specificity_floor
+    if floor_raw is not None:
+        try:
+            specificity_floor = float(floor_raw)
+        except ValueError:
+            specificity_floor = config.suggestion_style.specificity_floor
+    return {
+        "guidance": guidance.strip(),
+        "project_vocabulary": [term for term in vocabulary if term],
+        "banned_phrases": [phrase for phrase in banned if phrase],
+        "specificity_floor": max(0.0, min(float(specificity_floor), 1.0)),
+    }
+
+
+def _env_list(name: str) -> list[str]:
+    raw = os.getenv(name)
+    if not raw:
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
 def _merge_review_state(items: list[ChangeItem]) -> list[ChangeItem]:
     existing = _build_store().load().items
     by_checksum = {(item.checksum_version, item.checksum): item for item in existing}
@@ -357,9 +401,13 @@ def _request_draft_model_input(
 
     config = _load_config()
     suggestion_tone = _resolve_suggestion_tone(config.suggestion_tone, requested=tone)
+    suggestion_style = _resolve_suggestion_style(config)
     provider_classifier = Classifier(
         provider=build_provider(config.provider, mode=effective_model_provider),
         summary_tone=suggestion_tone,
+        style_guidance=str(suggestion_style["guidance"]),
+        project_vocabulary=list(suggestion_style["project_vocabulary"]),
+        banned_phrases=list(suggestion_style["banned_phrases"]),
     )
     candidate = provider_classifier.classify(target_group, base, head, summary_only=True)[0]
 
@@ -381,6 +429,7 @@ def _request_draft_model_input(
         model=_provider_model_from_signals(candidate.evidence.commit_signals),
         prompt_sha=None,
         tone=suggestion_tone,
+        style_profile=suggestion_style,
         response_metadata={},
     )
     return _persist_review_update(
@@ -408,6 +457,7 @@ def _preview_draft_model_suggestions(
     config = _load_config()
     suggestion_count = _resolve_suggestion_count(config.suggestion_count, requested=count)
     suggestion_tone = _resolve_suggestion_tone(config.suggestion_tone, requested=tone)
+    suggestion_style = _resolve_suggestion_style(config)
     suggestion_count_source = (
         "cli" if count is not None else "env" if os.getenv("RELEASEPILOT_SUGGESTION_COUNT") else "config"
     )
@@ -454,7 +504,13 @@ def _preview_draft_model_suggestions(
     )
 
     provider = build_provider(config.provider, mode=effective_model_provider)
-    provider_classifier = Classifier(provider=provider, summary_tone=suggestion_tone)
+    provider_classifier = Classifier(
+        provider=provider,
+        summary_tone=suggestion_tone,
+        style_guidance=str(suggestion_style["guidance"]),
+        project_vocabulary=list(suggestion_style["project_vocabulary"]),
+        banned_phrases=list(suggestion_style["banned_phrases"]),
+    )
 
     items = []
     for group, baseline_item in targets:
@@ -475,6 +531,9 @@ def _preview_draft_model_suggestions(
             kind=baseline_item.classification.kind,
             audience=baseline_item.classification.audience,
             tone=suggestion_tone,
+            style_guidance=str(suggestion_style["guidance"]),
+            project_vocabulary=list(suggestion_style["project_vocabulary"]),
+            banned_phrases=list(suggestion_style["banned_phrases"]),
         )
         prompt = prompt_result.prompt
         evidence = {
@@ -482,6 +541,7 @@ def _preview_draft_model_suggestions(
             "item_id": baseline_item.id,
             "suggestion_count": suggestion_count,
             "tone": suggestion_tone,
+            "style_profile": suggestion_style,
             "diff_summary": diff.summary,
             "representative_hunks": diff.representative_hunks,
             "file_count": file_count,
@@ -516,6 +576,8 @@ def _preview_draft_model_suggestions(
             group,
             trace_title=baseline_item.content.title,
             trace_model=response.model,
+            banned_phrases=list(suggestion_style["banned_phrases"]),
+            specificity_floor=float(suggestion_style["specificity_floor"]),
         )
         _trace_model_suggestion_decision(
             title=baseline_item.content.title,
@@ -536,6 +598,7 @@ def _preview_draft_model_suggestions(
                 "provider": response.model,
                 "prompt_sha": prompt_sha,
                 "tone": suggestion_tone,
+                "style_profile": suggestion_style,
                 "provider_metadata": response.metadata,
                 "provider_reasoning": provider_reasoning,
                 "source_evidence": source_evidence,
@@ -551,6 +614,7 @@ def _preview_draft_model_suggestions(
         "provider": effective_model_provider or "configured",
         "count": suggestion_count,
         "tone": suggestion_tone,
+        "style_profile": suggestion_style,
         "items": items,
     }
 
@@ -563,6 +627,8 @@ def _parse_suggestion_variants(
     *,
     trace_title: str | None = None,
     trace_model: str | None = None,
+    banned_phrases: list[str] | None = None,
+    specificity_floor: float = 0.0,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     normalized = (content or "").strip()
     if not normalized:
@@ -591,20 +657,27 @@ def _parse_suggestion_variants(
     classifier = Classifier()
     for line in lines:
         rejection_reason = classifier._summary_rejection_reason(line, item.content.title, group)
+        banned_phrase = _matched_banned_phrase(line, banned_phrases or [])
+        if not rejection_reason and banned_phrase:
+            rejection_reason = f"banned-phrase:{banned_phrase}"
         similarity = _summary_similarity(line, current_summary)
+        specificity = _summary_specificity(line, group)
         if not rejection_reason and similarity >= 0.82:
             rejection_reason = "too-similar-to-current"
+        if not rejection_reason and specificity < specificity_floor:
+            rejection_reason = "below-specificity-floor"
         if rejection_reason:
             rejected_candidates.append(
                 {
                     "summary": line,
                     "reason": rejection_reason,
                     "similarity_to_current": similarity,
+                    "specificity_score": specificity,
                 }
             )
             _trace_model_suggestion_filter(
                 "reject",
-                f"reason={rejection_reason} similarity_to_current={similarity:.2f} candidate={line}",
+                f"reason={rejection_reason} similarity_to_current={similarity:.2f} specificity={specificity:.2f} candidate={line}",
                 trace_title,
                 trace_model,
             )
@@ -615,11 +688,12 @@ def _parse_suggestion_variants(
                     "summary": line,
                     "reason": "duplicate",
                     "similarity_to_current": similarity,
+                    "specificity_score": specificity,
                 }
             )
             _trace_model_suggestion_filter(
                 "reject",
-                f"reason=duplicate similarity_to_current={similarity:.2f} candidate={line}",
+                f"reason=duplicate similarity_to_current={similarity:.2f} specificity={specificity:.2f} candidate={line}",
                 trace_title,
                 trace_model,
             )
@@ -628,6 +702,7 @@ def _parse_suggestion_variants(
             {
                 "summary": line,
                 "similarity_to_current": similarity,
+                "specificity_score": specificity,
                 "comparison": {
                     "current": current_summary,
                     "suggested": line,
@@ -636,7 +711,7 @@ def _parse_suggestion_variants(
         )
         _trace_model_suggestion_filter(
             "accept",
-            f"index={len(suggestions)} similarity_to_current={similarity:.2f} candidate={line}",
+            f"index={len(suggestions)} similarity_to_current={similarity:.2f} specificity={specificity:.2f} candidate={line}",
             trace_title,
             trace_model,
         )
@@ -671,6 +746,31 @@ def _summary_tokens(value: str) -> list[str]:
         "with",
     }
     return [token for token in re.findall(r"[a-z0-9]+", value.lower()) if token not in stopwords]
+
+
+def _matched_banned_phrase(candidate: str, banned_phrases: list[str]) -> str | None:
+    lowered = candidate.lower()
+    return next((phrase for phrase in banned_phrases if phrase and phrase.lower() in lowered), None)
+
+
+def _summary_specificity(candidate: str, group: ChangeGroup) -> float:
+    tokens = set(_summary_tokens(candidate))
+    if not tokens:
+        return 0.0
+    evidence_text = " ".join(
+        [
+            group.pr.title if group.pr else "",
+            group.pr.body if group.pr else "",
+            " ".join(group.pr.labels if group.pr else []),
+            " ".join(commit.message for commit in group.commits),
+            " ".join(file.path for file in (group.pr.files if group.pr else group.files)),
+        ]
+    )
+    evidence_tokens = set(_summary_tokens(evidence_text))
+    overlap = len(tokens & evidence_tokens)
+    length_score = min(len(tokens) / 12, 1.0) * 0.55
+    overlap_score = min(overlap / 4, 1.0) * 0.45
+    return round(length_score + overlap_score, 4)
 
 
 def _build_suggestion_source_evidence(diff, group: ChangeGroup) -> list[dict[str, str]]:
@@ -954,6 +1054,7 @@ def _summary_provenance(
     model: str | None,
     prompt_sha: str | None,
     tone: str | None,
+    style_profile: dict[str, object] | None,
     response_metadata: dict[str, object] | None,
 ) -> dict[str, object]:
     provenance: dict[str, object] = {
@@ -968,6 +1069,8 @@ def _summary_provenance(
         provenance["prompt_sha"] = prompt_sha
     if tone:
         provenance["tone"] = tone
+    if style_profile:
+        provenance["style_profile"] = style_profile
     if response_metadata:
         provenance["response_metadata"] = response_metadata
     return provenance
@@ -1028,6 +1131,80 @@ def _run_model_logs_export(
     else:
         print(text, end="")
     return 0
+
+
+def _run_feedback_record(*, event: str, item_id: str, metadata_json: str | None) -> int:
+    metadata: dict[str, object] = {}
+    if metadata_json:
+        try:
+            parsed = json.loads(metadata_json)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"Invalid feedback metadata JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise SystemExit("Invalid feedback metadata JSON: expected an object")
+        metadata = parsed
+    _append_feedback_event(event=event, item_id=item_id, metadata=metadata)
+    return 0
+
+
+def _run_feedback_export(*, output_format: str, output_path: str | None, events: list[str] | None) -> int:
+    state = _build_store().load()
+    event_filter = set(events or [])
+    records = [
+        event for event in state.feedback_events
+        if not event_filter or str(event.get("event")) in event_filter
+    ]
+    if output_format == "jsonl":
+        text = "\n".join(json.dumps(record, sort_keys=True) for record in records)
+        if text:
+            text += "\n"
+    else:
+        text = json.dumps(
+            {
+                "schema_version": "releasepilot.feedback.v1",
+                "record_count": len(records),
+                "records": records,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        text += "\n"
+    if output_path:
+        Path(output_path).write_text(text, encoding="utf-8")
+    else:
+        print(text, end="")
+    return 0
+
+
+def _append_feedback_event(*, event: str, item_id: str, metadata: dict[str, object] | None = None) -> None:
+    store = _build_store()
+    state = store.load()
+    state.feedback_events.append(
+        {
+            "event": event,
+            "item_id": item_id,
+            "recorded_at": date.today().isoformat(),
+            "metadata": metadata or {},
+        }
+    )
+    store.save(state)
+
+
+def _feedback_summary_metadata(summary: str, *, include_text: bool) -> dict[str, object]:
+    metadata: dict[str, object] = {
+        "summary_chars": len(summary),
+        "summary_sha": hashlib.sha256(summary.encode("utf-8")).hexdigest()[:12],
+    }
+    if include_text:
+        metadata["summary"] = summary
+    return metadata
+
+
+def _feedback_include_text() -> bool:
+    raw = os.getenv("RELEASEPILOT_FEEDBACK_INCLUDE_TEXT")
+    if raw is not None:
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return _load_config().feedback_include_text
 
 
 def _normalize_model_log_record(raw: dict[str, object], *, line_number: int) -> dict[str, object]:
@@ -1120,10 +1297,11 @@ def _build_draft_model_prompt(
     item_id: str,
     model_provider: str | None = None,
     tone: str | None = None,
-) -> dict[str, str]:
+) -> dict[str, object]:
     effective_model_provider = _resolve_suggest_model_provider(model_provider)
     config = _load_config()
     suggestion_tone = _resolve_suggestion_tone(config.suggestion_tone, requested=tone)
+    suggestion_style = _resolve_suggestion_style(config)
     target_group = _find_group_for_item_id(base, head, item_id)
     classifier = Classifier()
     draft_item = classifier.classify(target_group, base, head)[0]
@@ -1135,12 +1313,16 @@ def _build_draft_model_prompt(
         diff=diff,
         commits=target_group.commits,
         tone=suggestion_tone,
+        style_guidance=str(suggestion_style["guidance"]),
+        project_vocabulary=list(suggestion_style["project_vocabulary"]),
+        banned_phrases=list(suggestion_style["banned_phrases"]),
     )
     return {
         "item_id": draft_item.id,
         "title": draft_item.content.title,
         "provider": effective_model_provider or "configured",
         "tone": suggestion_tone,
+        "style_profile": suggestion_style,
         "prompt": prompt_result.prompt,
         "prompt_budget": prompt_result.budget,
     }

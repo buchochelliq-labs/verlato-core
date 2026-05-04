@@ -27,11 +27,21 @@ class ProviderConfig:
 
 
 @dataclass
+class SuggestionStyleConfig:
+    guidance: str = ""
+    project_vocabulary: list[str] = field(default_factory=list)
+    banned_phrases: list[str] = field(default_factory=list)
+    specificity_floor: float = 0.0
+
+
+@dataclass
 class ReleasePilotConfig:
     state_path: str = ".releasepilot_state.json"
     provider: ProviderConfig = field(default_factory=ProviderConfig)
     suggestion_count: int = 1
     suggestion_tone: str = "release-note"
+    suggestion_style: SuggestionStyleConfig = field(default_factory=SuggestionStyleConfig)
+    feedback_include_text: bool = False
     targets: dict[str, OutputTargetConfig] = field(
         default_factory=lambda: {
             "changelog": OutputTargetConfig(path="CHANGELOG.md", format="changelog"),
@@ -58,6 +68,16 @@ def load_config(cwd: str | None = None) -> ReleasePilotConfig:
         config.suggestion_count = int(raw["suggestion_count"])
     if raw.get("suggestion_tone") is not None:
         config.suggestion_tone = str(raw["suggestion_tone"]).strip() or config.suggestion_tone
+    if raw.get("feedback_include_text") is not None:
+        config.feedback_include_text = bool(raw["feedback_include_text"])
+    style = raw.get("suggestion_style")
+    if isinstance(style, dict):
+        config.suggestion_style = SuggestionStyleConfig(
+            guidance=str(style.get("guidance") or "").strip(),
+            project_vocabulary=_string_list(style.get("project_vocabulary")),
+            banned_phrases=_string_list(style.get("banned_phrases")),
+            specificity_floor=float(style.get("specificity_floor") or 0.0),
+        )
 
     provider = raw.get("provider")
     if isinstance(provider, dict):
@@ -89,6 +109,12 @@ def load_config(cwd: str | None = None) -> ReleasePilotConfig:
             config.targets = parsed_targets
 
     return config
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def resolve_target_path(path: str, *, cwd: str | None = None) -> Path:

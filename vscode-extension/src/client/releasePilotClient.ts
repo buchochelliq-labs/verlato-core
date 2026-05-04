@@ -169,6 +169,10 @@ export class ReleasePilotClient implements vscode.Disposable {
       maxModelItems: config.get<number>("maxModelItems") ?? 25,
       suggestionCount: config.get<number>("suggestionCount") ?? 1,
       suggestionTone: config.get<string>("suggestionTone") || "release-note",
+      styleGuidance: config.get<string>("styleGuidance") || "",
+      projectVocabulary: config.get<string[]>("projectVocabulary") ?? [],
+      bannedPhrases: config.get<string[]>("bannedPhrases") ?? [],
+      specificityFloor: config.get<number>("specificityFloor") ?? 0,
       includePromptPayloads: config.get<boolean>("telemetry.includePromptPayloads") ?? false,
       includeReasoningPayloads: config.get<boolean>("telemetry.includeReasoningPayloads") ?? false,
       redactPayloads: config.get<boolean>("telemetry.redactPayloads") ?? true,
@@ -199,6 +203,18 @@ export class ReleasePilotClient implements vscode.Disposable {
     }
     if (settings.suggestionTone !== undefined) {
       await config.update("suggestionTone", settings.suggestionTone, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.styleGuidance !== undefined) {
+      await config.update("styleGuidance", settings.styleGuidance, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.projectVocabulary !== undefined) {
+      await config.update("projectVocabulary", settings.projectVocabulary, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.bannedPhrases !== undefined) {
+      await config.update("bannedPhrases", settings.bannedPhrases, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.specificityFloor !== undefined) {
+      await config.update("specificityFloor", settings.specificityFloor, vscode.ConfigurationTarget.Workspace);
     }
     if (settings.includePromptPayloads !== undefined) {
       await config.update("telemetry.includePromptPayloads", settings.includePromptPayloads, vscode.ConfigurationTarget.Workspace);
@@ -468,6 +484,10 @@ export class ReleasePilotClient implements vscode.Disposable {
     env.RELEASEPILOT_MODEL_MAX_ITEMS = String(settings.maxModelItems);
     env.RELEASEPILOT_SUGGESTION_COUNT = String(settings.suggestionCount);
     env.RELEASEPILOT_SUGGESTION_TONE = settings.suggestionTone;
+    env.RELEASEPILOT_STYLE_GUIDANCE = settings.styleGuidance;
+    env.RELEASEPILOT_PROJECT_VOCABULARY = settings.projectVocabulary.join(",");
+    env.RELEASEPILOT_BANNED_PHRASES = settings.bannedPhrases.join(",");
+    env.RELEASEPILOT_SPECIFICITY_FLOOR = String(settings.specificityFloor);
     env.RELEASEPILOT_TRACE_MODEL_CALLS = "1";
     env.RELEASEPILOT_OLLAMA_STREAM = settings.ollamaStreamResponses ? "1" : "0";
     if (settings.includePromptPayloads) {
@@ -623,8 +643,11 @@ function formatModelSettings(settings: ModelSettings): string {
   const redaction = settings.redactPayloads ? "; redaction on" : "; redaction off";
   const debugLog = settings.debugModelLogPath ? "; debug log on" : "";
   const streaming = settings.ollamaStreamResponses ? "; streaming on" : "";
+  const style = settings.styleGuidance || settings.projectVocabulary.length || settings.bannedPhrases.length || settings.specificityFloor
+    ? "; style controls on"
+    : "";
   const timeout = settings.provider === "ollama" ? `; timeout: ${settings.ollamaTimeoutSeconds}s` : "";
-  return `${settings.provider}${model}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; tone: ${settings.suggestionTone}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
+  return `${settings.provider}${model}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; tone: ${settings.suggestionTone}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
 }
 
 function parseModelActivityLine(line: string): {

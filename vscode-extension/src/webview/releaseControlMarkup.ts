@@ -224,7 +224,10 @@ function renderSimilarity(item: DraftSuggestionItem, suggestion: string): string
   if (!detail) {
     return "";
   }
-  return `<small>${Math.round(detail.similarity_to_current * 100)}% similar to current</small>`;
+  const specificity = typeof detail.specificity_score === "number"
+    ? ` · ${Math.round(detail.specificity_score * 100)}% specific`
+    : "";
+  return `<small>${Math.round(detail.similarity_to_current * 100)}% similar to current${specificity}</small>`;
 }
 
 function renderRejectedSuggestions(item: DraftSuggestionItem): string {
@@ -236,7 +239,7 @@ function renderRejectedSuggestions(item: DraftSuggestionItem): string {
     <summary>Rejected <span>${rejected.length}</span></summary>
     ${rejected.slice(0, 5).map((entry) => `<div class="rejected-row">
       <strong>${escapeHtml(entry.reason)}</strong>
-      <span>${Math.round(entry.similarity_to_current * 100)}%</span>
+      <span>${Math.round((entry.specificity_score ?? entry.similarity_to_current) * 100)}%</span>
       <small>${escapeHtml(entry.summary)}</small>
     </div>`).join("")}
   </details>`;

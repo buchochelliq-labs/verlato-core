@@ -44,13 +44,13 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
 
 ## Next biggest ticket
 
-- [ ] Explore tone presets, project vocabulary hints, banned phrases, specificity scoring, and local feedback loops.
+- [ ] Add local feedback loops for accepted/rejected wording.
 
 ## Detailed remaining work (current view)
 
 1. **Project language controls**
-   - Explore vocabulary hints, banned phrases, and project-specific release-note style guidance.
-   - Add scoring or validation so generated text stays concrete and avoids vague marketing phrasing.
+   - [x] Add vocabulary hints, banned phrases, and project-specific release-note style guidance.
+   - [x] Add opt-in specificity scoring so generated text can reject vague candidates.
    - Capture lightweight local feedback that can improve future prompts without persisting sensitive payloads by default.
 2. **Service-first editor integration**
    - Replace remaining CLI fallback flows in the extension with a richer local service contract.
@@ -96,7 +96,8 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
    - [ ] Add OTLP export for model logs.
    - [x] Add bad-output tests and prompt golden tests.
    - [x] Add explicit tone presets for suggestion prompts.
-   - [ ] Explore project vocabulary hints, banned phrases, specificity scoring, and local feedback loops.
+   - [x] Add project vocabulary hints, banned phrases, specificity scoring, and style guidance.
+   - [ ] Add local feedback loops for accepted/rejected wording.
 4. **Confidence calibration**
    - Improve confidence scoring with richer evidence weighting and calibration tests.
 5. **State backend expansion**

@@ -155,6 +155,30 @@ def test_load_config_reads_suggestion_tone(monkeypatch, tmp_path: Path):
     assert config.suggestion_tone == "technical"
 
 
+def test_load_config_reads_suggestion_style(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "releasepilot.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "suggestion_style": {
+                    "guidance": "Prefer product language.",
+                    "project_vocabulary": ["Release Control", "draft review"],
+                    "banned_phrases": ["stuff", "things"],
+                    "specificity_floor": 0.4,
+                }
+            }
+        )
+    )
+    monkeypatch.chdir(tmp_path)
+
+    config = load_config()
+
+    assert config.suggestion_style.guidance == "Prefer product language."
+    assert config.suggestion_style.project_vocabulary == ["Release Control", "draft review"]
+    assert config.suggestion_style.banned_phrases == ["stuff", "things"]
+    assert config.suggestion_style.specificity_floor == 0.4
+
+
 def test_load_config_defaults_to_one_suggestion(monkeypatch, tmp_path: Path):
     monkeypatch.chdir(tmp_path)
 
@@ -451,6 +475,71 @@ def test_draft_suggest_preview_returns_variants_without_persisting(monkeypatch, 
     assert rc == 0
     state = json.loads(capsys.readouterr().out)
     assert state["items"] == []
+
+
+def test_draft_suggest_applies_style_controls_to_prompt_and_rejections(monkeypatch, tmp_path: Path, capsys):
+    config_path = tmp_path / "releasepilot.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "suggestion_style": {
+                    "guidance": "Use Release Control terminology.",
+                    "project_vocabulary": ["Release Control"],
+                    "banned_phrases": ["nice things"],
+                    "specificity_floor": 0.2,
+                }
+            }
+        )
+    )
+    state_path = tmp_path / "state.json"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+    group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
+    target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
+
+    class StyledProvider:
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            assert "Project style guidance: Use Release Control terminology." in request.prompt
+            assert "Preferred project vocabulary: Release Control" in request.prompt
+            assert "Avoid these phrases exactly: nice things" in request.prompt
+            return ProviderResponse(
+                content=(
+                    "1. Nice things for users\n"
+                    "2. Clarifies login flow validation for Release Control reviewers"
+                ),
+                confidence=0.9,
+                model="mock-local",
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="mock-local")
+
+    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("releasepilot.cli.main.build_provider", lambda config, mode=None: StyledProvider())
+
+    rc = main(
+        [
+            "draft",
+            "suggest",
+            "--base",
+            "v1.0.0",
+            "--id",
+            target_item.id,
+            "--preview",
+            "--count",
+            "2",
+            "--model-provider",
+            "mock",
+        ]
+    )
+
+    assert rc == 0
+    preview = json.loads(capsys.readouterr().out)
+    item = preview["items"][0]
+    assert item["style_profile"]["guidance"] == "Use Release Control terminology."
+    assert item["suggestions"] == ["Clarifies login flow validation for Release Control reviewers"]
+    assert item["suggestion_details"][0]["specificity_score"] >= 0.2
+    assert item["rejected_candidates"][0]["reason"] == "banned-phrase:nice things"
 
 
 def test_draft_suggest_preview_defaults_to_one_suggestion(monkeypatch, tmp_path: Path, capsys):

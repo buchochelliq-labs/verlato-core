@@ -2,6 +2,16 @@
   "state_path": ".releasepilot_state.json",
   "suggestion_count": 1,
   "suggestion_tone": "release-note",
+  "suggestion_style": {
+    "guidance": "Prefer concrete user workflow language.",
+    "project_vocabulary": [
+      "Release Control"
+    ],
+    "banned_phrases": [
+      "various improvements"
+    ],
+    "specificity_floor": 0
+  },
   "github": {
     "repo": "owner/repo",
     "token_env": "GITHUB_TOKEN"

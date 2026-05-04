@@ -78,8 +78,10 @@ export interface SummaryProvenance {
   model?: string;
   prompt_sha?: string;
   tone?: string;
+  style_profile?: SuggestionStyleProfile;
   suggestion_index?: number;
   similarity_to_current?: number;
+  specificity_score?: number;
   response_metadata?: Record<string, unknown>;
   source_evidence_count?: number;
   reasoning_exposed?: boolean;
@@ -92,6 +94,7 @@ export interface DraftPromptPreview {
   title: string;
   provider: string;
   tone?: string;
+  style_profile?: SuggestionStyleProfile;
   prompt: string;
   prompt_budget?: Record<string, number>;
 }
@@ -130,6 +133,10 @@ export interface ModelSettings {
   maxModelItems: number;
   suggestionCount: number;
   suggestionTone: string;
+  styleGuidance: string;
+  projectVocabulary: string[];
+  bannedPhrases: string[];
+  specificityFloor: number;
   includePromptPayloads: boolean;
   includeReasoningPayloads: boolean;
   redactPayloads: boolean;
@@ -144,6 +151,7 @@ export interface DraftSuggestionItem {
   provider: string;
   prompt_sha?: string;
   tone?: string;
+  style_profile?: SuggestionStyleProfile;
   provider_metadata?: Record<string, unknown>;
   provider_reasoning?: string;
   source_evidence?: DraftSuggestionEvidence[];
@@ -161,6 +169,7 @@ export interface DraftSuggestionEvidence {
 export interface DraftSuggestionDetail {
   summary: string;
   similarity_to_current: number;
+  specificity_score?: number;
   comparison: {
     current: string;
     suggested: string;
@@ -171,6 +180,14 @@ export interface DraftRejectedSuggestion {
   summary: string;
   reason: string;
   similarity_to_current: number;
+  specificity_score?: number;
+}
+
+export interface SuggestionStyleProfile {
+  guidance?: string;
+  project_vocabulary?: string[];
+  banned_phrases?: string[];
+  specificity_floor?: number;
 }
 
 export interface DraftSuggestionPreview {
@@ -179,6 +196,7 @@ export interface DraftSuggestionPreview {
   provider: string;
   count: number;
   tone?: string;
+  style_profile?: SuggestionStyleProfile;
   items: DraftSuggestionItem[];
 }
 

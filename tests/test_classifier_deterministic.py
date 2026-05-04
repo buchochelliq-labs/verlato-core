@@ -158,6 +158,34 @@ def test_provider_summary_prompt_includes_requested_tone():
     assert "Tone: precise engineering wording" in prompt
 
 
+def test_provider_summary_prompt_includes_project_style_controls():
+    group = ChangeGroup(
+        pr=PullRequest(
+            number=7,
+            title="Improve release control",
+            files=[ChangedFile(path="src/release_control.py", status="modified", patch="+review flow")],
+        ),
+        commits=[Commit(sha="abc", message="feat: improve draft review")],
+    )
+    classifier = Classifier()
+    diff = classifier.diff_builder.build(group.pr.files)
+
+    prompt = classifier._build_summary_prompt(
+        title="Improve release control",
+        labels=[],
+        pr_body="",
+        diff=diff,
+        commits=group.commits,
+        style_guidance="Prefer user workflow language.",
+        project_vocabulary=["Release Control", "draft review"],
+        banned_phrases=["stuff", "things"],
+    )
+
+    assert "Project style guidance: Prefer user workflow language." in prompt
+    assert "Preferred project vocabulary: Release Control, draft review" in prompt
+    assert "Avoid these phrases exactly: stuff, things" in prompt
+
+
 def test_provider_summary_prompt_caps_changed_file_list():
     files = [
         ChangedFile(path=f"src/module_{index:02}.py", status="modified", patch="")

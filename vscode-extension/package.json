@@ -190,6 +190,34 @@
           ],
           "description": "Tone preset used when generating AI description suggestions."
         },
+        "releasepilot.styleGuidance": {
+          "type": "string",
+          "default": "",
+          "description": "Optional project-specific writing guidance added to AI suggestion prompts."
+        },
+        "releasepilot.projectVocabulary": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Preferred project terms or product vocabulary to encourage in AI suggestions."
+        },
+        "releasepilot.bannedPhrases": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Phrases that generated AI suggestions should avoid; matching candidates are rejected."
+        },
+        "releasepilot.specificityFloor": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Optional minimum specificity score for generated suggestions. Leave 0 to disable specificity rejection."
+        },
         "releasepilot.telemetry.includePromptPayloads": {
           "type": "boolean",
           "default": false,
