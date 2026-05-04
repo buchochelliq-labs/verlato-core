@@ -390,9 +390,12 @@ class Classifier:
             context_bits.append(f"audience={audience}")
         context_text = ", ".join(context_bits) or "unspecified"
         output_instruction = (
-            "Return exactly one sentence."
+            "Return one complete release-note entry. Use a short paragraph or focused bullet points when that helps "
+            "downstream consumers understand the change; avoid padding."
             if suggestion_count <= 1
-            else f"Return exactly {suggestion_count} distinct options as a numbered list, one sentence per option."
+            else f"Return exactly {suggestion_count} distinct complete release-note options as a numbered list. "
+            f"Each option may use a short paragraph or focused bullet points when that helps downstream consumers "
+            f"understand the change; avoid padding."
         )
         tone_instruction = _summary_tone_instruction(tone)
         style_lines = _summary_style_lines(
@@ -402,7 +405,7 @@ class Classifier:
         )
         style_text = f"{style_lines}\n" if style_lines else ""
         prompt = (
-            f"Write concise ReleasePilot description suggestions based primarily on the file diffs.\n"
+            f"Write a useful ReleasePilot release-note description based primarily on the file diffs.\n"
             f"Lead with what changed and why it matters. Name the observable behavior, workflow, API, docs, "
             f"test, or maintenance impact.\n"
             f"Prefer concrete active verbs such as Adds, Fixes, Clarifies, Reduces, Preserves, Documents, "

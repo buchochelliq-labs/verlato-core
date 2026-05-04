@@ -282,10 +282,17 @@ function renderActivity(activity: NonNullable<CommandRequestSnapshot["activity"]
       <time>${escapeHtml(formatActivityTime(entry.receivedAt))}</time>
       <span>
         ${escapeHtml(formatActivityMessage(entry))}
-        ${entry.payload ? `<details class="payload"><summary>${escapeHtml(formatPayloadLabel(entry))}<button class="copy" data-action="copyText" data-copy-label="${escapeHtml(formatPayloadLabel(entry).toLowerCase())}">Copy</button></summary><pre>${escapeHtml(entry.payload)}</pre></details>` : ""}
+        ${entry.payload ? renderActivityPayload(entry) : ""}
       </span>
     </li>`).join("")}
   </ol>`;
+}
+
+function renderActivityPayload(entry: NonNullable<CommandRequestSnapshot["activity"]>[number]): string {
+  const label = formatPayloadLabel(entry);
+  const open = entry.event === "stream_chunk" ? " open" : "";
+  const streamClass = entry.event === "stream_chunk" ? " stream-payload" : "";
+  return `<details class="payload${streamClass}"${open}><summary>${escapeHtml(label)}<button class="copy" data-action="copyText" data-copy-label="${escapeHtml(label.toLowerCase())}">Copy</button></summary><pre>${escapeHtml(entry.payload ?? "")}</pre></details>`;
 }
 
 function parseActivityFromOutput(output: string): NonNullable<CommandRequestSnapshot["activity"]> {
@@ -303,7 +310,7 @@ function parseActivityFromOutput(output: string): NonNullable<CommandRequestSnap
       });
     }
   });
-  return entries;
+  return mergeStreamActivity(entries);
 }
 
 function formatActivityMessage(entry: NonNullable<CommandRequestSnapshot["activity"]>[number]): string {
@@ -406,6 +413,46 @@ function parseStreamChunkLine(line: string): {
     },
     payload: text,
   };
+}
+
+function mergeStreamActivity(entries: CommandRequestSnapshot["activity"]): NonNullable<CommandRequestSnapshot["activity"]> {
+  const merged: NonNullable<CommandRequestSnapshot["activity"]> = [];
+  for (const entry of entries ?? []) {
+    if (entry.event !== "stream_chunk") {
+      merged.push(entry);
+      continue;
+    }
+    const kind = entry.attributes?.kind;
+    const task = entry.attributes?.task;
+    const prior = [...merged].reverse().find(
+      (candidate) =>
+        candidate.event === "stream_chunk" &&
+        candidate.attributes?.kind === kind &&
+        candidate.attributes?.task === task,
+    );
+    if (!prior) {
+      merged.push(entry);
+      continue;
+    }
+    const priorChars = typeof prior.attributes?.chars === "number" ? prior.attributes.chars : 0;
+    const nextChars = typeof entry.attributes?.chars === "number" ? entry.attributes.chars : 0;
+    const priorChunks = typeof prior.attributes?.chunks === "number" ? prior.attributes.chunks : 1;
+    const nextChunks = typeof entry.attributes?.chunks === "number" ? entry.attributes.chunks : 1;
+    prior.attributes = {
+      ...(prior.attributes ?? {}),
+      chars: priorChars + nextChars,
+      chunks: priorChunks + nextChunks,
+      redacted: Boolean(prior.attributes?.redacted) || Boolean(entry.attributes?.redacted),
+    };
+    prior.payload = trimStreamPayload(`${prior.payload ?? ""}${entry.payload ?? ""}`);
+    prior.message = `[releasepilot:model] stream ${String(kind)} chunks=${priorChunks + nextChunks} chars=${priorChars + nextChars}`;
+    prior.receivedAt = entry.receivedAt;
+  }
+  return merged;
+}
+
+function trimStreamPayload(value: string): string {
+  return value.length > 6000 ? value.slice(value.length - 6000) : value;
 }
 
 function capitalize(value: string): string {
@@ -652,6 +699,7 @@ function styles(): string {
     .activity span { min-width: 0; overflow-wrap: anywhere; }
     .payload { margin-top: 3px; }
     .payload summary { color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 400; text-transform: none; }
+    .stream-payload pre { max-height: 260px; font-size: 11px; line-height: 1.45; }
     .raw { margin-top: 4px; }
     .raw summary { color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 400; text-transform: none; }
     .request pre {

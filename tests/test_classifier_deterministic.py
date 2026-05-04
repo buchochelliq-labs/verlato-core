@@ -126,7 +126,8 @@ def test_provider_summary_prompt_supports_configurable_variants():
         audience="internal",
     )
 
-    assert "Return exactly 3 distinct options as a numbered list" in prompt
+    assert "Return exactly 3 distinct complete release-note options as a numbered list" in prompt
+    assert "downstream consumers understand the change" in prompt
     assert "Lead with what changed and why it matters" in prompt
     assert "Release context: kind=internal, audience=internal" in prompt
     assert "Prefer concrete active verbs" in prompt

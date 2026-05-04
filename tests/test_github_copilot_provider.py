@@ -94,6 +94,11 @@ def test_github_copilot_provider_sends_github_models_headers(monkeypatch):
     assert captured["url"] == DEFAULT_GITHUB_MODELS_ENDPOINT
     assert captured["timeout"] == 3.0
     assert captured["body"]["model"] == "openai/gpt-4o-mini"
+    messages = captured["body"]["messages"]
+    assert messages[0]["role"] == "system"
+    assert "enough context for downstream consumers" in messages[0]["content"]
+    assert "avoid padding" in messages[0]["content"]
+    assert messages[1] == {"role": "user", "content": "Summarize this change"}
     headers = captured["headers"]
     assert headers["Accept"] == "application/vnd.github+json"
     assert headers["Authorization"] == "Bearer token"

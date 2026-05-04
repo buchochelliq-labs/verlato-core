@@ -3,5 +3,7 @@
     "releasepilot.ollamaModel": "gemma4",
     "releasepilot.ollamaEndpoint": "http://127.0.0.1:11434/api/chat",
     "releasepilot.maxModelItems": 25,
-    "releasepilot.suggestionCount": 3
+    "releasepilot.suggestionCount": 3,
+    "releasepilot.telemetry.includeReasoningPayloads": true,
+    "releasepilot.telemetry.includePromptPayloads": true
 }

@@ -463,7 +463,8 @@ def test_draft_suggest_preview_returns_variants_without_persisting(monkeypatch, 
 
     class VariantProvider:
         def summarize(self, request: ProviderRequest) -> ProviderResponse:
-            assert "Return exactly 3 distinct options as a numbered list" in request.prompt
+            assert "Return exactly 3 distinct complete release-note options as a numbered list" in request.prompt
+            assert "downstream consumers understand the change" in request.prompt
             assert "Tone: precise engineering wording" in request.prompt
             return ProviderResponse(
                 content=(
@@ -597,7 +598,8 @@ def test_draft_suggest_preview_defaults_to_one_suggestion(monkeypatch, tmp_path:
 
     class VariantProvider:
         def summarize(self, request: ProviderRequest) -> ProviderResponse:
-            assert "Return exactly one sentence" in request.prompt
+            assert "Return one complete release-note entry" in request.prompt
+            assert "Use a short paragraph or focused bullet points" in request.prompt
             assert "Release context: kind=changed, audience=external" in request.prompt
             return ProviderResponse(
                 content="1. Clarifies login guidance for users\n2. Documents login recovery behavior",

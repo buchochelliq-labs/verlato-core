@@ -759,7 +759,7 @@ function mergeStreamActivity(entries: CommandRequestSnapshot["activity"]): NonNu
       chunks: priorChunks + nextChunks,
       redacted: Boolean(prior.attributes?.redacted) || Boolean(entry.attributes?.redacted),
     };
-    prior.payload = trimStreamPayload([prior.payload, entry.payload].filter(Boolean).join(" "));
+    prior.payload = trimStreamPayload(`${prior.payload ?? ""}${entry.payload ?? ""}`);
     prior.message = `[releasepilot:model] stream ${String(kind)} chunks=${priorChunks + nextChunks} chars=${priorChars + nextChars}`;
     prior.receivedAt = entry.receivedAt;
   }

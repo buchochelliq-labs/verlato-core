@@ -53,7 +53,8 @@ class GitHubCopilotProvider(ReleasePilotProvider):
             )
 
         system_prompt = (
-            "You are ReleasePilot. Return concise output for the requested task."
+            "You are ReleasePilot. Write a useful release note with enough context for downstream consumers. "
+            "Use paragraphs or bullet points when they make the change clearer, but stay focused and avoid padding."
             if task == "summarize"
             else "You are ReleasePilot. Return one line: kind/area/audience/semver."
         )

@@ -74,6 +74,11 @@ def test_ollama_provider_sends_local_chat_request(monkeypatch):
     assert captured["timeout"] == 5.0
     assert captured["body"]["model"] == DEFAULT_OLLAMA_MODEL
     assert captured["body"]["stream"] is False
+    messages = captured["body"]["messages"]
+    assert messages[0]["role"] == "system"
+    assert "enough context for downstream consumers" in messages[0]["content"]
+    assert "avoid padding" in messages[0]["content"]
+    assert messages[1] == {"role": "user", "content": "Summarize this change"}
 
 
 def test_ollama_provider_streams_chat_response_chunks(monkeypatch):
@@ -115,8 +120,9 @@ def test_ollama_provider_streams_chat_response_chunks(monkeypatch):
     assert response.reasoning == "Used diffs."
     assert response.metadata == {"eval_count": 2, "done_reason": "stop"}
     bodies = [record.body for record in records]
-    assert any("stream-chunk provider=ollama task=summarize kind=reasoning" in body for body in bodies)
-    assert any("stream-chunk provider=ollama task=summarize kind=content" in body for body in bodies)
+    stream_records = [json.loads(body.removeprefix("json ")) for body in bodies if body.startswith("json ")]
+    assert any(record["event"] == "stream_chunk" and record["attributes"]["kind"] == "reasoning" for record in stream_records)
+    assert any(record["event"] == "stream_chunk" and record["attributes"]["kind"] == "content" for record in stream_records)
     assert any("stream-complete provider=ollama task=summarize chunks=4" in body for body in bodies)
 
 
@@ -149,9 +155,15 @@ def test_ollama_provider_hides_streamed_reasoning_text_unless_enabled(monkeypatc
     response = provider.summarize(ProviderRequest(task="summarize", prompt="Summarize this change"))
 
     assert response.reasoning == "Private reasoning"
-    bodies = [record.body for record in records]
-    assert any("kind=reasoning chars=17 redacted=false text=" in body for body in bodies)
-    assert not any("Private reasoning" in body for body in bodies)
+    stream_records = [json.loads(record.body.removeprefix("json ")) for record in records if record.body.startswith("json ")]
+    reasoning_records = [
+        record
+        for record in stream_records
+        if record["event"] == "stream_chunk" and record["attributes"]["kind"] == "reasoning"
+    ]
+    assert reasoning_records
+    assert reasoning_records[0]["attributes"]["chars"] == 17
+    assert reasoning_records[0]["payload"] == ""
 
 
 def test_ollama_provider_falls_back_to_generate_when_chat_disconnects(monkeypatch):

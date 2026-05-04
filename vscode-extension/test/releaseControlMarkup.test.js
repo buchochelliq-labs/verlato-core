@@ -354,6 +354,7 @@ test("renders coalesced stream chunk activity as live blocks", () => {
   assert.match(html, /Response streaming\.\.\. 2 chunks/);
   assert.match(html, /Reasoning stream 18 chars/);
   assert.match(html, /Response stream 19 chars/);
+  assert.match(html, /<details class="payload stream-payload" open>/);
   assert.match(html, /Thinking through diff/);
   assert.match(html, /Adds model tracing/);
 });

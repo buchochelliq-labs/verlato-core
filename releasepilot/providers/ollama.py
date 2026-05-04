@@ -47,7 +47,8 @@ class OllamaProvider(ReleasePilotProvider):
 
     def _invoke(self, *, task: str, request_data: ProviderRequest) -> ProviderResponse:
         system_prompt = (
-            "You are ReleasePilot. Return concise output for the requested task."
+            "You are ReleasePilot. Write a useful release note with enough context for downstream consumers. "
+            "Use paragraphs or bullet points when they make the change clearer, but stay focused and avoid padding."
             if task == "summarize"
             else "You are ReleasePilot. Return one line: kind/area/audience/semver."
         )
@@ -254,13 +255,34 @@ class OllamaProvider(ReleasePilotProvider):
 
     def _trace_chunk(self, *, task: str, kind: str, chunk: str) -> None:
         if kind == "reasoning" and not _env_flag("RELEASEPILOT_TRACE_MODEL_REASONING"):
-            compact = ""
+            payload = ""
             redacted = False
         else:
             safe_chunk, redacted = redact_model_payload(chunk) if model_payload_redaction_enabled() else (chunk, False)
-            compact = " ".join(safe_chunk.split())[:160]
-        self._trace(
-            f"stream-chunk provider=ollama task={task} kind={kind} chars={len(chunk)} redacted={str(redacted).lower()} text={compact}"
+            payload = safe_chunk
+        self.log_sink.emit(
+            model_log_record(
+                "json "
+                + json.dumps(
+                    {
+                        "event": "stream_chunk",
+                        "message": f"stream {kind} chunk",
+                        "attributes": {
+                            "provider": "ollama",
+                            "model": self.model,
+                            "task": task,
+                            "kind": kind,
+                            "chars": len(chunk),
+                            "chunks": 1,
+                            "redacted": redacted,
+                        },
+                        "payload": payload,
+                    },
+                    sort_keys=True,
+                ),
+                event_name="releasepilot.model.ollama.stream_chunk",
+                attributes={"provider": "ollama", "model": self.model},
+            )
         )
 
 
