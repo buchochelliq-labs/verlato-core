@@ -255,6 +255,7 @@ async function changeModelSettings(
 
   let model = current.model;
   let endpoint = current.endpoint;
+  let ollamaTimeoutSeconds = current.ollamaTimeoutSeconds;
   if (provider === "ollama") {
     const nextModel = await vscode.window.showInputBox({
       prompt: "Ollama model",
@@ -273,6 +274,18 @@ async function changeModelSettings(
       return;
     }
     endpoint = nextEndpoint;
+    const timeoutRaw = await vscode.window.showInputBox({
+      prompt: "Ollama request timeout in seconds",
+      value: String(current.ollamaTimeoutSeconds),
+      validateInput: (value) => {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) && parsed >= 1 ? undefined : "Enter a number of seconds greater than 0.";
+      },
+    });
+    if (timeoutRaw === undefined) {
+      return;
+    }
+    ollamaTimeoutSeconds = Number(timeoutRaw);
   }
 
   const maxRaw = await vscode.window.showInputBox({
@@ -300,6 +313,7 @@ async function changeModelSettings(
     provider,
     model,
     endpoint,
+    ollamaTimeoutSeconds,
     maxModelItems: Number(maxRaw),
     suggestionCount: Number(suggestionCountRaw),
   });

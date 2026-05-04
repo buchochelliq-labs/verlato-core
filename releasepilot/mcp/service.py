@@ -201,6 +201,9 @@ class MCPService:
                     reviewed_by=item.get("reviewed_by"),
                     reviewed_at=item.get("reviewed_at"),
                     edited_summary=item.get("edited_summary"),
+                    summary_provenance=item.get("summary_provenance")
+                    if isinstance(item.get("summary_provenance"), dict)
+                    else None,
                     hidden=bool(item.get("hidden", False)),
                 )
                 for item in data.get("items", [])

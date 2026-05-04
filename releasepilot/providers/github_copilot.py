@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 from http import HTTPStatus
 from urllib import error, request
 
 from releasepilot.providers.base import ProviderRequest, ProviderResponse, ReleasePilotProvider
+from releasepilot.providers.model_logging import ModelLogSink, default_model_log_sink, model_log_record
 
 DEFAULT_GITHUB_MODELS_ENDPOINT = "https://models.github.ai/inference/chat/completions"
 DEFAULT_GITHUB_MODELS_MODEL = "openai/gpt-4o-mini"
@@ -29,14 +29,13 @@ class GitHubCopilotProvider(ReleasePilotProvider):
         token: str | None = None,
         model: str | None = None,
         timeout_seconds: float = 20.0,
+        log_sink: ModelLogSink | None = None,
     ) -> None:
-        self.endpoint = endpoint or os.getenv(
-            "RELEASEPILOT_GITHUB_MODELS_ENDPOINT",
-            DEFAULT_GITHUB_MODELS_ENDPOINT,
-        )
+        self.endpoint: str = endpoint or os.getenv("RELEASEPILOT_GITHUB_MODELS_ENDPOINT") or DEFAULT_GITHUB_MODELS_ENDPOINT
         self.token = token or os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN") or self._load_gh_cli_token()
-        self.model = self._normalize_model_id(model or os.getenv("RELEASEPILOT_GITHUB_MODEL", DEFAULT_GITHUB_MODELS_MODEL))
+        self.model = self._normalize_model_id(model or os.getenv("RELEASEPILOT_GITHUB_MODEL") or DEFAULT_GITHUB_MODELS_MODEL)
         self.timeout_seconds = timeout_seconds
+        self.log_sink = log_sink or default_model_log_sink()
 
     def summarize(self, request_data: ProviderRequest) -> ProviderResponse:
         return self._invoke(task="summarize", request_data=request_data)
@@ -46,7 +45,7 @@ class GitHubCopilotProvider(ReleasePilotProvider):
 
     def _invoke(self, *, task: str, request_data: ProviderRequest) -> ProviderResponse:
         if not self.token:
-            self._trace(f"unavailable provider=github-copilot task={task} reason=missing-token")
+            self._trace(f"unavailable provider=github-copilot task={task} reason=missing-token", error=True)
             return ProviderResponse(
                 content="[github-copilot-unavailable] missing GITHUB_TOKEN/GH_TOKEN and no logged-in gh user",
                 confidence=0.0,
@@ -58,7 +57,7 @@ class GitHubCopilotProvider(ReleasePilotProvider):
             if task == "summarize"
             else "You are ReleasePilot. Return one line: kind/area/audience/semver."
         )
-        body = {
+        body: dict[str, object] = {
             "model": self.model,
             "temperature": 0.1,
             "messages": [
@@ -85,14 +84,14 @@ class GitHubCopilotProvider(ReleasePilotProvider):
             with request.urlopen(req, timeout=self.timeout_seconds) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except error.HTTPError as exc:
-            self._trace(f"error provider=github-copilot task={task} http_status={exc.code}")
+            self._trace(f"error provider=github-copilot task={task} http_status={exc.code}", error=True)
             return ProviderResponse(
                 content=f"[github-copilot-error] {self._format_http_error(exc)}",
                 confidence=0.0,
                 model=f"github-copilot:{self.model}",
             )
         except (error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            self._trace(f"error provider=github-copilot task={task} reason={type(exc).__name__}")
+            self._trace(f"error provider=github-copilot task={task} reason={type(exc).__name__}", error=True)
             return ProviderResponse(
                 content=f"[github-copilot-error] request failed: {exc}",
                 confidence=0.0,
@@ -101,19 +100,34 @@ class GitHubCopilotProvider(ReleasePilotProvider):
 
         content = ""
         confidence = 0.75
-        choices = data.get("choices") or []
-        if choices:
-            message = choices[0].get("message") or {}
+        raw_choices = data.get("choices")
+        choices = raw_choices if isinstance(raw_choices, list) else []
+        if choices and isinstance(choices[0], dict):
+            raw_message = choices[0].get("message")
+            message = raw_message if isinstance(raw_message, dict) else {}
             content = str(message.get("content") or "").strip()
+            reasoning = self._message_reasoning(message)
+        else:
+            reasoning = ""
         if not content:
             content = "[github-copilot-empty] no content"
             confidence = 0.0
+        metadata = self._response_metadata(data)
+        metadata_text = " ".join(f"{key}={value}" for key, value in sorted(metadata.items()))
+        metadata_suffix = f" {metadata_text}" if metadata_text else ""
         self._trace(
             f"response provider=github-copilot task={task} choices={len(choices)} "
             f"content_chars={len(content)} empty={content.startswith('[github-copilot-empty]')}"
+            f" reasoning_chars={len(reasoning)}{metadata_suffix}"
         )
 
-        return ProviderResponse(content=content, confidence=confidence, model=f"github-copilot:{self.model}")
+        return ProviderResponse(
+            content=content,
+            confidence=confidence,
+            model=f"github-copilot:{self.model}",
+            metadata=metadata,
+            reasoning=reasoning,
+        )
 
     @staticmethod
     def _normalize_model_id(model: str) -> str:
@@ -155,6 +169,27 @@ class GitHubCopilotProvider(ReleasePilotProvider):
         return f"{hint} ({exc.code} {reason}){suffix}"
 
     @staticmethod
+    def _response_metadata(data: dict[str, object]) -> dict[str, object]:
+        metadata: dict[str, object] = {}
+        usage = data.get("usage")
+        if isinstance(usage, dict):
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                if key in usage:
+                    metadata[key] = usage[key]
+        if "id" in data:
+            metadata["response_id"] = data["id"]
+        return metadata
+
+    @staticmethod
+    def _message_reasoning(message: dict[str, object]) -> str:
+        candidates = [
+            message.get(key)
+            for key in ("reasoning", "reasoning_content", "thinking")
+            if message.get(key)
+        ]
+        return "\n".join(str(candidate).strip() for candidate in candidates if str(candidate).strip())
+
+    @staticmethod
     def _load_gh_cli_token() -> str | None:
         try:
             result = subprocess.run(
@@ -171,7 +206,12 @@ class GitHubCopilotProvider(ReleasePilotProvider):
         token = result.stdout.strip()
         return token or None
 
-    def _trace(self, message: str) -> None:
-        if os.getenv("RELEASEPILOT_TRACE_MODEL_CALLS") != "1":
-            return
-        print(f"[releasepilot:model] {message}", file=sys.stderr, flush=True)
+    def _trace(self, message: str, *, error: bool = False) -> None:
+        self.log_sink.emit(
+            model_log_record(
+                message,
+                event_name="releasepilot.model.github_copilot",
+                attributes={"provider": "github-copilot", "model": self.model},
+                error=error,
+            )
+        )

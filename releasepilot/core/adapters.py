@@ -91,17 +91,17 @@ def parse_git_show_changed_files(raw: str) -> list[ChangedFile]:
         parsed_status = _parse_name_status_line(line)
         if parsed_status:
             status, path = parsed_status
-            changed = ChangedFile(path=path, status=status)
-            files.append(changed)
-            by_path[path] = changed
+            changed_file = ChangedFile(path=path, status=status)
+            files.append(changed_file)
+            by_path[path] = changed_file
 
     for path, patch_lines in patch_by_path.items():
-        changed = by_path.get(path)
-        if changed is None:
-            changed = ChangedFile(path=path, status="modified")
-            files.append(changed)
-            by_path[path] = changed
-        changed.patch = "\n".join(patch_lines).strip()
+        existing_file: ChangedFile | None = by_path.get(path)
+        if existing_file is None:
+            existing_file = ChangedFile(path=path, status="modified")
+            files.append(existing_file)
+            by_path[path] = existing_file
+        existing_file.patch = "\n".join(patch_lines).strip()
 
     return files
 

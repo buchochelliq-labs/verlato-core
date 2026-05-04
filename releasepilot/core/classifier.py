@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+from dataclasses import dataclass
 
 from releasepilot.core.checksum import CHECKSUM_VERSION, build_checksum
 from releasepilot.core.conventional import parse_conventional_commit
@@ -18,7 +19,19 @@ from releasepilot.core.models import (
 )
 from releasepilot.providers.base import ProviderRequest, ReleasePilotProvider
 
-MAX_PROMPT_CHANGED_FILES = 20
+MAX_PROMPT_CHANGED_FILES = 12
+MAX_PROMPT_COMMITS = 3
+MAX_PROMPT_PR_BODY_CHARS = 500
+MAX_PROMPT_DIFF_SUMMARY_CHARS = 650
+MAX_PROMPT_HUNK_FILES = 3
+MAX_PROMPT_HUNKS_PER_FILE = 2
+MAX_PROMPT_HUNK_CHARS = 220
+
+
+@dataclass(frozen=True)
+class SummaryPrompt:
+    prompt: str
+    budget: dict[str, int]
 
 
 class Classifier:
@@ -187,6 +200,10 @@ class Classifier:
         commit_signals: list[str],
         allow_classification_override: bool,
     ) -> tuple[str, str, str, str, str, float]:
+        provider = self.provider
+        if provider is None:
+            return kind, area, audience, semver, summary, confidence
+
         evidence = {
             "title": title,
             "labels": labels,
@@ -211,7 +228,7 @@ class Classifier:
             audience=audience,
         )
         self._trace_model_call_start("summarize", title)
-        summary_response = self.provider.summarize(
+        summary_response = provider.summarize(
             ProviderRequest(task="summarize", prompt=summary_prompt, evidence=evidence)
         )
         self._trace_model_call("summarize", title, summary_response.model, summary_response.confidence)
@@ -240,7 +257,7 @@ class Classifier:
                 commits=group.commits,
             )
             self._trace_model_call_start("classify", title)
-            classify_response = self.provider.classify(
+            classify_response = provider.classify(
                 ProviderRequest(task="classify", prompt=classify_prompt, evidence=evidence)
             )
             self._trace_model_call("classify", title, classify_response.model, classify_response.confidence)
@@ -273,19 +290,60 @@ class Classifier:
         kind: str | None = None,
         audience: str | None = None,
     ) -> str:
-        commit_lines = "; ".join(commit.message.splitlines()[0] for commit in commits)
+        return self._build_summary_prompt_with_budget(
+            title=title,
+            labels=labels,
+            pr_body=pr_body,
+            diff=diff,
+            commits=commits,
+            suggestion_count=suggestion_count,
+            kind=kind,
+            audience=audience,
+        ).prompt
+
+    def _build_summary_prompt_with_budget(
+        self,
+        *,
+        title: str,
+        labels: list[str],
+        pr_body: str,
+        diff,
+        commits: list,
+        suggestion_count: int = 1,
+        kind: str | None = None,
+        audience: str | None = None,
+    ) -> SummaryPrompt:
+        commit_subjects = [commit.message.splitlines()[0] for commit in commits[:MAX_PROMPT_COMMITS]]
+        commit_lines = "; ".join(commit_subjects) or "none"
+        if len(commits) > MAX_PROMPT_COMMITS:
+            commit_lines += f"; ... and {len(commits) - MAX_PROMPT_COMMITS} more"
         label_text = ", ".join(labels) if labels else "none"
         file_statuses = sorted(diff.file_statuses.items())
+        included_files = file_statuses[:MAX_PROMPT_CHANGED_FILES]
         file_lines = "\n".join(
-            f"- {status} {path}" for path, status in file_statuses[:MAX_PROMPT_CHANGED_FILES]
+            f"- {status} {path}" for path, status in included_files
         ) or "- none"
         if len(file_statuses) > MAX_PROMPT_CHANGED_FILES:
             file_lines += f"\n- ... and {len(file_statuses) - MAX_PROMPT_CHANGED_FILES} more"
         hunk_lines = []
-        for path, hunks in diff.representative_hunks.items():
+        total_hunk_files = len(diff.representative_hunks)
+        total_hunks = sum(len(hunks) for hunks in diff.representative_hunks.values())
+        included_hunk_files = 0
+        included_hunks = 0
+        included_hunk_chars = 0
+        for path, hunks in list(diff.representative_hunks.items())[:MAX_PROMPT_HUNK_FILES]:
+            included_hunk_files += 1
             hunk_lines.append(f"{path}:")
-            hunk_lines.extend(f"  {hunk}" for hunk in hunks)
+            for hunk in hunks[:MAX_PROMPT_HUNKS_PER_FILE]:
+                compact_hunk = _truncate_prompt_text(hunk, MAX_PROMPT_HUNK_CHARS)
+                included_hunks += 1
+                included_hunk_chars += len(compact_hunk)
+                hunk_lines.append(f"  {compact_hunk}")
+            if len(hunks) > MAX_PROMPT_HUNKS_PER_FILE:
+                hunk_lines.append(f"  ... and {len(hunks) - MAX_PROMPT_HUNKS_PER_FILE} more hunk(s)")
         hunk_text = "\n".join(hunk_lines) or "none"
+        pr_body_text = _truncate_prompt_text(pr_body.strip(), MAX_PROMPT_PR_BODY_CHARS) or "none"
+        diff_summary = _truncate_prompt_text(diff.summary, MAX_PROMPT_DIFF_SUMMARY_CHARS)
         context_bits = []
         if kind:
             context_bits.append(f"kind={kind}")
@@ -297,7 +355,7 @@ class Classifier:
             if suggestion_count <= 1
             else f"Return exactly {suggestion_count} distinct options as a numbered list, one sentence per option."
         )
-        return (
+        prompt = (
             f"Write concise ReleasePilot description suggestions based primarily on the file diffs.\n"
             f"Lead with what changed and why it matters. Name the observable behavior, workflow, API, docs, "
             f"test, or maintenance impact.\n"
@@ -311,10 +369,36 @@ class Classifier:
             f"Release context: {context_text}\n"
             f"Labels: {label_text}\n"
             f"Commits: {commit_lines}\n"
-            f"PR body: {pr_body.strip() or 'none'}\n"
+            f"PR body: {pr_body_text}\n"
             f"Changed files:\n{file_lines}\n"
-            f"Diff summary: {diff.summary}\n"
+            f"Diff summary: {diff_summary}\n"
             f"Representative hunks:\n{hunk_text}"
+        )
+        pr_body_chars_included = 0 if pr_body_text == "none" else len(pr_body_text)
+        return SummaryPrompt(
+            prompt=prompt,
+            budget={
+                "prompt_chars": len(prompt),
+                "files_included": len(included_files),
+                "files_total": len(file_statuses),
+                "files_skipped": max(len(file_statuses) - len(included_files), 0),
+                "commits_included": len(commit_subjects),
+                "commits_total": len(commits),
+                "commits_skipped": max(len(commits) - len(commit_subjects), 0),
+                "pr_body_chars_included": pr_body_chars_included,
+                "pr_body_chars_total": len(pr_body.strip()),
+                "pr_body_chars_skipped": max(len(pr_body.strip()) - pr_body_chars_included, 0),
+                "diff_summary_chars_included": len(diff_summary),
+                "diff_summary_chars_total": len(diff.summary),
+                "diff_summary_chars_skipped": max(len(diff.summary) - len(diff_summary), 0),
+                "hunk_files_included": included_hunk_files,
+                "hunk_files_total": total_hunk_files,
+                "hunk_files_skipped": max(total_hunk_files - included_hunk_files, 0),
+                "hunks_included": included_hunks,
+                "hunks_total": total_hunks,
+                "hunks_skipped": max(total_hunks - included_hunks, 0),
+                "hunk_chars_included": included_hunk_chars,
+            },
         )
 
     def _build_classification_prompt(self, *, title: str, labels: list[str], diff_summary: str, commits: list) -> str:
@@ -393,3 +477,10 @@ class Classifier:
         if os.getenv("RELEASEPILOT_TRACE_MODEL_CALLS") != "1":
             return
         print(f"[releasepilot:model] decision {decision} model={model} title={title}", file=sys.stderr, flush=True)
+
+
+def _truncate_prompt_text(value: str, limit: int) -> str:
+    normalized = value.strip()
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[:limit].rstrip()}..."

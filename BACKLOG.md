@@ -44,7 +44,24 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
 
 ## Next biggest ticket
 
-- [ ] Add suggestion preview source evidence and too-similar detection.
+- [ ] Add regenerate and tone-refinement actions.
+
+## Detailed remaining work (current view)
+
+1. **Suggestion iteration UX**
+   - Add regenerate actions for one item and for all visible items.
+   - Add tone-refinement actions without making tone a hidden global side effect.
+   - Decide whether tone presets should live in config, workspace settings, or both.
+2. **Project language controls**
+   - Explore vocabulary hints, banned phrases, and project-specific release-note style guidance.
+   - Add scoring or validation so generated text stays concrete and avoids vague marketing phrasing.
+   - Capture lightweight local feedback that can improve future prompts without persisting sensitive payloads by default.
+3. **Service-first editor integration**
+   - Replace remaining CLI fallback flows in the extension with a richer local service contract.
+   - Add connection lifecycle states so VS Code can show when the service is starting, ready, degraded, or unavailable.
+4. **Scale and collaboration**
+   - Add auth/session strategy for non-local or multi-client MCP transports.
+   - Add an optional SQLite state backend for larger repositories and concurrent workflows.
 
 ## Suggested next items (recommended execution order)
 
@@ -67,10 +84,20 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
    - [x] Show compact generation details in the VS Code output channel.
    - [x] Adjust VS Code copy for single-suggestion review.
    - [ ] Add regenerate and tone-refinement actions.
-   - [ ] Show current vs suggested summary before applying.
+   - [x] Show current vs suggested summary before applying.
    - [x] Preserve advanced multi-suggestion mode.
-   - [ ] Store provider/model provenance for applied suggestions.
-   - [ ] Add preview source evidence and too-similar detection.
+   - [x] Store provider/model provenance for applied suggestions.
+   - [x] Add preview source evidence and too-similar detection.
+   - [x] Add provider response metadata and expanded model-call diagnostics.
+   - [x] Capture model-exposed reasoning fields in provider responses and trace logs.
+   - [x] Keep provider reasoning collapsed by default in the VS Code detail view.
+   - [x] Log final suggestion decision context, including accepted text and rejected candidate counts.
+   - [x] Add OpenTelemetry-style pluggable model log sink abstraction for provider traces.
+   - [x] Add opt-in prompt/response payload telemetry with default-on redaction.
+   - [x] Add realtime Ollama stream telemetry with coalesced VS Code response/reasoning chunks.
+   - [x] Add prompt budget telemetry for prompt-size tuning.
+   - [x] Add optional structured JSON export for model logs.
+   - [ ] Add OTLP export for model logs.
    - [x] Add bad-output tests and prompt golden tests.
    - [ ] Explore tone presets, project vocabulary hints, banned phrases, specificity scoring, and local feedback loops.
 4. **Confidence calibration**

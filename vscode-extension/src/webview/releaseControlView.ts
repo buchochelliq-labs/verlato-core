@@ -110,6 +110,18 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     if (message.type === "changeModel") {
       await vscode.commands.executeCommand("releasepilot.changeModel");
     }
+    if (message.type === "togglePromptPayloads") {
+      await this.togglePromptPayloads();
+    }
+    if (message.type === "toggleReasoningPayloads") {
+      await this.toggleReasoningPayloads();
+    }
+    if (message.type === "togglePayloadRedaction") {
+      await this.togglePayloadRedaction();
+    }
+    if (message.type === "copyText" && message.text !== undefined) {
+      await this.copyText(message.text, message.label);
+    }
     if (message.type === "apply" && message.target) {
       await this.apply(message.target);
     }
@@ -181,8 +193,22 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     if (!summary) {
       return;
     }
+    const detail = suggestionItem?.suggestion_details?.find((entry) => entry.summary === summary);
     await this.runBusy(async () => {
-      await this.client.reviewDraftItem(this.range, itemId, { summary });
+      await this.client.reviewDraftItem(this.range, itemId, {
+        summary,
+        summaryProvenance: {
+          source: "model-suggestion",
+          provider: this.suggestions?.provider,
+          model: suggestionItem?.provider,
+          prompt_sha: suggestionItem?.prompt_sha,
+          suggestion_index: suggestionIndex,
+          similarity_to_current: detail?.similarity_to_current,
+          response_metadata: suggestionItem?.provider_metadata,
+          source_evidence_count: suggestionItem?.source_evidence?.length ?? 0,
+          reasoning_exposed: Boolean(suggestionItem?.provider_reasoning),
+        },
+      });
       this.skipSuggestion(itemId, false);
       const document = await this.client.getDraft(this.range);
       this.statusMessage = `Applied suggestion for ${itemId}.`;
@@ -233,6 +259,45 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       });
       await vscode.window.showTextDocument(document, vscode.ViewColumn.Beside, true);
     });
+  }
+
+  private async togglePromptPayloads(): Promise<void> {
+    const next = !this.client.getModelSettings().includePromptPayloads;
+    await this.client.updateModelSettings({ includePromptPayloads: next });
+    this.modelSettings = this.client.getModelSettings();
+    this.statusMessage = next
+      ? "Prompt and response payloads will be shown for new model requests."
+      : "Prompt payloads are hidden for new model requests.";
+    this.render();
+  }
+
+  private async toggleReasoningPayloads(): Promise<void> {
+    const next = !this.client.getModelSettings().includeReasoningPayloads;
+    await this.client.updateModelSettings({ includeReasoningPayloads: next });
+    this.modelSettings = this.client.getModelSettings();
+    this.statusMessage = next
+      ? "Provider reasoning payloads will be available in collapsed details for new model requests."
+      : "Provider reasoning payloads are hidden for new model requests.";
+    this.render();
+  }
+
+  private async togglePayloadRedaction(): Promise<void> {
+    const next = !this.client.getModelSettings().redactPayloads;
+    await this.client.updateModelSettings({ redactPayloads: next });
+    this.modelSettings = this.client.getModelSettings();
+    this.statusMessage = next
+      ? "Model telemetry payload redaction is enabled for new requests."
+      : "Model telemetry payload redaction is disabled for new requests.";
+    this.render();
+  }
+
+  private async copyText(text: string, label?: string): Promise<void> {
+    if (!text) {
+      return;
+    }
+    await vscode.env.clipboard.writeText(text);
+    this.statusMessage = `Copied ${label || "payload"} to clipboard.`;
+    this.render();
   }
 
   private async runBusy(task: () => Promise<void>): Promise<void> {
@@ -300,4 +365,6 @@ type ViewMessage = {
   slot?: "base" | "head";
   suggestionIndex?: number;
   requestId?: number;
+  text?: string;
+  label?: string;
 };

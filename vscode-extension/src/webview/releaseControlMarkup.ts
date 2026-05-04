@@ -3,6 +3,7 @@ import type {
   DraftDocument,
   DraftItem,
   DraftRangeRequest,
+  DraftSuggestionItem,
   DraftSuggestionPreview,
   ModelSettings,
   RepositoryOverview,
@@ -75,6 +76,18 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
         <span>${escapeHtml(state.modelSettings.provider)}</span>
         <small>${escapeHtml(state.modelSettings.provider === "ollama" ? state.modelSettings.model : `fanout ${state.modelSettings.maxModelItems}`)}</small>
       </button>
+      <button class="telemetry-toggle" data-action="togglePromptPayloads">
+        <span>Prompt payloads</span>
+        <small>${state.modelSettings.includePromptPayloads ? "On" : "Off"}</small>
+      </button>
+      <button class="telemetry-toggle" data-action="toggleReasoningPayloads">
+        <span>Reasoning payloads</span>
+        <small>${state.modelSettings.includeReasoningPayloads ? "On" : "Off"}</small>
+      </button>
+      <button class="telemetry-toggle" data-action="togglePayloadRedaction">
+        <span>Payload redaction</span>
+        <small>${state.modelSettings.redactPayloads ? "On" : "Off"}</small>
+      </button>
     </section>
 
     <section class="section">
@@ -108,6 +121,13 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
       if (action === 'cancel') vscode.postMessage({ type: 'cancel' });
       if (action === 'cancelRequest') vscode.postMessage({ type: 'cancelRequest', requestId: Number(button.dataset.request) });
       if (action === 'changeModel') vscode.postMessage({ type: 'changeModel' });
+      if (action === 'togglePromptPayloads') vscode.postMessage({ type: 'togglePromptPayloads' });
+      if (action === 'toggleReasoningPayloads') vscode.postMessage({ type: 'toggleReasoningPayloads' });
+      if (action === 'togglePayloadRedaction') vscode.postMessage({ type: 'togglePayloadRedaction' });
+      if (action === 'copyText') {
+        const block = button.closest('details')?.querySelector('pre');
+        vscode.postMessage({ type: 'copyText', text: block?.textContent || '', label: button.dataset.copyLabel || 'payload' });
+      }
       if (action === 'applyChangelog') vscode.postMessage({ type: 'apply', target: 'changelog' });
       if (action === 'applyRelease') vscode.postMessage({ type: 'apply', target: 'github-release' });
       if (action === 'useBase') vscode.postMessage({ type: 'useRef', ref: button.dataset.ref, slot: 'base' });
@@ -136,15 +156,80 @@ function renderSuggestions(preview: DraftSuggestionPreview | undefined): string 
         <span class="name">${escapeHtml(item.title)}</span>
         <span class="badge">${escapeHtml(item.provider)}</span>
       </div>
-      <small>${escapeHtml(item.current_summary)}</small>
+      ${renderSuggestionComparison(item)}
+      ${renderProviderReasoning(item)}
+      ${renderSuggestionEvidence(item)}
       <div class="variants">
         ${item.suggestions.map((suggestion, index) => `<button class="variant" data-action="applySuggestion" data-item="${escapeHtml(item.item_id)}" data-index="${index}">
           <span>${escapeHtml(suggestion)}</span>
+          ${renderSimilarity(item, suggestion)}
         </button>`).join("")}
       </div>
+      ${renderRejectedSuggestions(item)}
       <button class="skip" data-action="skipSuggestion" data-item="${escapeHtml(item.item_id)}">Skip</button>
     </article>`).join("")}
   </section>`;
+}
+
+function renderSuggestionComparison(item: DraftSuggestionItem): string {
+  const first = item.suggestion_details?.[0];
+  const suggested = first?.comparison?.suggested ?? item.suggestions[0] ?? "";
+  if (!suggested) {
+    return `<small>${escapeHtml(item.current_summary)}</small>`;
+  }
+  return `<div class="compare">
+    <div><strong>Current</strong><span>${escapeHtml(item.current_summary)}</span></div>
+    <div><strong>Suggested</strong><span>${escapeHtml(suggested)}</span></div>
+  </div>`;
+}
+
+function renderProviderReasoning(item: DraftSuggestionItem): string {
+  const reasoning = item.provider_reasoning?.trim();
+  if (!reasoning) {
+    return "";
+  }
+  return `<details class="reasoning">
+    <summary>Provider reasoning <span>${reasoning.length}</span><button class="copy" data-action="copyText" data-copy-label="provider reasoning">Copy</button></summary>
+    <pre>${escapeHtml(reasoning)}</pre>
+  </details>`;
+}
+
+function renderSuggestionEvidence(item: DraftSuggestionItem): string {
+  const evidence = item.source_evidence ?? [];
+  if (!evidence.length) {
+    return "";
+  }
+  return `<details class="evidence">
+    <summary>Evidence <span>${evidence.length}</span></summary>
+    ${evidence.slice(0, 8).map((entry) => `<div class="evidence-row">
+      <span>${escapeHtml(entry.kind)}</span>
+      <strong>${escapeHtml(entry.label)}</strong>
+      <small>${escapeHtml(entry.detail)}</small>
+    </div>`).join("")}
+  </details>`;
+}
+
+function renderSimilarity(item: DraftSuggestionItem, suggestion: string): string {
+  const detail = item.suggestion_details?.find((entry) => entry.summary === suggestion);
+  if (!detail) {
+    return "";
+  }
+  return `<small>${Math.round(detail.similarity_to_current * 100)}% similar to current</small>`;
+}
+
+function renderRejectedSuggestions(item: DraftSuggestionItem): string {
+  const rejected = item.rejected_candidates ?? [];
+  if (!rejected.length) {
+    return "";
+  }
+  return `<details class="rejected">
+    <summary>Rejected <span>${rejected.length}</span></summary>
+    ${rejected.slice(0, 5).map((entry) => `<div class="rejected-row">
+      <strong>${escapeHtml(entry.reason)}</strong>
+      <span>${Math.round(entry.similarity_to_current * 100)}%</span>
+      <small>${escapeHtml(entry.summary)}</small>
+    </div>`).join("")}
+  </details>`;
 }
 
 function renderRequests(requests: CommandRequestSnapshot[]): string {
@@ -178,7 +263,10 @@ function renderActivity(activity: NonNullable<CommandRequestSnapshot["activity"]
   return `<ol class="activity">
     ${activity.slice(-20).map((entry) => `<li class="${escapeHtml(entry.category)}">
       <time>${escapeHtml(formatActivityTime(entry.receivedAt))}</time>
-      <span>${escapeHtml(cleanActivityMessage(entry.message))}</span>
+      <span>
+        ${escapeHtml(formatActivityMessage(entry))}
+        ${entry.payload ? `<details class="payload"><summary>${escapeHtml(formatPayloadLabel(entry))}<button class="copy" data-action="copyText" data-copy-label="${escapeHtml(formatPayloadLabel(entry).toLowerCase())}">Copy</button></summary><pre>${escapeHtml(entry.payload)}</pre></details>` : ""}
+      </span>
     </li>`).join("")}
   </ol>`;
 }
@@ -188,11 +276,12 @@ function parseActivityFromOutput(output: string): NonNullable<CommandRequestSnap
   output.split(/\r?\n/).forEach((line, index) => {
     const trimmed = line.trim();
     if (trimmed) {
+      const parsed = parseModelActivityLine(trimmed);
       entries.push({
         id: index,
         stream: "stderr",
         category: trimmed.startsWith("[releasepilot:model]") ? "model" : "process",
-        message: trimmed,
+        ...parsed,
         receivedAt: "",
       });
     }
@@ -200,8 +289,114 @@ function parseActivityFromOutput(output: string): NonNullable<CommandRequestSnap
   return entries;
 }
 
-function cleanActivityMessage(message: string): string {
-  return message.replace(/^\[releasepilot:model\]\s*/, "");
+function formatActivityMessage(entry: NonNullable<CommandRequestSnapshot["activity"]>[number]): string {
+  if (entry.event === "prompt_budget") {
+    return formatPromptBudget(entry);
+  }
+  if (entry.event === "stream_chunk") {
+    const kind = streamKindLabel(String(entry.attributes?.kind ?? "model"));
+    const chunks = typeof entry.attributes?.chunks === "number" ? entry.attributes.chunks : 1;
+    return `${capitalize(kind)} streaming... ${chunks} chunk${chunks === 1 ? "" : "s"}`;
+  }
+  if (entry.event && entry.payload) {
+    return entry.event.replace(/_/g, " ");
+  }
+  return entry.message.replace(/^\[releasepilot:model\]\s*/, "");
+}
+
+function formatPromptBudget(entry: NonNullable<CommandRequestSnapshot["activity"]>[number]): string {
+  const attrs = entry.attributes ?? {};
+  return [
+    "prompt budget",
+    `files=${numberAttr(attrs, "files_included")}/${numberAttr(attrs, "files_total")}`,
+    `commits=${numberAttr(attrs, "commits_included")}/${numberAttr(attrs, "commits_total")}`,
+    `hunks=${numberAttr(attrs, "hunks_included")}/${numberAttr(attrs, "hunks_total")}`,
+    `chars=${numberAttr(attrs, "prompt_chars")}`,
+  ].join(" ");
+}
+
+function numberAttr(attrs: Record<string, unknown>, key: string): number {
+  return typeof attrs[key] === "number" ? attrs[key] : 0;
+}
+
+function formatPayloadLabel(entry: NonNullable<CommandRequestSnapshot["activity"]>[number]): string {
+  if (entry.event === "stream_chunk") {
+    const kind = streamKindLabel(String(entry.attributes?.kind ?? "stream"));
+    const chars = typeof entry.attributes?.chars === "number" ? ` ${entry.attributes.chars} chars` : "";
+    return `${capitalize(kind)} stream${chars}${entry.attributes?.redacted ? " redacted" : ""}`;
+  }
+  const chars = typeof entry.attributes?.chars === "number" ? ` ${entry.attributes.chars} chars` : "";
+  return `Payload${chars}${entry.attributes?.redacted ? " redacted" : ""}`;
+}
+
+function parseModelActivityLine(line: string): {
+  message: string;
+  event?: string;
+  attributes?: Record<string, unknown>;
+  payload?: string;
+} {
+  const jsonPrefix = "[releasepilot:model] json ";
+  if (!line.startsWith(jsonPrefix)) {
+    const streamChunk = parseStreamChunkLine(line);
+    if (streamChunk) {
+      return streamChunk;
+    }
+    return { message: line };
+  }
+  try {
+    const parsed = JSON.parse(line.slice(jsonPrefix.length)) as {
+      event?: unknown;
+      message?: unknown;
+      attributes?: unknown;
+      payload?: unknown;
+    };
+    return {
+      message: typeof parsed.message === "string" ? parsed.message : line,
+      event: typeof parsed.event === "string" ? parsed.event : undefined,
+      attributes: isRecord(parsed.attributes) ? parsed.attributes : undefined,
+      payload: typeof parsed.payload === "string" ? parsed.payload : undefined,
+    };
+  } catch {
+    return { message: line };
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseStreamChunkLine(line: string): {
+  message: string;
+  event: "stream_chunk";
+  attributes: Record<string, unknown>;
+  payload: string;
+} | undefined {
+  const match = line.match(/^\[releasepilot:model\]\s+stream-chunk\s+provider=(\S+)\s+task=(\S+)\s+kind=(\S+)\s+chars=(\d+)(?:\s+redacted=(\S+))?\s+text=(.*)$/);
+  if (!match) {
+    return undefined;
+  }
+  const [, provider, task, kind, chars, redacted, text] = match;
+  return {
+    message: line,
+    event: "stream_chunk",
+    attributes: {
+      provider,
+      task,
+      kind,
+      chars: Number(chars),
+      chunks: 1,
+      redacted: redacted === "true",
+    },
+    payload: text,
+  };
+}
+
+function capitalize(value: string): string {
+  return value ? `${value[0].toUpperCase()}${value.slice(1)}` : value;
+}
+
+function streamKindLabel(kind: string): string {
+  return kind === "content" ? "response" : kind;
 }
 
 function formatActivityTime(value: string): string {
@@ -380,10 +575,18 @@ function styles(): string {
     .meta div { border-top: 1px solid var(--vscode-sideBarSectionHeader-border, transparent); padding-top: 5px; }
     .meta strong { display: block; font-size: 15px; }
     .meta span, small, .item-meta, .empty { color: var(--vscode-descriptionForeground); font-size: 11px; }
-    .model { width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 4px 6px; text-align: left; }
+    .model, .telemetry-toggle { width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 4px 6px; text-align: left; }
+    .telemetry-toggle { margin-top: 4px; }
     details { margin-bottom: 4px; }
     summary { cursor: pointer; padding: 3px 0; font-weight: 600; text-transform: uppercase; font-size: 11px; }
     summary span { color: var(--vscode-descriptionForeground); margin-left: 3px; }
+    summary .copy {
+      float: right;
+      min-height: 16px;
+      padding: 0 5px;
+      font-size: 10px;
+      text-transform: none;
+    }
     .item { padding: 6px 0 7px; border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.18)); }
     .item.hidden { opacity: .58; }
     .item-head { display: flex; gap: 6px; align-items: baseline; }
@@ -420,6 +623,8 @@ function styles(): string {
     .activity li.model { border-left-color: var(--vscode-focusBorder); }
     .activity time { color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; }
     .activity span { min-width: 0; overflow-wrap: anywhere; }
+    .payload { margin-top: 3px; }
+    .payload summary { color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 400; text-transform: none; }
     .raw { margin-top: 4px; }
     .raw summary { color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 400; text-transform: none; }
     .request pre {
@@ -438,6 +643,43 @@ function styles(): string {
     .variants { display: grid; gap: 4px; margin-top: 5px; }
     .variant { min-height: 0; padding: 5px 6px; text-align: left; line-height: 1.35; }
     .variant span { display: block; white-space: normal; }
+    .variant small { display: block; margin-top: 2px; }
+    .compare { display: grid; gap: 4px; margin: 5px 0; }
+    .compare div {
+      display: grid;
+      gap: 2px;
+      padding: 4px 5px;
+      background: var(--vscode-input-background);
+      border-left: 2px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.24));
+    }
+    .compare strong { color: var(--vscode-descriptionForeground); font-size: 10px; text-transform: uppercase; }
+    .compare span { line-height: 1.35; overflow-wrap: anywhere; }
+    .evidence, .rejected, .reasoning { margin-top: 4px; }
+    .evidence summary, .rejected summary, .reasoning summary { color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 400; text-transform: none; }
+    .reasoning pre, .payload pre {
+      max-height: 180px;
+      overflow: auto;
+      margin: 4px 0 0;
+      padding: 5px;
+      color: var(--vscode-editor-foreground);
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-input-border, transparent);
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 10px;
+      line-height: 1.35;
+    }
+    .evidence-row, .rejected-row {
+      display: grid;
+      grid-template-columns: 52px minmax(0, 1fr);
+      gap: 2px 5px;
+      padding: 3px 0;
+      border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.14));
+      font-size: 10px;
+    }
+    .evidence-row span, .rejected-row span { color: var(--vscode-descriptionForeground); }
+    .evidence-row strong, .rejected-row strong { min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+    .evidence-row small, .rejected-row small { grid-column: 2; min-width: 0; overflow-wrap: anywhere; }
     .skip { margin-top: 4px; min-height: 20px; font-size: 11px; }
     .source-group { margin-bottom: 2px; }
     .source-row { display: grid; grid-template-columns: minmax(0, 1fr) 45px; gap: 4px; margin-bottom: 4px; }

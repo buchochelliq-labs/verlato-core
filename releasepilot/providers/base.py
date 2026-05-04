@@ -17,6 +17,8 @@ class ProviderResponse:
     content: str
     confidence: float = 0.5
     model: str = "unknown"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    reasoning: str = ""
 
 
 class ReleasePilotProvider(ABC):

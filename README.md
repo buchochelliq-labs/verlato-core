@@ -128,6 +128,8 @@ Environment variables:
 - `RELEASEPILOT_MODEL_PROVIDER`: model provider mode: `ollama` (default), `stub`, `mock`, or `github-copilot`.
 - `RELEASEPILOT_OLLAMA_MODEL`: model name when using `ollama` (default `gemma4:latest`).
 - `RELEASEPILOT_OLLAMA_ENDPOINT`: override the local Ollama chat endpoint (default `http://127.0.0.1:11434/api/chat`).
+- `RELEASEPILOT_OLLAMA_TIMEOUT_SECONDS`: timeout for each local Ollama model request (default `120`).
+- `RELEASEPILOT_OLLAMA_STREAM`: set to `1` to stream Ollama response chunks into model telemetry while preserving the final response.
 - `RELEASEPILOT_MODEL_MAX_ITEMS`: maximum grouped changes before ReleasePilot disables provider calls for that scan (default `25`; use `-1` to disable the fanout guard).
 - `RELEASEPILOT_GITHUB_MODEL`: model name when using `github-copilot` (default `openai/gpt-4o-mini`; legacy values such as `gpt-4o-mini` are normalized).
 - `RELEASEPILOT_GITHUB_MODELS_ENDPOINT`: override chat-completions endpoint for GitHub-hosted models.
@@ -158,6 +160,16 @@ When a provider is enabled, ReleasePilot sends compact file-diff evidence, repre
 You can also override the provider for one CLI run with `--model-provider mock`, `--model-provider ollama`, or `--model-provider github-copilot` on `scan`, `generate`, `reconcile`, and `draft` commands. The VS Code extension exposes the same override through the `releasepilot.modelProvider` setting; leave it as `configured` to honor `releasepilot.json` or environment variables. The `draft suggest` command defaults to `ollama` when no provider is configured because it explicitly asks the model for a summary.
 
 `draft suggest` generates one suggested description by default. Use `--count`, `RELEASEPILOT_SUGGESTION_COUNT`, `suggestion_count` in `releasepilot.json`, or the VS Code `releasepilot.suggestionCount` setting to request up to five variants. Set `RELEASEPILOT_TRACE_MODEL_CALLS=1` to log model-call and suggestion parsing diagnostics to stderr without changing JSON stdout.
+
+Model telemetry is ephemeral in the VS Code request timeline by default. Full prompt and response payloads are hidden unless `releasepilot.telemetry.includePromptPayloads` or `RELEASEPILOT_TRACE_MODEL_PAYLOADS=1` is enabled, because prompts can include PR text and diff snippets. Set `releasepilot.telemetry.debugModelLogPath` or `RELEASEPILOT_MODEL_LOG_PATH` to persist JSONL model telemetry for debugging; provider log records use an OpenTelemetry-style shape so they can later be exported to JSON/OTLP pipelines. ReleasePilot captures provider-exposed reasoning fields when available, but does not assume every provider exposes private model reasoning. See [docs/model-telemetry.md](docs/model-telemetry.md) for the event schema.
+
+Reasoning payloads are controlled separately with `releasepilot.telemetry.includeReasoningPayloads` or `RELEASEPILOT_TRACE_MODEL_REASONING=1`. When disabled, ReleasePilot still reports whether reasoning was exposed and how many characters were produced, but it does not stream or return the full reasoning text in editor-facing telemetry.
+
+Payload redaction is enabled by default whenever payload telemetry is shown or persisted. Use `releasepilot.telemetry.redactPayloads=false` or `RELEASEPILOT_REDACT_MODEL_PAYLOADS=0` only for deep local debugging when you are comfortable with raw prompt and response text being visible in telemetry.
+
+When a generated suggestion is applied, ReleasePilot stores summary provenance with the draft item, including source, provider/model, prompt hash when available, response metadata, and apply timestamp. Draft JSON includes this provenance so model-assisted release-note text remains auditable after review.
+
+Persisted debug logs can be exported with `releasepilot model-logs export --file <model-debug.jsonl> --output model-export.json`. The export normalizes CLI and provider records into a `releasepilot.model_logs.v1` JSON document and reapplies redaction by default.
 
 For local AI use, run Ollama locally and make sure the selected model is pulled before using `draft suggest`. For prompt debugging or manual model use, prefer `draft prompt`, which only returns the generated prompt and does not call any LLM. GitHub auth is no longer requested by default for configured/local flows.
 

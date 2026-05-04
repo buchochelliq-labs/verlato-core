@@ -104,6 +104,7 @@ export class ReleasePilotClient implements vscode.Disposable {
       itemId,
       ...(update.status ? ["--status", update.status] : []),
       ...(update.summary !== undefined ? ["--summary", update.summary] : []),
+      ...(update.summaryProvenance ? ["--summary-provenance-json", JSON.stringify(update.summaryProvenance)] : []),
       ...(update.reviewer ? ["--reviewer", update.reviewer] : []),
     ]);
   }
@@ -162,8 +163,14 @@ export class ReleasePilotClient implements vscode.Disposable {
       provider,
       model: config.get<string>("ollamaModel") || "gemma4:latest",
       endpoint: config.get<string>("ollamaEndpoint") || "http://127.0.0.1:11434/api/chat",
+      ollamaTimeoutSeconds: config.get<number>("ollamaTimeoutSeconds") ?? 120,
       maxModelItems: config.get<number>("maxModelItems") ?? 25,
       suggestionCount: config.get<number>("suggestionCount") ?? 1,
+      includePromptPayloads: config.get<boolean>("telemetry.includePromptPayloads") ?? false,
+      includeReasoningPayloads: config.get<boolean>("telemetry.includeReasoningPayloads") ?? false,
+      redactPayloads: config.get<boolean>("telemetry.redactPayloads") ?? true,
+      debugModelLogPath: config.get<string>("telemetry.debugModelLogPath") || "",
+      ollamaStreamResponses: config.get<boolean>("ollamaStreamResponses") ?? true,
     };
   }
 
@@ -178,11 +185,29 @@ export class ReleasePilotClient implements vscode.Disposable {
     if (settings.endpoint !== undefined) {
       await config.update("ollamaEndpoint", settings.endpoint, vscode.ConfigurationTarget.Workspace);
     }
+    if (settings.ollamaTimeoutSeconds !== undefined) {
+      await config.update("ollamaTimeoutSeconds", settings.ollamaTimeoutSeconds, vscode.ConfigurationTarget.Workspace);
+    }
     if (settings.maxModelItems !== undefined) {
       await config.update("maxModelItems", settings.maxModelItems, vscode.ConfigurationTarget.Workspace);
     }
     if (settings.suggestionCount !== undefined) {
       await config.update("suggestionCount", settings.suggestionCount, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.includePromptPayloads !== undefined) {
+      await config.update("telemetry.includePromptPayloads", settings.includePromptPayloads, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.includeReasoningPayloads !== undefined) {
+      await config.update("telemetry.includeReasoningPayloads", settings.includeReasoningPayloads, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.redactPayloads !== undefined) {
+      await config.update("telemetry.redactPayloads", settings.redactPayloads, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.debugModelLogPath !== undefined) {
+      await config.update("telemetry.debugModelLogPath", settings.debugModelLogPath, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.ollamaStreamResponses !== undefined) {
+      await config.update("ollamaStreamResponses", settings.ollamaStreamResponses, vscode.ConfigurationTarget.Workspace);
     }
   }
 
@@ -394,7 +419,7 @@ export class ReleasePilotClient implements vscode.Disposable {
     const next = {
       ...request,
       [stream]: trimRequestOutput(request[stream] + chunk),
-      activity: trimActivity([...(request.activity ?? []), ...this.buildActivityEntries(id, stream, chunk)]),
+      activity: trimActivity(mergeStreamActivity([...(request.activity ?? []), ...this.buildActivityEntries(id, stream, chunk)])),
     };
     this.commandRequests.set(id, next);
     this.emitRequests();
@@ -433,9 +458,21 @@ export class ReleasePilotClient implements vscode.Disposable {
     const env = { ...process.env };
     env.RELEASEPILOT_OLLAMA_MODEL = settings.model;
     env.RELEASEPILOT_OLLAMA_ENDPOINT = settings.endpoint;
+    env.RELEASEPILOT_OLLAMA_TIMEOUT_SECONDS = String(settings.ollamaTimeoutSeconds);
     env.RELEASEPILOT_MODEL_MAX_ITEMS = String(settings.maxModelItems);
     env.RELEASEPILOT_SUGGESTION_COUNT = String(settings.suggestionCount);
     env.RELEASEPILOT_TRACE_MODEL_CALLS = "1";
+    env.RELEASEPILOT_OLLAMA_STREAM = settings.ollamaStreamResponses ? "1" : "0";
+    if (settings.includePromptPayloads) {
+      env.RELEASEPILOT_TRACE_MODEL_PAYLOADS = "1";
+    }
+    if (settings.includeReasoningPayloads) {
+      env.RELEASEPILOT_TRACE_MODEL_REASONING = "1";
+    }
+    env.RELEASEPILOT_REDACT_MODEL_PAYLOADS = settings.redactPayloads ? "1" : "0";
+    if (settings.debugModelLogPath.trim()) {
+      env.RELEASEPILOT_MODEL_LOG_PATH = settings.debugModelLogPath.trim();
+    }
     if (provider === "configured") {
       return this.withGithubAuthToken(env, args, provider);
     }
@@ -458,7 +495,7 @@ export class ReleasePilotClient implements vscode.Disposable {
         id: this.nextActivityId++,
         stream,
         category: line.startsWith("[releasepilot:model]") ? "model" as const : "process" as const,
-        message: line,
+        ...parseModelActivityLine(line),
         receivedAt: new Date().toISOString(),
       }));
   }
@@ -574,5 +611,113 @@ function mapReleaseByCommit(items: StateItem[]): Map<string, string> {
 
 function formatModelSettings(settings: ModelSettings): string {
   const model = settings.provider === "ollama" ? `/${settings.model}` : "";
-  return `${settings.provider}${model}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}`;
+  const payloads = settings.includePromptPayloads ? "; payloads on" : "";
+  const reasoning = settings.includeReasoningPayloads ? "; reasoning on" : "";
+  const redaction = settings.redactPayloads ? "; redaction on" : "; redaction off";
+  const debugLog = settings.debugModelLogPath ? "; debug log on" : "";
+  const streaming = settings.ollamaStreamResponses ? "; streaming on" : "";
+  const timeout = settings.provider === "ollama" ? `; timeout: ${settings.ollamaTimeoutSeconds}s` : "";
+  return `${settings.provider}${model}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
+}
+
+function parseModelActivityLine(line: string): {
+  message: string;
+  event?: string;
+  attributes?: Record<string, unknown>;
+  payload?: string;
+} {
+  const jsonPrefix = "[releasepilot:model] json ";
+  if (!line.startsWith(jsonPrefix)) {
+    const streamChunk = parseStreamChunkLine(line);
+    if (streamChunk) {
+      return streamChunk;
+    }
+    return { message: line };
+  }
+  try {
+    const parsed = JSON.parse(line.slice(jsonPrefix.length)) as {
+      event?: unknown;
+      message?: unknown;
+      attributes?: unknown;
+      payload?: unknown;
+    };
+    return {
+      message: typeof parsed.message === "string" ? parsed.message : line,
+      event: typeof parsed.event === "string" ? parsed.event : undefined,
+      attributes: isRecord(parsed.attributes) ? parsed.attributes : undefined,
+      payload: typeof parsed.payload === "string" ? parsed.payload : undefined,
+    };
+  } catch {
+    return { message: line };
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseStreamChunkLine(line: string): {
+  message: string;
+  event: "stream_chunk";
+  attributes: Record<string, unknown>;
+  payload: string;
+} | undefined {
+  const match = line.match(/^\[releasepilot:model\]\s+stream-chunk\s+provider=(\S+)\s+task=(\S+)\s+kind=(\S+)\s+chars=(\d+)(?:\s+redacted=(\S+))?\s+text=(.*)$/);
+  if (!match) {
+    return undefined;
+  }
+  const [, provider, task, kind, chars, redacted, text] = match;
+  return {
+    message: line,
+    event: "stream_chunk",
+    attributes: {
+      provider,
+      task,
+      kind,
+      chars: Number(chars),
+      chunks: 1,
+      redacted: redacted === "true",
+    },
+    payload: text,
+  };
+}
+
+function mergeStreamActivity(entries: CommandRequestSnapshot["activity"]): NonNullable<CommandRequestSnapshot["activity"]> {
+  const merged: NonNullable<CommandRequestSnapshot["activity"]> = [];
+  for (const entry of entries ?? []) {
+    if (entry.event !== "stream_chunk") {
+      merged.push(entry);
+      continue;
+    }
+    const kind = entry.attributes?.kind;
+    const task = entry.attributes?.task;
+    const prior = [...merged].reverse().find(
+      (candidate) =>
+        candidate.event === "stream_chunk" &&
+        candidate.attributes?.kind === kind &&
+        candidate.attributes?.task === task,
+    );
+    if (!prior) {
+      merged.push(entry);
+      continue;
+    }
+    const priorChars = typeof prior.attributes?.chars === "number" ? prior.attributes.chars : 0;
+    const nextChars = typeof entry.attributes?.chars === "number" ? entry.attributes.chars : 0;
+    const priorChunks = typeof prior.attributes?.chunks === "number" ? prior.attributes.chunks : 1;
+    const nextChunks = typeof entry.attributes?.chunks === "number" ? entry.attributes.chunks : 1;
+    prior.attributes = {
+      ...(prior.attributes ?? {}),
+      chars: priorChars + nextChars,
+      chunks: priorChunks + nextChunks,
+      redacted: Boolean(prior.attributes?.redacted) || Boolean(entry.attributes?.redacted),
+    };
+    prior.payload = trimStreamPayload([prior.payload, entry.payload].filter(Boolean).join(" "));
+    prior.message = `[releasepilot:model] stream ${String(kind)} chunks=${priorChunks + nextChunks} chars=${priorChars + nextChars}`;
+    prior.receivedAt = entry.receivedAt;
+  }
+  return merged;
+}
+
+function trimStreamPayload(value: string): string {
+  return value.length > 6000 ? value.slice(value.length - 6000) : value;
 }

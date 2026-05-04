@@ -27,6 +27,7 @@ export interface DraftItem {
   reviewed_by: string | null;
   reviewed_at: string | null;
   edited_summary: string | null;
+  summary_provenance?: SummaryProvenance | null;
   hidden: boolean;
 }
 
@@ -68,6 +69,21 @@ export interface ReviewUpdateRequest {
   status?: "needs-review" | "ready" | "accepted" | "edited" | "hidden";
   summary?: string;
   reviewer?: string;
+  summaryProvenance?: SummaryProvenance;
+}
+
+export interface SummaryProvenance {
+  source: string;
+  provider?: string;
+  model?: string;
+  prompt_sha?: string;
+  suggestion_index?: number;
+  similarity_to_current?: number;
+  response_metadata?: Record<string, unknown>;
+  source_evidence_count?: number;
+  reasoning_exposed?: boolean;
+  applied_at?: string;
+  edited_at?: string;
 }
 
 export interface DraftPromptPreview {
@@ -75,6 +91,7 @@ export interface DraftPromptPreview {
   title: string;
   provider: string;
   prompt: string;
+  prompt_budget?: Record<string, number>;
 }
 
 export interface RepositoryRef {
@@ -107,8 +124,14 @@ export interface ModelSettings {
   provider: string;
   model: string;
   endpoint: string;
+  ollamaTimeoutSeconds: number;
   maxModelItems: number;
   suggestionCount: number;
+  includePromptPayloads: boolean;
+  includeReasoningPayloads: boolean;
+  redactPayloads: boolean;
+  debugModelLogPath: string;
+  ollamaStreamResponses: boolean;
 }
 
 export interface DraftSuggestionItem {
@@ -116,7 +139,34 @@ export interface DraftSuggestionItem {
   title: string;
   current_summary: string;
   provider: string;
+  prompt_sha?: string;
+  provider_metadata?: Record<string, unknown>;
+  provider_reasoning?: string;
+  source_evidence?: DraftSuggestionEvidence[];
+  suggestion_details?: DraftSuggestionDetail[];
+  rejected_candidates?: DraftRejectedSuggestion[];
   suggestions: string[];
+}
+
+export interface DraftSuggestionEvidence {
+  kind: string;
+  label: string;
+  detail: string;
+}
+
+export interface DraftSuggestionDetail {
+  summary: string;
+  similarity_to_current: number;
+  comparison: {
+    current: string;
+    suggested: string;
+  };
+}
+
+export interface DraftRejectedSuggestion {
+  summary: string;
+  reason: string;
+  similarity_to_current: number;
 }
 
 export interface DraftSuggestionPreview {
@@ -158,4 +208,7 @@ export interface CommandLogEntry {
   category: "model" | "process";
   message: string;
   receivedAt: string;
+  event?: string;
+  attributes?: Record<string, unknown>;
+  payload?: string;
 }

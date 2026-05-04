@@ -24,6 +24,12 @@ def test_state_store_roundtrip(tmp_path):
         reviewed_by="nick",
         reviewed_at="2026-04-24",
         edited_summary="Reviewer wording",
+        summary_provenance={
+            "source": "model-suggestion",
+            "provider": "mock",
+            "model": "mock-local",
+            "prompt_sha": "abc123",
+        },
     )
     store.append_new([item])
     loaded = store.load()
@@ -31,6 +37,12 @@ def test_state_store_roundtrip(tmp_path):
     assert loaded.items[0].id == "ci_1"
     assert loaded.items[0].status == "edited"
     assert loaded.items[0].edited_summary == "Reviewer wording"
+    assert loaded.items[0].summary_provenance == {
+        "source": "model-suggestion",
+        "provider": "mock",
+        "model": "mock-local",
+        "prompt_sha": "abc123",
+    }
 
 
 def test_state_store_raises_for_invalid_json(tmp_path):
@@ -112,3 +124,4 @@ def test_state_store_loads_v2_items_with_default_review_state(tmp_path):
     assert loaded.schema_version == "v2"
     assert loaded.items[0].status == "needs-review"
     assert loaded.items[0].hidden is False
+    assert loaded.items[0].summary_provenance is None

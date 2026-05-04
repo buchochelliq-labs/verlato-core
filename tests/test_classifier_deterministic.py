@@ -154,9 +154,79 @@ def test_provider_summary_prompt_caps_changed_file_list():
     )
 
     assert "src/module_00.py" in prompt
-    assert "src/module_19.py" in prompt
-    assert "src/module_20.py" not in prompt
-    assert "... and 5 more" in prompt
+    assert "src/module_11.py" in prompt
+    assert "src/module_12.py" not in prompt
+    assert "... and 13 more" in prompt
+
+
+def test_provider_summary_prompt_truncates_large_context():
+    long_body = "body " * 200
+    long_summary_patch = "+changed behavior\n" * 60
+    files = [
+        ChangedFile(path="src/large.py", status="modified", patch=long_summary_patch),
+        ChangedFile(path="src/other.py", status="modified", patch=long_summary_patch),
+        ChangedFile(path="src/third.py", status="modified", patch=long_summary_patch),
+        ChangedFile(path="src/fourth.py", status="modified", patch=long_summary_patch),
+    ]
+    group = ChangeGroup(
+        pr=PullRequest(number=8, title="Improve modules", body=long_body, files=files),
+        commits=[
+            Commit(sha="a", message="update one"),
+            Commit(sha="b", message="update two"),
+            Commit(sha="c", message="update three"),
+            Commit(sha="d", message="update four"),
+        ],
+    )
+    classifier = Classifier()
+    diff = classifier.diff_builder.build(group.pr.files)
+
+    prompt = classifier._build_summary_prompt(
+        title="Improve modules",
+        labels=[],
+        pr_body=group.pr.body,
+        diff=diff,
+        commits=group.commits,
+    )
+
+    assert "update one; update two; update three; ... and 1 more" in prompt
+    assert "update four" not in prompt
+    assert "src/fourth.py:" not in prompt
+    assert len(prompt) < 4000
+
+
+def test_provider_summary_prompt_reports_budget():
+    files = [
+        ChangedFile(path=f"src/module_{index:02}.py", status="modified", patch="+line")
+        for index in range(14)
+    ]
+    group = ChangeGroup(
+        pr=PullRequest(number=8, title="Improve modules", body="body " * 200, files=files),
+        commits=[
+            Commit(sha="a", message="update one"),
+            Commit(sha="b", message="update two"),
+            Commit(sha="c", message="update three"),
+            Commit(sha="d", message="update four"),
+        ],
+    )
+    classifier = Classifier()
+    diff = classifier.diff_builder.build(group.pr.files)
+
+    result = classifier._build_summary_prompt_with_budget(
+        title="Improve modules",
+        labels=[],
+        pr_body=group.pr.body,
+        diff=diff,
+        commits=group.commits,
+    )
+
+    assert result.budget["prompt_chars"] == len(result.prompt)
+    assert result.budget["files_included"] == 12
+    assert result.budget["files_total"] == 14
+    assert result.budget["files_skipped"] == 2
+    assert result.budget["commits_included"] == 3
+    assert result.budget["commits_total"] == 4
+    assert result.budget["commits_skipped"] == 1
+    assert result.budget["pr_body_chars_included"] <= 503
 
 
 def test_classifier_rejects_low_value_provider_summary():

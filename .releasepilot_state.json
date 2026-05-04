@@ -1287,7 +1287,7 @@
         "summary": "changed files: added .codex/skills/releasepilot/SKILL.md, added .github/copilot-instructions.md, added .releasepilot_state.json, added .vscode/launch.json, added .vscode/mcp.json, and 51 more; statuses: added:12, modified:42, removed:2; areas: backend(12), docs(11), general(38), tests(12); config: releasepilot/config.py, tests/test_config_and_drafts.py, vscode-extension/tsconfig.json",
         "title": "feat: add VS Code extension for ReleasePilot with draft management and preview functionality"
       },
-      "edited_summary": null,
+      "edited_summary": "Validates a seamless development experience by integrating ReleasePilot into VS Code, providing immediate access to draft handling and content previews.",
       "evidence": {
         "commit_signals": [
           "conventional:feat"
@@ -1529,7 +1529,7 @@
       "lineage_releases": [],
       "published": false,
       "published_in": null,
-      "reviewed_at": "2026-04-25",
+      "reviewed_at": "2026-05-04",
       "reviewed_by": null,
       "source": {
         "base_ref": "HEAD~10",
@@ -1541,7 +1541,7 @@
         "head_ref": "HEAD",
         "pr_number": null
       },
-      "status": "accepted"
+      "status": "edited"
     }
   ],
   "schema_version": "v3"

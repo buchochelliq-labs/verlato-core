@@ -155,6 +155,17 @@
           "default": "http://127.0.0.1:11434/api/chat",
           "description": "Ollama chat endpoint used by ReleasePilot."
         },
+        "releasepilot.ollamaTimeoutSeconds": {
+          "type": "number",
+          "default": 120,
+          "minimum": 1,
+          "description": "Timeout in seconds for each Ollama model request."
+        },
+        "releasepilot.ollamaStreamResponses": {
+          "type": "boolean",
+          "default": true,
+          "description": "Stream Ollama response chunks into the ReleasePilot request timeline while preserving the final model response."
+        },
         "releasepilot.maxModelItems": {
           "type": "number",
           "default": 25,
@@ -167,6 +178,26 @@
           "minimum": 1,
           "maximum": 5,
           "description": "Number of AI description suggestions to generate for each release item."
+        },
+        "releasepilot.telemetry.includePromptPayloads": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include full model prompt and response payloads in live request activity. Disabled by default because prompts may include PR bodies and diff snippets."
+        },
+        "releasepilot.telemetry.includeReasoningPayloads": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include full provider-exposed reasoning text in collapsed telemetry details. Disabled by default because reasoning can be large."
+        },
+        "releasepilot.telemetry.redactPayloads": {
+          "type": "boolean",
+          "default": true,
+          "description": "Redact likely secrets from model telemetry payloads before showing or persisting them. Keep enabled unless doing deep local debugging."
+        },
+        "releasepilot.telemetry.debugModelLogPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional JSONL file path for model telemetry debugging. Leave empty to keep telemetry ephemeral in the VS Code session."
         }
       }
     },

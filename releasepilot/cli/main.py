@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
 from dataclasses import asdict
 from datetime import date
+from pathlib import Path
 
 from releasepilot.config import ReleasePilotConfig, load_config
 from releasepilot.core.adapters import NullPullRequestAdapter, PullRequestAdapter, StandardGitAdapter
@@ -19,6 +21,7 @@ from releasepilot.core.reconciler import Reconciler
 from releasepilot.github.adapter import GitHubApiAdapter
 from releasepilot.providers.base import ProviderRequest
 from releasepilot.providers.factory import build_provider
+from releasepilot.providers.model_logging import model_payload_redaction_enabled, redact_model_payload
 from releasepilot.state.store import StateStore
 
 MODEL_PROVIDER_CHOICES = ["stub", "mock", "ollama", "github-copilot"]
@@ -59,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     draft_review.add_argument("--id", required=True)
     draft_review.add_argument("--status", choices=["needs-review", "ready", "accepted", "edited", "hidden"])
     draft_review.add_argument("--summary")
+    draft_review.add_argument("--summary-provenance-json", help=argparse.SUPPRESS)
     draft_review.add_argument("--reviewer")
     draft_review.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Override the configured model provider.")
     draft_suggest = draft_sub.add_parser("suggest")
@@ -87,6 +91,14 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("--include-provenance", action="store_true")
 
     sub.add_parser("serve")
+
+    model_logs = sub.add_parser("model-logs")
+    model_logs_sub = model_logs.add_subparsers(dest="model_logs_command", required=True)
+    model_logs_export = model_logs_sub.add_parser("export")
+    model_logs_export.add_argument("--file", required=True, help="JSONL model debug log produced by RELEASEPILOT_MODEL_LOG_PATH.")
+    model_logs_export.add_argument("--format", choices=["json", "jsonl"], default="json")
+    model_logs_export.add_argument("--output", help="Optional output path. Defaults to stdout.")
+    model_logs_export.add_argument("--event", action="append", help="Filter to one event name. Can be provided more than once.")
 
     state = sub.add_parser("state")
     state_sub = state.add_subparsers(dest="state_command", required=True)
@@ -249,6 +261,7 @@ def _merge_review_state(items: list[ChangeItem]) -> list[ChangeItem]:
             item.reviewed_by = persisted.reviewed_by
             item.reviewed_at = persisted.reviewed_at
             item.edited_summary = persisted.edited_summary
+            item.summary_provenance = persisted.summary_provenance
             item.hidden = persisted.hidden
             for signal in persisted.evidence.commit_signals:
                 if signal.startswith("provider-summary:") and signal not in item.evidence.commit_signals:
@@ -266,6 +279,7 @@ def _update_draft_review(
     summary: str | None,
     reviewer: str | None,
     model_provider: str | None = None,
+    summary_provenance: dict[str, object] | None = None,
 ) -> ChangeItem:
     if status is None and summary is None and reviewer is None:
         raise SystemExit("Provide at least one review update: --status, --summary, or --reviewer")
@@ -285,7 +299,13 @@ def _update_draft_review(
         ),
         None,
     )
-    return _persist_review_update(candidate=match or candidate, status=status, summary=summary, reviewer=reviewer)
+    return _persist_review_update(
+        candidate=match or candidate,
+        status=status,
+        summary=summary,
+        reviewer=reviewer,
+        summary_provenance=summary_provenance,
+    )
 
 
 def _run_draft_review(
@@ -297,7 +317,9 @@ def _run_draft_review(
     summary: str | None,
     reviewer: str | None,
     model_provider: str | None = None,
+    summary_provenance_json: str | None = None,
 ) -> int:
+    summary_provenance = _parse_summary_provenance(summary_provenance_json)
     updated = _update_draft_review(
         base=base,
         head=head,
@@ -306,6 +328,7 @@ def _run_draft_review(
         summary=summary,
         reviewer=reviewer,
         model_provider=model_provider,
+        summary_provenance=summary_provenance,
     )
     print(json.dumps(updated.to_dict(), indent=2))
     return 0
@@ -338,11 +361,19 @@ def _request_draft_model_input(
             "Configure a local model provider or pass --model-provider ollama."
         )
 
+    provenance = _summary_provenance(
+        source="model-generated",
+        provider=effective_model_provider,
+        model=_provider_model_from_signals(candidate.evidence.commit_signals),
+        prompt_sha=None,
+        response_metadata={},
+    )
     return _persist_review_update(
         candidate=candidate,
         status="edited",
         summary=candidate.content.summary,
         reviewer=reviewer,
+        summary_provenance=provenance,
     )
 
 
@@ -417,7 +448,7 @@ def _preview_draft_model_suggestions(
             "evidence-built",
             f"item_id={baseline_item.id} files={file_count} hunks={hunk_count}",
         )
-        prompt = provider_classifier._build_summary_prompt(
+        prompt_result = provider_classifier._build_summary_prompt_with_budget(
             title=baseline_item.content.title,
             labels=[label.lower() for label in (group.pr.labels if group.pr else [])],
             pr_body=group.pr.body if group.pr else "",
@@ -427,6 +458,7 @@ def _preview_draft_model_suggestions(
             kind=baseline_item.classification.kind,
             audience=baseline_item.classification.audience,
         )
+        prompt = prompt_result.prompt
         evidence = {
             "title": baseline_item.content.title,
             "item_id": baseline_item.id,
@@ -436,15 +468,29 @@ def _preview_draft_model_suggestions(
             "file_count": file_count,
             "hunk_count": hunk_count,
         }
-        _trace_model_suggest_stage("prompt-built", f"item_id={baseline_item.id} prompt_chars={len(prompt)}")
+        source_evidence = _build_suggestion_source_evidence(diff, group)
+        prompt_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12]
+        _trace_model_suggest_stage(
+            "evidence-detail",
+            f"item_id={baseline_item.id} files={','.join(list(diff.file_statuses)[:8]) or 'none'} "
+            f"source_entries={len(source_evidence)}",
+        )
+        _trace_model_suggest_stage(
+            "prompt-built",
+            f"item_id={baseline_item.id} prompt_chars={len(prompt)} prompt_sha={prompt_sha}",
+        )
+        _trace_model_prompt_budget(prompt_result.budget)
+        _trace_model_payload("prompt-preview", prompt)
         _trace_model_call_start("suggest", baseline_item.content.title, effective_model_provider or "configured")
         response = provider.summarize(ProviderRequest(task="suggest", prompt=prompt, evidence=evidence))
         _trace_model_call_result("suggest", baseline_item.content.title, response.model, response.confidence)
+        _trace_model_response_detail(response.model, response.content, response.metadata, response.reasoning)
+        provider_reasoning = response.reasoning if _trace_model_reasoning_payloads_enabled() else ""
         if provider_classifier._is_provider_error(response.content):
             raise SystemExit(
                 f"No model suggestions were produced for draft item {baseline_item.id}: {response.content}"
             )
-        suggestions = _parse_suggestion_variants(
+        suggestion_details, rejected_candidates = _parse_suggestion_variants(
             response.content,
             suggestion_count,
             baseline_item,
@@ -455,17 +501,26 @@ def _preview_draft_model_suggestions(
         _trace_model_suggestion_decision(
             title=baseline_item.content.title,
             model=response.model,
-            parsed_count=len(suggestions),
+            parsed_count=len(suggestion_details),
             requested_count=suggestion_count,
+            accepted=_suggestions_preview(suggestion_details),
+            rejected_count=len(rejected_candidates),
         )
-        if not suggestions:
+        if not suggestion_details:
             raise SystemExit(f"No model suggestions were produced for draft item {baseline_item.id}.")
+        suggestions = [detail["summary"] for detail in suggestion_details]
         items.append(
             {
                 "item_id": baseline_item.id,
                 "title": baseline_item.content.title,
                 "current_summary": baseline_item.edited_summary or baseline_item.content.summary,
                 "provider": response.model,
+                "prompt_sha": prompt_sha,
+                "provider_metadata": response.metadata,
+                "provider_reasoning": provider_reasoning,
+                "source_evidence": source_evidence,
+                "suggestion_details": suggestion_details,
+                "rejected_candidates": rejected_candidates,
                 "suggestions": suggestions,
             }
         )
@@ -487,11 +542,11 @@ def _parse_suggestion_variants(
     *,
     trace_title: str | None = None,
     trace_model: str | None = None,
-) -> list[str]:
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     normalized = (content or "").strip()
     if not normalized:
         _trace_model_suggestion_filter("raw-response", "empty", trace_title, trace_model)
-        return []
+        return [], []
     lines = []
     for raw in normalized.splitlines():
         line = raw.strip()
@@ -509,36 +564,152 @@ def _parse_suggestion_variants(
         trace_title,
         trace_model,
     )
-    suggestions: list[str] = []
+    current_summary = item.edited_summary or item.content.summary
+    suggestions: list[dict[str, object]] = []
+    rejected_candidates: list[dict[str, object]] = []
     classifier = Classifier()
     for line in lines:
         rejection_reason = classifier._summary_rejection_reason(line, item.content.title, group)
+        similarity = _summary_similarity(line, current_summary)
+        if not rejection_reason and similarity >= 0.82:
+            rejection_reason = "too-similar-to-current"
         if rejection_reason:
+            rejected_candidates.append(
+                {
+                    "summary": line,
+                    "reason": rejection_reason,
+                    "similarity_to_current": similarity,
+                }
+            )
             _trace_model_suggestion_filter(
                 "reject",
-                f"reason={rejection_reason} candidate={line}",
+                f"reason={rejection_reason} similarity_to_current={similarity:.2f} candidate={line}",
                 trace_title,
                 trace_model,
             )
             continue
-        if line in suggestions:
-            _trace_model_suggestion_filter("reject", f"reason=duplicate candidate={line}", trace_title, trace_model)
+        if any(detail["summary"] == line for detail in suggestions):
+            rejected_candidates.append(
+                {
+                    "summary": line,
+                    "reason": "duplicate",
+                    "similarity_to_current": similarity,
+                }
+            )
+            _trace_model_suggestion_filter(
+                "reject",
+                f"reason=duplicate similarity_to_current={similarity:.2f} candidate={line}",
+                trace_title,
+                trace_model,
+            )
             continue
-        suggestions.append(line)
-        _trace_model_suggestion_filter("accept", f"index={len(suggestions)} candidate={line}", trace_title, trace_model)
+        suggestions.append(
+            {
+                "summary": line,
+                "similarity_to_current": similarity,
+                "comparison": {
+                    "current": current_summary,
+                    "suggested": line,
+                },
+            }
+        )
+        _trace_model_suggestion_filter(
+            "accept",
+            f"index={len(suggestions)} similarity_to_current={similarity:.2f} candidate={line}",
+            trace_title,
+            trace_model,
+        )
         if len(suggestions) >= count:
             break
-    return suggestions
+    return suggestions, rejected_candidates
+
+
+def _summary_similarity(candidate: str, current: str) -> float:
+    candidate_tokens = _summary_tokens(candidate)
+    current_tokens = _summary_tokens(current)
+    if not candidate_tokens or not current_tokens:
+        return 0.0
+    if " ".join(candidate_tokens) == " ".join(current_tokens):
+        return 1.0
+    intersection = len(set(candidate_tokens) & set(current_tokens))
+    union = len(set(candidate_tokens) | set(current_tokens))
+    return intersection / union if union else 0.0
+
+
+def _summary_tokens(value: str) -> list[str]:
+    stopwords = {
+        "a",
+        "an",
+        "and",
+        "for",
+        "in",
+        "of",
+        "on",
+        "the",
+        "to",
+        "with",
+    }
+    return [token for token in re.findall(r"[a-z0-9]+", value.lower()) if token not in stopwords]
+
+
+def _build_suggestion_source_evidence(diff, group: ChangeGroup) -> list[dict[str, str]]:
+    evidence: list[dict[str, str]] = []
+    if group.pr:
+        evidence.append(
+            {
+                "kind": "pull-request",
+                "label": f"PR #{group.pr.number}",
+                "detail": group.pr.title,
+            }
+        )
+    for commit in group.commits[:3]:
+        evidence.append(
+            {
+                "kind": "commit",
+                "label": commit.sha[:7],
+                "detail": commit.message.splitlines()[0][:180],
+            }
+        )
+    for path, status in list(sorted(diff.file_statuses.items()))[:6]:
+        evidence.append(
+            {
+                "kind": "file",
+                "label": path,
+                "detail": status,
+            }
+        )
+    for path, hunks in list(diff.representative_hunks.items())[:3]:
+        excerpt = " ".join(hunk.replace("\n", " ") for hunk in hunks)
+        evidence.append(
+            {
+                "kind": "diff",
+                "label": path,
+                "detail": excerpt[:240],
+            }
+        )
+    if diff.summary:
+        evidence.append(
+            {
+                "kind": "summary",
+                "label": "diff summary",
+                "detail": diff.summary[:300],
+            }
+        )
+    return evidence[:12]
 
 
 def _trace_model_enabled() -> bool:
     return os.getenv("RELEASEPILOT_TRACE_MODEL_CALLS") == "1"
 
 
+def _trace_model_reasoning_payloads_enabled() -> bool:
+    return os.getenv("RELEASEPILOT_TRACE_MODEL_REASONING") == "1"
+
+
 def _trace_model_call_start(task: str, title: str, provider: str) -> None:
     if not _trace_model_enabled():
         return
-    print(f"[releasepilot:model] starting {task} provider={provider} title={title}", file=sys.stderr, flush=True)
+    _trace_model_line(f"starting {task} provider={provider} title={title}", event="request_started")
 
 
 def _trace_model_suggest_plan(
@@ -554,39 +725,114 @@ def _trace_model_suggest_plan(
     if not _trace_model_enabled():
         return
     scope = "all-visible" if all_visible else "single-item"
-    print(
+    _trace_model_line(
         f"[releasepilot:model] planning suggest provider={provider} scope={scope} base={base} head={head} "
         f"targets={target_count} suggestions_per_target={suggestion_count} count_source={suggestion_count_source}",
-        file=sys.stderr,
-        flush=True,
+        event="suggestion_plan",
+        attributes={
+            "provider": provider,
+            "scope": scope,
+            "base": base,
+            "head": head,
+            "targets": target_count,
+            "suggestions_per_target": suggestion_count,
+            "count_source": suggestion_count_source,
+        },
     )
 
 
 def _trace_model_call_result(task: str, title: str, model: str, confidence: float) -> None:
     if not _trace_model_enabled():
         return
-    print(
+    _trace_model_line(
         f"[releasepilot:model] finished {task} model={model} confidence={confidence:.2f} title={title}",
-        file=sys.stderr,
-        flush=True,
+        event="request_finished",
+        attributes={"task": task, "model": model, "confidence": confidence, "title": title},
     )
 
 
-def _trace_model_suggestion_decision(*, title: str, model: str, parsed_count: int, requested_count: int) -> None:
+def _trace_model_response_detail(model: str, content: str, metadata: dict[str, object], reasoning: str = "") -> None:
     if not _trace_model_enabled():
         return
-    print(
+    metadata_text = " ".join(f"{key}={value}" for key, value in sorted(metadata.items()))
+    metadata_suffix = f" {metadata_text}" if metadata_text else ""
+    reasoning_status = "true" if reasoning else "false"
+    _trace_model_line(
+        f"[releasepilot:model] response-detail model={model} content_chars={len(content)} "
+        f"reasoning_exposed={reasoning_status} reasoning_chars={len(reasoning)}{metadata_suffix}",
+        event="response_detail",
+        attributes={
+            "model": model,
+            "content_chars": len(content),
+            "reasoning_exposed": bool(reasoning),
+            "reasoning_chars": len(reasoning),
+            **metadata,
+        },
+    )
+    _trace_model_payload("response-preview", content)
+    if _trace_model_reasoning_payloads_enabled():
+        _trace_model_payload("reasoning-preview", reasoning)
+
+
+def _trace_model_suggestion_decision(
+    *,
+    title: str,
+    model: str,
+    parsed_count: int,
+    requested_count: int,
+    accepted: str,
+    rejected_count: int,
+) -> None:
+    if not _trace_model_enabled():
+        return
+    _trace_model_line(
         f"[releasepilot:model] decision suggestions parsed={parsed_count} requested={requested_count} "
-        f"model={model} title={title}",
-        file=sys.stderr,
-        flush=True,
+        f"accepted={accepted} rejected={rejected_count} model={model} title={title}",
+        event="suggestion_decision",
+        attributes={
+            "title": title,
+            "model": model,
+            "parsed": parsed_count,
+            "requested": requested_count,
+            "accepted": accepted,
+            "rejected": rejected_count,
+        },
     )
 
 
 def _trace_model_suggest_stage(stage: str, detail: str) -> None:
     if not _trace_model_enabled():
         return
-    print(f"[releasepilot:model] suggest stage={stage} {detail}", file=sys.stderr, flush=True)
+    _trace_model_line(f"[releasepilot:model] suggest stage={stage} {detail}", event=stage.replace("-", "_"))
+
+
+def _trace_model_prompt_budget(budget: dict[str, int]) -> None:
+    if not _trace_model_enabled():
+        return
+    _trace_model_line(
+        "[releasepilot:model] prompt-budget "
+        f"chars={budget.get('prompt_chars', 0)} "
+        f"files={budget.get('files_included', 0)}/{budget.get('files_total', 0)} "
+        f"commits={budget.get('commits_included', 0)}/{budget.get('commits_total', 0)} "
+        f"hunks={budget.get('hunks_included', 0)}/{budget.get('hunks_total', 0)} "
+        f"pr_body_chars={budget.get('pr_body_chars_included', 0)}/{budget.get('pr_body_chars_total', 0)} "
+        f"diff_summary_chars={budget.get('diff_summary_chars_included', 0)}/{budget.get('diff_summary_chars_total', 0)}",
+        event="prompt_budget",
+        attributes=budget,
+    )
+
+
+def _trace_model_payload(stage: str, payload: str) -> None:
+    if not _trace_model_enabled() or os.getenv("RELEASEPILOT_TRACE_MODEL_PAYLOADS") != "1":
+        return
+    safe_payload, redacted = _safe_model_payload(payload)
+    compact = re.sub(r"\s+", " ", safe_payload).strip()[:800]
+    _trace_model_line(
+        f"[releasepilot:model] {stage} chars={len(payload)} redacted={str(redacted).lower()} excerpt={compact}",
+        event=stage.replace("-", "_"),
+        payload=payload,
+        attributes={"chars": len(payload), "redacted": redacted},
+    )
 
 
 def _trace_model_suggestion_filter(stage: str, detail: str, title: str | None, model: str | None) -> None:
@@ -594,7 +840,253 @@ def _trace_model_suggestion_filter(stage: str, detail: str, title: str | None, m
         return
     title_part = f" title={title}" if title else ""
     model_part = f" model={model}" if model else ""
-    print(f"[releasepilot:model] suggestion {stage} {detail}{model_part}{title_part}", file=sys.stderr, flush=True)
+    _trace_model_line(
+        f"[releasepilot:model] suggestion {stage} {detail}{model_part}{title_part}",
+        event=f"suggestion_{stage.replace('-', '_')}",
+        attributes={"title": title, "model": model},
+    )
+
+
+def _trace_model_line(
+    message: str,
+    *,
+    event: str,
+    attributes: dict[str, object] | None = None,
+    payload: str | None = None,
+) -> None:
+    line = message if message.startswith("[releasepilot:model]") else f"[releasepilot:model] {message}"
+    print(line, file=sys.stderr, flush=True)
+    if payload is not None:
+        safe_payload, redacted = _safe_model_payload(payload)
+        safe_attributes = {**(attributes or {}), "redacted": redacted}
+        print(
+            "[releasepilot:model] json "
+            + json.dumps(
+                {
+                    "event": event,
+                    "message": message,
+                    "attributes": safe_attributes,
+                    "payload": safe_payload,
+                },
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+    _write_model_debug_event(event=event, message=line, attributes=attributes, payload=payload)
+
+
+def _write_model_debug_event(
+    *,
+    event: str,
+    message: str,
+    attributes: dict[str, object] | None = None,
+    payload: str | None = None,
+) -> None:
+    path = os.getenv("RELEASEPILOT_MODEL_LOG_PATH")
+    if not path:
+        return
+    record: dict[str, object] = {
+        "event": event,
+        "message": message,
+        "attributes": {key: value for key, value in (attributes or {}).items() if value is not None},
+    }
+    if payload is not None:
+        safe_payload, redacted = _safe_model_payload(payload)
+        record["payload"] = safe_payload
+        record["attributes"]["redacted"] = redacted
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def _safe_model_payload(payload: str) -> tuple[str, bool]:
+    if not model_payload_redaction_enabled():
+        return payload, False
+    return redact_model_payload(payload)
+
+
+def _parse_summary_provenance(raw: str | None) -> dict[str, object] | None:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid summary provenance JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise SystemExit("Invalid summary provenance JSON: expected an object")
+    return _normalize_summary_provenance(parsed)
+
+
+def _normalize_summary_provenance(provenance: dict[str, object]) -> dict[str, object]:
+    normalized = dict(provenance)
+    normalized["source"] = str(normalized.get("source") or "model-suggestion")
+    normalized.setdefault("applied_at", date.today().isoformat())
+    return normalized
+
+
+def _summary_provenance(
+    *,
+    source: str,
+    provider: str | None,
+    model: str | None,
+    prompt_sha: str | None,
+    response_metadata: dict[str, object] | None,
+) -> dict[str, object]:
+    provenance: dict[str, object] = {
+        "source": source,
+        "applied_at": date.today().isoformat(),
+    }
+    if provider:
+        provenance["provider"] = provider
+    if model:
+        provenance["model"] = model
+    if prompt_sha:
+        provenance["prompt_sha"] = prompt_sha
+    if response_metadata:
+        provenance["response_metadata"] = response_metadata
+    return provenance
+
+
+def _provider_model_from_signals(signals: list[str]) -> str | None:
+    signal = next((value for value in signals if value.startswith("provider-summary:")), None)
+    if not signal:
+        return None
+    return signal.split(":", 1)[1]
+
+
+def _run_model_logs_export(
+    *,
+    file_path: str,
+    output_format: str,
+    output_path: str | None,
+    events: list[str] | None,
+) -> int:
+    source = Path(file_path)
+    if not source.exists():
+        raise SystemExit(f"Model log file not found: {source}")
+    event_filter = set(events or [])
+    records: list[dict[str, object]] = []
+    for line_number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            raw = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"Invalid JSONL model log at line {line_number}: {exc}") from exc
+        if not isinstance(raw, dict):
+            raise SystemExit(f"Invalid JSONL model log at line {line_number}: expected an object")
+        normalized = _normalize_model_log_record(raw, line_number=line_number)
+        if event_filter and normalized["event"] not in event_filter:
+            continue
+        records.append(normalized)
+
+    if output_format == "jsonl":
+        text = "\n".join(json.dumps(record, sort_keys=True) for record in records)
+        if text:
+            text += "\n"
+    else:
+        text = json.dumps(
+            {
+                "schema_version": "releasepilot.model_logs.v1",
+                "source": str(source),
+                "record_count": len(records),
+                "records": records,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        text += "\n"
+
+    if output_path:
+        Path(output_path).write_text(text, encoding="utf-8")
+    else:
+        print(text, end="")
+    return 0
+
+
+def _normalize_model_log_record(raw: dict[str, object], *, line_number: int) -> dict[str, object]:
+    if "EventName" in raw or "Body" in raw:
+        attributes = raw.get("Attributes") if isinstance(raw.get("Attributes"), dict) else {}
+        body, body_redacted = _redact_export_string(str(raw.get("Body") or ""))
+        safe_attributes, attributes_redacted = _redact_export_value(attributes)
+        return {
+            "line_number": line_number,
+            "raw_format": "otel",
+            "timestamp": raw.get("Timestamp"),
+            "observed_timestamp": raw.get("ObservedTimestamp"),
+            "severity_text": raw.get("SeverityText"),
+            "severity_number": raw.get("SeverityNumber"),
+            "event": str(raw.get("EventName") or "releasepilot.model.log"),
+            "body": body,
+            "attributes": _attributes_with_redaction(safe_attributes, body_redacted or attributes_redacted),
+            "resource": raw.get("Resource") if isinstance(raw.get("Resource"), dict) else {},
+            "instrumentation_scope": raw.get("InstrumentationScope")
+            if isinstance(raw.get("InstrumentationScope"), dict)
+            else {},
+        }
+
+    attributes = raw.get("attributes") if isinstance(raw.get("attributes"), dict) else {}
+    message, message_redacted = _redact_export_string(str(raw.get("message") or ""))
+    safe_attributes, attributes_redacted = _redact_export_value(attributes)
+    payload = raw.get("payload")
+    payload_redacted = False
+    normalized: dict[str, object] = {
+        "line_number": line_number,
+        "raw_format": "cli",
+        "event": str(raw.get("event") or "releasepilot.model.event"),
+        "message": message,
+        "attributes": safe_attributes,
+    }
+    if isinstance(payload, str):
+        safe_payload, payload_redacted = _redact_export_string(payload)
+        normalized["payload"] = safe_payload
+    normalized["attributes"] = _attributes_with_redaction(
+        normalized["attributes"],
+        message_redacted or attributes_redacted or payload_redacted,
+    )
+    return normalized
+
+
+def _redact_export_value(value: object) -> tuple[object, bool]:
+    if isinstance(value, str):
+        return _redact_export_string(value)
+    if isinstance(value, list):
+        changed = False
+        values: list[object] = []
+        for item in value:
+            safe_item, item_changed = _redact_export_value(item)
+            values.append(safe_item)
+            changed = changed or item_changed
+        return values, changed
+    if isinstance(value, dict):
+        changed = False
+        values: dict[str, object] = {}
+        for key, item in value.items():
+            safe_item, item_changed = _redact_export_value(item)
+            values[str(key)] = safe_item
+            changed = changed or item_changed
+        return values, changed
+    return value, False
+
+
+def _redact_export_string(value: str) -> tuple[str, bool]:
+    if not model_payload_redaction_enabled():
+        return value, False
+    return redact_model_payload(value)
+
+
+def _attributes_with_redaction(attributes: object, redacted: bool) -> dict[str, object]:
+    safe = dict(attributes) if isinstance(attributes, dict) else {}
+    safe["redacted"] = bool(safe.get("redacted")) or redacted
+    return safe
+
+
+def _suggestions_preview(suggestions: list[dict[str, object]]) -> str:
+    if not suggestions:
+        return "none"
+    return "|".join(str(detail["summary"])[:80] for detail in suggestions[:3])
 
 
 def _build_draft_model_prompt(
@@ -609,7 +1101,7 @@ def _build_draft_model_prompt(
     classifier = Classifier()
     draft_item = classifier.classify(target_group, base, head)[0]
     diff = classifier.diff_builder.build(target_group.pr.files if target_group.pr else target_group.files)
-    prompt = classifier._build_summary_prompt(
+    prompt_result = classifier._build_summary_prompt_with_budget(
         title=draft_item.content.title,
         labels=[label.lower() for label in (target_group.pr.labels if target_group.pr else [])],
         pr_body=target_group.pr.body if target_group.pr else "",
@@ -620,7 +1112,8 @@ def _build_draft_model_prompt(
         "item_id": draft_item.id,
         "title": draft_item.content.title,
         "provider": effective_model_provider or "configured",
-        "prompt": prompt,
+        "prompt": prompt_result.prompt,
+        "prompt_budget": prompt_result.budget,
     }
 
 
@@ -630,6 +1123,7 @@ def _persist_review_update(
     status: str | None,
     summary: str | None,
     reviewer: str | None,
+    summary_provenance: dict[str, object] | None = None,
 ) -> ChangeItem:
     store = _build_store()
     state = store.load()
@@ -649,6 +1143,24 @@ def _persist_review_update(
     if summary is not None:
         normalized_summary = summary.strip()
         match.edited_summary = normalized_summary or None
+        if normalized_summary:
+            if summary_provenance is not None:
+                match.summary_provenance = _normalize_summary_provenance(summary_provenance)
+            elif match.summary_provenance:
+                match.summary_provenance = {
+                    **match.summary_provenance,
+                    "source": "human-edited-model"
+                    if str(match.summary_provenance.get("source", "")).startswith("model")
+                    else "human-edited",
+                    "edited_at": date.today().isoformat(),
+                }
+            else:
+                match.summary_provenance = {
+                    "source": "human-edited",
+                    "applied_at": date.today().isoformat(),
+                }
+        else:
+            match.summary_provenance = None
         if normalized_summary and status is None and match.status != "hidden":
             match.status = "edited"
     if status is not None:
@@ -781,6 +1293,14 @@ def main(argv: list[str] | None = None) -> int:
         except RuntimeError as exc:
             raise SystemExit(str(exc)) from exc
 
+    if args.command == "model-logs" and args.model_logs_command == "export":
+        return _run_model_logs_export(
+            file_path=args.file,
+            output_format=args.format,
+            output_path=args.output,
+            events=args.event,
+        )
+
     if args.command == "draft":
         if args.draft_command == "review":
             base, head = _resolve_range(args)
@@ -792,6 +1312,7 @@ def main(argv: list[str] | None = None) -> int:
                 summary=args.summary,
                 reviewer=args.reviewer,
                 model_provider=args.model_provider,
+                summary_provenance_json=args.summary_provenance_json,
             )
         if args.draft_command == "suggest":
             base, head = _resolve_range(args)

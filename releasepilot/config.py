@@ -23,6 +23,7 @@ class ProviderConfig:
     model: str | None = "gemma4:latest"
     endpoint: str | None = None
     max_items_per_scan: int = 25
+    timeout_seconds: float | None = None
 
 
 @dataclass
@@ -61,11 +62,13 @@ def load_config(cwd: str | None = None) -> ReleasePilotConfig:
         model = provider.get("model")
         endpoint = provider.get("endpoint")
         max_items_per_scan = provider.get("max_items_per_scan", config.provider.max_items_per_scan)
+        timeout_seconds = provider.get("timeout_seconds", config.provider.timeout_seconds)
         config.provider = ProviderConfig(
             name=name,
             model=str(model).strip() if model else None,
             endpoint=str(endpoint).strip() if endpoint else None,
             max_items_per_scan=int(max_items_per_scan),
+            timeout_seconds=float(timeout_seconds) if timeout_seconds is not None else None,
         )
 
     targets = raw.get("targets")

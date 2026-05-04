@@ -9,6 +9,7 @@ from releasepilot.providers.github_copilot import (
     GITHUB_MODELS_API_VERSION,
     GitHubCopilotProvider,
 )
+from releasepilot.providers.model_logging import ModelLogRecord, ModelLogSink
 
 
 def test_github_copilot_provider_uses_github_models_defaults(monkeypatch):
@@ -131,3 +132,63 @@ def test_github_copilot_provider_reports_rate_limit_http_errors(monkeypatch):
 
     assert response.confidence == 0.0
     assert "GitHub Models rate limit exceeded" in response.content
+
+
+def test_github_copilot_provider_accepts_pluggable_model_log_sink(monkeypatch):
+    records: list[ModelLogRecord] = []
+
+    class CapturingSink(ModelLogSink):
+        def emit(self, record: ModelLogRecord) -> None:
+            records.append(record)
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return (
+                b'{"id":"chatcmpl_1","choices":[{"message":{"content":"Model summary"}}],'
+                b'"usage":{"prompt_tokens":11,"completion_tokens":4,"total_tokens":15}}'
+            )
+
+    monkeypatch.setattr("releasepilot.providers.github_copilot.request.urlopen", lambda req, timeout: FakeResponse())
+
+    provider = GitHubCopilotProvider(token="token", model="gpt-4o-mini", log_sink=CapturingSink())
+    response = provider.summarize(ProviderRequest(task="summarize", prompt="Summarize this change"))
+
+    assert response.metadata == {
+        "prompt_tokens": 11,
+        "completion_tokens": 4,
+        "total_tokens": 15,
+        "response_id": "chatcmpl_1",
+    }
+    assert records
+    record = records[0].to_otel_dict()
+    assert record["EventName"] == "releasepilot.model.github_copilot"
+    assert record["Attributes"] == {"provider": "github-copilot", "model": "openai/gpt-4o-mini"}
+
+
+def test_github_copilot_provider_preserves_model_reasoning(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return (
+                b'{"choices":[{"message":{"content":"Model summary",'
+                b'"reasoning_content":"Focused on the changed API behavior."}}]}'
+            )
+
+    monkeypatch.setattr("releasepilot.providers.github_copilot.request.urlopen", lambda req, timeout: FakeResponse())
+
+    provider = GitHubCopilotProvider(token="token", model="gpt-4o-mini")
+    response = provider.summarize(ProviderRequest(task="summarize", prompt="Summarize this change"))
+
+    assert response.content == "Model summary"
+    assert response.reasoning == "Focused on the changed API behavior."

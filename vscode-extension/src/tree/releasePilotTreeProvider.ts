@@ -165,7 +165,13 @@ class ModelNode extends vscode.TreeItem {
       `Provider: ${settings.provider}`,
       `Model: ${settings.model}`,
       `Endpoint: ${settings.endpoint}`,
+      `Timeout: ${settings.ollamaTimeoutSeconds}s`,
       `Fanout guard: ${settings.maxModelItems}`,
+      `Ollama streaming: ${settings.ollamaStreamResponses ? "enabled" : "disabled"}`,
+      `Prompt payloads: ${settings.includePromptPayloads ? "enabled" : "disabled"}`,
+      `Reasoning payloads: ${settings.includeReasoningPayloads ? "enabled" : "disabled"}`,
+      `Payload redaction: ${settings.redactPayloads ? "enabled" : "disabled"}`,
+      `Debug log: ${settings.debugModelLogPath || "disabled"}`,
     ].join("\n");
     this.contextValue = "releasepilot.model";
   }

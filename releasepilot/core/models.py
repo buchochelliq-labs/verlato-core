@@ -83,6 +83,7 @@ class ChangeItem:
     reviewed_by: str | None = None
     reviewed_at: str | None = None
     edited_summary: str | None = None
+    summary_provenance: dict[str, Any] | None = None
     hidden: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -111,6 +112,7 @@ class ChangeItem:
             reviewed_by=data.get("reviewed_by"),
             reviewed_at=data.get("reviewed_at"),
             edited_summary=data.get("edited_summary"),
+            summary_provenance=data.get("summary_provenance") if isinstance(data.get("summary_provenance"), dict) else None,
             hidden=hidden,
         )
 

@@ -9,6 +9,7 @@
     "name": "ollama",
     "model": "gemma4:latest",
     "endpoint": "http://127.0.0.1:11434/api/chat",
+    "timeout_seconds": 120,
     "max_items_per_scan": 25
   },
   "targets": {

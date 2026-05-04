@@ -26,6 +26,21 @@ def test_provider_factory_builds_ollama(monkeypatch):
     assert isinstance(build_provider(), OllamaProvider)
 
 
+def test_provider_factory_passes_ollama_timeout(monkeypatch):
+    monkeypatch.setenv("RELEASEPILOT_MODEL_PROVIDER", "ollama")
+    provider = build_provider(ProviderConfig(timeout_seconds=44))
+    assert isinstance(provider, OllamaProvider)
+    assert provider.timeout_seconds == 44
+
+
+def test_provider_factory_timeout_env_overrides_config(monkeypatch):
+    monkeypatch.setenv("RELEASEPILOT_MODEL_PROVIDER", "ollama")
+    monkeypatch.setenv("RELEASEPILOT_OLLAMA_TIMEOUT_SECONDS", "55")
+    provider = build_provider(ProviderConfig(timeout_seconds=44))
+    assert isinstance(provider, OllamaProvider)
+    assert provider.timeout_seconds == 55
+
+
 def test_provider_factory_uses_config_default(monkeypatch):
     monkeypatch.delenv("RELEASEPILOT_MODEL_PROVIDER", raising=False)
     provider = build_provider(ProviderConfig(name="mock"))
