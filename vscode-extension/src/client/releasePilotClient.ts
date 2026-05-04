@@ -1,12 +1,14 @@
 import * as vscode from "vscode";
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import * as fs from "node:fs";
-import * as path from "node:path";
-import { promisify } from "node:util";
 
+import { ExecutableResolution, resolveReleasePilotExecutable } from "./cliResolution";
+import { resolveCommandModelProvider, shouldAttachGithubToken } from "./modelEnvironment";
 import {
   ApplyResult,
   ClientStatus,
+  CommandRequestSnapshot,
+  CommandRequestStatus,
   DraftDocument,
   DraftItem,
   DraftPromptPreview,
@@ -19,13 +21,18 @@ import {
   ReviewUpdateRequest,
 } from "./types";
 
-const execFileAsync = promisify(execFile);
-
 export class ReleasePilotClient implements vscode.Disposable {
   private readonly onDidChangeStatusEmitter = new vscode.EventEmitter<ClientStatus>();
   readonly onDidChangeStatus = this.onDidChangeStatusEmitter.event;
+  private readonly onDidChangeRequestsEmitter = new vscode.EventEmitter<CommandRequestSnapshot[]>();
+  readonly onDidChangeRequests = this.onDidChangeRequestsEmitter.event;
   private lastStatus: ClientStatus = { mode: "cli", label: "ReleasePilot: CLI", detail: "Using direct CLI commands" };
   private lastResolution: ExecutableResolution | undefined;
+  private readonly activeCommandControllers = new Map<number, AbortController>();
+  private readonly commandRequests = new Map<number, CommandRequestSnapshot>();
+  private readonly activityRemainders = new Map<string, string>();
+  private nextCommandId = 1;
+  private nextActivityId = 1;
 
   constructor(
     private readonly workspaceFolder: vscode.WorkspaceFolder,
@@ -156,7 +163,7 @@ export class ReleasePilotClient implements vscode.Disposable {
       model: config.get<string>("ollamaModel") || "gemma4:latest",
       endpoint: config.get<string>("ollamaEndpoint") || "http://127.0.0.1:11434/api/chat",
       maxModelItems: config.get<number>("maxModelItems") ?? 25,
-      suggestionCount: config.get<number>("suggestionCount") ?? 3,
+      suggestionCount: config.get<number>("suggestionCount") ?? 1,
     };
   }
 
@@ -194,7 +201,23 @@ export class ReleasePilotClient implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.cancelActiveCommands();
+    this.onDidChangeRequestsEmitter.dispose();
     this.onDidChangeStatusEmitter.dispose();
+  }
+
+  cancelActiveCommands(): void {
+    for (const controller of this.activeCommandControllers.values()) {
+      controller.abort();
+    }
+  }
+
+  cancelCommand(id: number): void {
+    this.activeCommandControllers.get(id)?.abort();
+  }
+
+  getCommandRequests(): CommandRequestSnapshot[] {
+    return this.requestSnapshots();
   }
 
   getDiagnosticInfo(): string {
@@ -217,21 +240,14 @@ export class ReleasePilotClient implements vscode.Disposable {
     const resolution = this.resolveExecutable();
     const executable = resolution.executable;
     this.output.appendLine(`$ ${executable} ${args.join(" ")}`);
-    let result: { stdout: string; stderr: string };
-    try {
-      result = await execFileAsync(executable, args, {
-        cwd: this.workspaceFolder.uri.fsPath,
-        encoding: "utf8",
-        env: await this.buildEnvironment(args),
-      });
-    } catch (error) {
-      if (isMissingExecutableError(error)) {
-        throw new Error(
-          `ReleasePilot CLI was not found. Tried: ${resolution.searched.join(", ")}. Install the backend package or set releasepilot.cliPath to the full path of releasepilot.exe.`,
-        );
-      }
-      throw error;
-    }
+    const result = await this.spawnCommand({
+      command: executable,
+      args,
+      cwd: this.workspaceFolder.uri.fsPath,
+      env: await this.buildEnvironment(args),
+      label: args.slice(0, 2).join(" "),
+      missingExecutableMessage: `ReleasePilot CLI was not found. Tried: ${resolution.searched.join(", ")}. Install the backend package or set releasepilot.cliPath to the full path of releasepilot.exe.`,
+    });
     if (result.stderr) {
       this.output.appendLine(result.stderr);
     }
@@ -239,9 +255,12 @@ export class ReleasePilotClient implements vscode.Disposable {
   }
 
   private async runGitCommand(args: string[]): Promise<string> {
-    const result = await execFileAsync("git", args, {
+    const result = await this.spawnCommand({
+      command: "git",
+      args,
       cwd: this.workspaceFolder.uri.fsPath,
-      encoding: "utf8",
+      env: process.env,
+      label: `git ${args[0] ?? ""}`.trim(),
     });
     return result.stdout;
   }
@@ -258,18 +277,12 @@ export class ReleasePilotClient implements vscode.Disposable {
 
   private resolveExecutable(): ExecutableResolution {
     const configuredPath = vscode.workspace.getConfiguration("releasepilot").get<string>("cliPath") || "releasepilot";
-    if (configuredPath !== "releasepilot") {
-      this.lastResolution = { executable: configuredPath, searched: [configuredPath] };
-      return this.lastResolution;
-    }
-
-    const workspaceCli = getVenvExecutable(this.workspaceFolder.uri.fsPath);
-    const extensionCli = getVenvExecutable(this.extensionPath);
-    const extensionCheckoutCli = getVenvExecutable(path.dirname(this.extensionPath));
-    const candidates = [workspaceCli, extensionCli, extensionCheckoutCli];
-    const executable = candidates.find((candidate) => fs.existsSync(candidate)) ?? configuredPath;
-
-    this.lastResolution = { executable, searched: [...candidates, configuredPath] };
+    this.lastResolution = resolveReleasePilotExecutable({
+      configuredPath,
+      workspacePath: this.workspaceFolder.uri.fsPath,
+      extensionPath: this.extensionPath,
+      existsSync: fs.existsSync,
+    });
     return this.lastResolution;
   }
 
@@ -278,19 +291,181 @@ export class ReleasePilotClient implements vscode.Disposable {
     this.onDidChangeStatusEmitter.fire(status);
   }
 
+  private trackCommandController(requestId: number): AbortController {
+    const controller = new AbortController();
+    this.activeCommandControllers.set(requestId, controller);
+    return controller;
+  }
+
+  private async spawnCommand(options: {
+    command: string;
+    args: string[];
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    label: string;
+    missingExecutableMessage?: string;
+  }): Promise<{ stdout: string; stderr: string }> {
+    const request = this.startRequest(options.command, options.args, options.label);
+    const abortController = this.trackCommandController(request.id);
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let stdout = "";
+      let stderr = "";
+      const child = spawn(options.command, options.args, {
+        cwd: options.cwd,
+        env: options.env,
+        windowsHide: true,
+        signal: abortController.signal,
+      });
+
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => {
+        stdout += chunk;
+        this.appendRequestOutput(request.id, "stdout", chunk);
+      });
+      child.stderr.on("data", (chunk: string) => {
+        stderr += chunk;
+        this.output.appendLine(chunk);
+        this.appendRequestOutput(request.id, "stderr", chunk);
+      });
+      child.on("error", (error: NodeJS.ErrnoException) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.activeCommandControllers.delete(request.id);
+        this.clearActivityRemainders(request.id);
+        if (error.name === "AbortError" || error.code === "ABORT_ERR") {
+          this.finishRequest(request.id, "cancelled", { error: "ReleasePilot command cancelled." });
+          reject(new Error("ReleasePilot command cancelled."));
+          return;
+        }
+        const message = error.code === "ENOENT" && options.missingExecutableMessage ? options.missingExecutableMessage : error.message;
+        this.finishRequest(request.id, "failed", { error: message });
+        reject(new Error(message));
+      });
+      child.on("close", (code) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.activeCommandControllers.delete(request.id);
+        this.clearActivityRemainders(request.id);
+        if (abortController.signal.aborted) {
+          this.finishRequest(request.id, "cancelled", { exitCode: code, error: "ReleasePilot command cancelled." });
+          reject(new Error("ReleasePilot command cancelled."));
+          return;
+        }
+        if (code && code !== 0) {
+          const message = stderr.trim() || `${options.command} exited with code ${code}`;
+          this.finishRequest(request.id, "failed", { exitCode: code, error: message });
+          reject(new Error(message));
+          return;
+        }
+        this.finishRequest(request.id, "completed", { exitCode: code });
+        resolve({ stdout, stderr });
+      });
+    });
+  }
+
+  private startRequest(command: string, args: string[], label: string): CommandRequestSnapshot {
+    const request: CommandRequestSnapshot = {
+      id: this.nextCommandId++,
+      command,
+      args,
+      label,
+      status: "running",
+      startedAt: new Date().toISOString(),
+      stdout: "",
+      stderr: "",
+      activity: [],
+    };
+    this.commandRequests.set(request.id, request);
+    this.emitRequests();
+    return request;
+  }
+
+  private appendRequestOutput(id: number, stream: "stdout" | "stderr", chunk: string): void {
+    const request = this.commandRequests.get(id);
+    if (!request) {
+      return;
+    }
+    const next = {
+      ...request,
+      [stream]: trimRequestOutput(request[stream] + chunk),
+      activity: trimActivity([...(request.activity ?? []), ...this.buildActivityEntries(id, stream, chunk)]),
+    };
+    this.commandRequests.set(id, next);
+    this.emitRequests();
+  }
+
+  private finishRequest(
+    id: number,
+    status: CommandRequestStatus,
+    details: { exitCode?: number | null; error?: string },
+  ): void {
+    const request = this.commandRequests.get(id);
+    if (!request) {
+      return;
+    }
+    this.commandRequests.set(id, {
+      ...request,
+      status,
+      endedAt: new Date().toISOString(),
+      exitCode: details.exitCode,
+      error: details.error,
+    });
+    this.emitRequests();
+  }
+
+  private emitRequests(): void {
+    this.onDidChangeRequestsEmitter.fire(this.requestSnapshots());
+  }
+
+  private requestSnapshots(): CommandRequestSnapshot[] {
+    return [...this.commandRequests.values()].sort((a, b) => b.id - a.id).slice(0, 25);
+  }
+
   private async buildEnvironment(args: string[]): Promise<NodeJS.ProcessEnv> {
     const settings = this.getModelSettings();
-    const provider = settings.provider;
+    const provider = resolveCommandModelProvider(args, settings.provider);
     const env = { ...process.env };
     env.RELEASEPILOT_OLLAMA_MODEL = settings.model;
     env.RELEASEPILOT_OLLAMA_ENDPOINT = settings.endpoint;
     env.RELEASEPILOT_MODEL_MAX_ITEMS = String(settings.maxModelItems);
     env.RELEASEPILOT_SUGGESTION_COUNT = String(settings.suggestionCount);
+    env.RELEASEPILOT_TRACE_MODEL_CALLS = "1";
     if (provider === "configured") {
       return this.withGithubAuthToken(env, args, provider);
     }
     env.RELEASEPILOT_MODEL_PROVIDER = provider;
     return this.withGithubAuthToken(env, args, provider);
+  }
+
+  private buildActivityEntries(requestId: number, stream: "stdout" | "stderr", chunk: string) {
+    const key = `${requestId}:${stream}`;
+    const combined = `${this.activityRemainders.get(key) ?? ""}${chunk}`;
+    const hasTrailingNewline = /\r?\n$/.test(combined);
+    const lines = combined.split(/\r?\n/);
+    const completeLines = hasTrailingNewline ? lines : lines.slice(0, -1);
+    this.activityRemainders.set(key, hasTrailingNewline ? "" : (lines[lines.length - 1] ?? ""));
+    return completeLines
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => stream === "stderr" || line.startsWith("[releasepilot:"))
+      .map((line) => ({
+        id: this.nextActivityId++,
+        stream,
+        category: line.startsWith("[releasepilot:model]") ? "model" as const : "process" as const,
+        message: line,
+        receivedAt: new Date().toISOString(),
+      }));
+  }
+
+  private clearActivityRemainders(requestId: number): void {
+    this.activityRemainders.delete(`${requestId}:stdout`);
+    this.activityRemainders.delete(`${requestId}:stderr`);
   }
 
   private async withGithubAuthToken(
@@ -319,23 +494,12 @@ export class ReleasePilotClient implements vscode.Disposable {
   }
 }
 
-function isMissingExecutableError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+function trimRequestOutput(value: string): string {
+  return value.length > 6000 ? value.slice(value.length - 6000) : value;
 }
 
-interface ExecutableResolution {
-  executable: string;
-  searched: string[];
-}
-
-function getVenvExecutable(rootPath: string): string {
-  return process.platform === "win32"
-    ? path.join(rootPath, ".venv", "Scripts", "releasepilot.exe")
-    : path.join(rootPath, ".venv", "bin", "releasepilot");
-}
-
-function shouldAttachGithubToken(args: string[], provider: string): boolean {
-  return provider === "github-copilot" && args[0] === "draft" && args[1] === "suggest";
+function trimActivity<T>(entries: T[]): T[] {
+  return entries.length > 80 ? entries.slice(entries.length - 80) : entries;
 }
 
 interface StatePayload {

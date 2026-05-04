@@ -54,6 +54,33 @@ function Get-ReleasePilotCli {
   return Join-Path $root ".venv\$scriptsDir\$exeName"
 }
 
+function Install-ReleasePilotBackend {
+  param(
+    [string]$PythonPath
+  )
+
+  & $PythonPath -m pip install -e $root
+  if ($LASTEXITCODE -eq 0) {
+    return
+  }
+
+  Write-Warning "Editable backend install failed. Retrying without uninstalling any stale ReleasePilot metadata..."
+  & $PythonPath -m pip install -e $root --ignore-installed --no-deps
+  if ($LASTEXITCODE -ne 0) {
+    throw "ReleasePilot backend install failed. See pip output above."
+  }
+}
+
+function Assert-ReleasePilotCli {
+  param(
+    [string]$CliPath
+  )
+
+  if (-not (Test-Path -LiteralPath $CliPath)) {
+    throw "ReleasePilot CLI was not created at $CliPath. Re-run without -SkipPythonInstall or set releasepilot.cliPath manually."
+  }
+}
+
 function Set-VsCodeCliPath {
   param(
     [string]$CliPath
@@ -95,7 +122,8 @@ if (-not $SkipPythonInstall) {
   }
 
   Write-Host "Installing ReleasePilot backend in editable mode into .venv..."
-  & $venvPython -m pip install -e $root
+  Install-ReleasePilotBackend -PythonPath $venvPython
+  Assert-ReleasePilotCli -CliPath (Get-ReleasePilotCli)
 }
 
 Push-Location $extensionRoot

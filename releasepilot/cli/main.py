@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import sys
 from dataclasses import asdict
 from datetime import date
 
@@ -12,9 +13,8 @@ from releasepilot.core.adapters import NullPullRequestAdapter, PullRequestAdapte
 from releasepilot.core.classifier import Classifier
 from releasepilot.core.collector import Collector
 from releasepilot.core.drafts import DraftDocument, DraftService
-from releasepilot.core.models import ChangeGroup
 from releasepilot.core.grouper import Grouper
-from releasepilot.core.models import ChangeItem
+from releasepilot.core.models import ChangeGroup, ChangeItem
 from releasepilot.core.reconciler import Reconciler
 from releasepilot.github.adapter import GitHubApiAdapter
 from releasepilot.providers.base import ProviderRequest
@@ -122,10 +122,10 @@ def run_scan(base: str, head: str, persist: bool, model_provider: str | None = N
 def detect_change_items(base: str, head: str, model_provider: str | None = None) -> list[ChangeItem]:
     config = _load_config()
     groups = _collect_groups(base, head)
-    provider = build_provider(config.provider, mode=model_provider)
     max_model_items = _resolve_max_model_items(config.provider.max_items_per_scan)
-    if max_model_items >= 0 and len(groups) > max_model_items:
-        provider = None
+    provider = None
+    if max_model_items < 0 or len(groups) <= max_model_items:
+        provider = build_provider(config.provider, mode=model_provider)
     classifier = Classifier(provider=provider)
     return [item for group in groups for item in classifier.classify(group, base, head)]
 
@@ -360,11 +360,16 @@ def _preview_draft_model_suggestions(
 
     config = _load_config()
     suggestion_count = _resolve_suggestion_count(config.suggestion_count, requested=count)
+    suggestion_count_source = (
+        "cli" if count is not None else "env" if os.getenv("RELEASEPILOT_SUGGESTION_COUNT") else "config"
+    )
     effective_model_provider = _resolve_suggest_model_provider(model_provider)
     groups = _collect_groups(base, head)
     baseline_classifier = Classifier()
-    provider = build_provider(config.provider, mode=effective_model_provider)
-    provider_classifier = Classifier(provider=provider)
+    _trace_model_suggest_stage(
+        "target-selection",
+        f"base={base} head={head} groups={len(groups)} item_id={item_id or 'none'}",
+    )
 
     targets = []
     for group in groups:
@@ -384,9 +389,34 @@ def _preview_draft_model_suggestions(
     else:
         targets = [(group, merged_by_id.get(item.id, item)) for group, item in targets]
 
+    max_model_items = _resolve_max_model_items(config.provider.max_items_per_scan)
+    if all_visible and max_model_items >= 0 and len(targets) > max_model_items:
+        raise SystemExit(
+            f"Refusing to request model suggestions for {len(targets)} visible item(s); "
+            f"fanout guard is {max_model_items}. Suggest one item at a time or raise RELEASEPILOT_MODEL_MAX_ITEMS."
+        )
+    _trace_model_suggest_plan(
+        base=base,
+        head=head,
+        target_count=len(targets),
+        suggestion_count=suggestion_count,
+        suggestion_count_source=suggestion_count_source,
+        provider=effective_model_provider or "configured",
+        all_visible=all_visible,
+    )
+
+    provider = build_provider(config.provider, mode=effective_model_provider)
+    provider_classifier = Classifier(provider=provider)
+
     items = []
     for group, baseline_item in targets:
         diff = provider_classifier.diff_builder.build(group.pr.files if group.pr else group.files)
+        hunk_count = sum(len(hunks) for hunks in diff.representative_hunks.values())
+        file_count = len(diff.file_statuses)
+        _trace_model_suggest_stage(
+            "evidence-built",
+            f"item_id={baseline_item.id} files={file_count} hunks={hunk_count}",
+        )
         prompt = provider_classifier._build_summary_prompt(
             title=baseline_item.content.title,
             labels=[label.lower() for label in (group.pr.labels if group.pr else [])],
@@ -394,6 +424,8 @@ def _preview_draft_model_suggestions(
             diff=diff,
             commits=group.commits,
             suggestion_count=suggestion_count,
+            kind=baseline_item.classification.kind,
+            audience=baseline_item.classification.audience,
         )
         evidence = {
             "title": baseline_item.content.title,
@@ -401,11 +433,31 @@ def _preview_draft_model_suggestions(
             "suggestion_count": suggestion_count,
             "diff_summary": diff.summary,
             "representative_hunks": diff.representative_hunks,
+            "file_count": file_count,
+            "hunk_count": hunk_count,
         }
+        _trace_model_suggest_stage("prompt-built", f"item_id={baseline_item.id} prompt_chars={len(prompt)}")
+        _trace_model_call_start("suggest", baseline_item.content.title, effective_model_provider or "configured")
         response = provider.summarize(ProviderRequest(task="suggest", prompt=prompt, evidence=evidence))
+        _trace_model_call_result("suggest", baseline_item.content.title, response.model, response.confidence)
         if provider_classifier._is_provider_error(response.content):
-            raise SystemExit(f"No model suggestions were produced for draft item {baseline_item.id}: {response.content}")
-        suggestions = _parse_suggestion_variants(response.content, suggestion_count, baseline_item, group)
+            raise SystemExit(
+                f"No model suggestions were produced for draft item {baseline_item.id}: {response.content}"
+            )
+        suggestions = _parse_suggestion_variants(
+            response.content,
+            suggestion_count,
+            baseline_item,
+            group,
+            trace_title=baseline_item.content.title,
+            trace_model=response.model,
+        )
+        _trace_model_suggestion_decision(
+            title=baseline_item.content.title,
+            model=response.model,
+            parsed_count=len(suggestions),
+            requested_count=suggestion_count,
+        )
         if not suggestions:
             raise SystemExit(f"No model suggestions were produced for draft item {baseline_item.id}.")
         items.append(
@@ -427,9 +479,18 @@ def _preview_draft_model_suggestions(
     }
 
 
-def _parse_suggestion_variants(content: str, count: int, item: ChangeItem, group: ChangeGroup) -> list[str]:
+def _parse_suggestion_variants(
+    content: str,
+    count: int,
+    item: ChangeItem,
+    group: ChangeGroup,
+    *,
+    trace_title: str | None = None,
+    trace_model: str | None = None,
+) -> list[str]:
     normalized = (content or "").strip()
     if not normalized:
+        _trace_model_suggestion_filter("raw-response", "empty", trace_title, trace_model)
         return []
     lines = []
     for raw in normalized.splitlines():
@@ -442,16 +503,98 @@ def _parse_suggestion_variants(content: str, count: int, item: ChangeItem, group
             lines.append(line)
     if not lines:
         lines = [normalized]
+    _trace_model_suggestion_filter(
+        "parse",
+        f"raw_lines={len(normalized.splitlines())} candidates={len(lines)} requested={count}",
+        trace_title,
+        trace_model,
+    )
     suggestions: list[str] = []
     classifier = Classifier()
     for line in lines:
-        if classifier._is_low_value_summary(line, item.content.title, group):
+        rejection_reason = classifier._summary_rejection_reason(line, item.content.title, group)
+        if rejection_reason:
+            _trace_model_suggestion_filter(
+                "reject",
+                f"reason={rejection_reason} candidate={line}",
+                trace_title,
+                trace_model,
+            )
             continue
-        if line not in suggestions:
-            suggestions.append(line)
+        if line in suggestions:
+            _trace_model_suggestion_filter("reject", f"reason=duplicate candidate={line}", trace_title, trace_model)
+            continue
+        suggestions.append(line)
+        _trace_model_suggestion_filter("accept", f"index={len(suggestions)} candidate={line}", trace_title, trace_model)
         if len(suggestions) >= count:
             break
     return suggestions
+
+
+def _trace_model_enabled() -> bool:
+    return os.getenv("RELEASEPILOT_TRACE_MODEL_CALLS") == "1"
+
+
+def _trace_model_call_start(task: str, title: str, provider: str) -> None:
+    if not _trace_model_enabled():
+        return
+    print(f"[releasepilot:model] starting {task} provider={provider} title={title}", file=sys.stderr, flush=True)
+
+
+def _trace_model_suggest_plan(
+    *,
+    base: str,
+    head: str,
+    target_count: int,
+    suggestion_count: int,
+    suggestion_count_source: str,
+    provider: str,
+    all_visible: bool,
+) -> None:
+    if not _trace_model_enabled():
+        return
+    scope = "all-visible" if all_visible else "single-item"
+    print(
+        f"[releasepilot:model] planning suggest provider={provider} scope={scope} base={base} head={head} "
+        f"targets={target_count} suggestions_per_target={suggestion_count} count_source={suggestion_count_source}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _trace_model_call_result(task: str, title: str, model: str, confidence: float) -> None:
+    if not _trace_model_enabled():
+        return
+    print(
+        f"[releasepilot:model] finished {task} model={model} confidence={confidence:.2f} title={title}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _trace_model_suggestion_decision(*, title: str, model: str, parsed_count: int, requested_count: int) -> None:
+    if not _trace_model_enabled():
+        return
+    print(
+        f"[releasepilot:model] decision suggestions parsed={parsed_count} requested={requested_count} "
+        f"model={model} title={title}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _trace_model_suggest_stage(stage: str, detail: str) -> None:
+    if not _trace_model_enabled():
+        return
+    print(f"[releasepilot:model] suggest stage={stage} {detail}", file=sys.stderr, flush=True)
+
+
+def _trace_model_suggestion_filter(stage: str, detail: str, title: str | None, model: str | None) -> None:
+    if not _trace_model_enabled():
+        return
+    title_part = f" title={title}" if title else ""
+    model_part = f" model={model}" if model else ""
+    print(f"[releasepilot:model] suggestion {stage} {detail}{model_part}{title_part}", file=sys.stderr, flush=True)
 
 
 def _build_draft_model_prompt(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from http import client
 from urllib import error, request
 
@@ -40,6 +41,10 @@ class OllamaProvider(ReleasePilotProvider):
             if task == "summarize"
             else "You are ReleasePilot. Return one line: kind/area/audience/semver."
         )
+        self._trace(
+            f"provider=ollama task={task} model={self.model} endpoint={self.endpoint} "
+            f"prompt_chars={len(request_data.prompt)} evidence_keys={len(request_data.evidence)}"
+        )
         body = {
             "model": self.model,
             "stream": False,
@@ -51,23 +56,31 @@ class OllamaProvider(ReleasePilotProvider):
         }
 
         try:
+            self._trace(f"post provider=ollama task={task} endpoint={self.endpoint} mode=chat")
             data = self._post_json(self.endpoint, body)
         except client.RemoteDisconnected:
+            self._trace(
+                f"fallback provider=ollama task={task} from=chat to=generate reason=remote-disconnected"
+            )
             try:
                 data = self._invoke_generate(system_prompt=system_prompt, user_prompt=request_data.prompt)
             except (client.RemoteDisconnected, error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+                self._trace(f"error provider=ollama task={task} stage=generate reason={type(exc).__name__}")
                 return self._unavailable_response(exc)
         except error.HTTPError as exc:
+            self._trace(f"error provider=ollama task={task} stage=chat http_status={exc.code}")
             return ProviderResponse(
                 content=f"[ollama-error] local model request failed ({exc.code}): {exc.reason}",
                 confidence=0.0,
                 model=f"ollama:{self.model}",
             )
         except (error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            self._trace(f"error provider=ollama task={task} stage=chat reason={type(exc).__name__}")
             return self._unavailable_response(exc)
 
         message = data.get("message") or {}
         content = str(message.get("content") or data.get("response") or "").strip()
+        self._trace(f"response provider=ollama task={task} content_chars={len(content)} empty={not bool(content)}")
         if not content:
             return ProviderResponse(
                 content="[ollama-empty] no content",
@@ -84,6 +97,7 @@ class OllamaProvider(ReleasePilotProvider):
             "system": system_prompt,
             "prompt": user_prompt,
         }
+        self._trace(f"post provider=ollama task=generate endpoint={self._generate_endpoint()} mode=generate")
         return self._post_json(self._generate_endpoint(), body)
 
     def _post_json(self, endpoint: str, body: dict[str, object]) -> dict[str, object]:
@@ -109,3 +123,8 @@ class OllamaProvider(ReleasePilotProvider):
             confidence=0.0,
             model=f"ollama:{self.model}",
         )
+
+    def _trace(self, message: str) -> None:
+        if os.getenv("RELEASEPILOT_TRACE_MODEL_CALLS") != "1":
+            return
+        print(f"[releasepilot:model] {message}", file=sys.stderr, flush=True)

@@ -29,7 +29,7 @@ class ProviderConfig:
 class ReleasePilotConfig:
     state_path: str = ".releasepilot_state.json"
     provider: ProviderConfig = field(default_factory=ProviderConfig)
-    suggestion_count: int = 3
+    suggestion_count: int = 1
     targets: dict[str, OutputTargetConfig] = field(
         default_factory=lambda: {
             "changelog": OutputTargetConfig(path="CHANGELOG.md", format="changelog"),

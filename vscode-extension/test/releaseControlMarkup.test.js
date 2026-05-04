@@ -8,7 +8,7 @@ const modelSettings = {
   model: "mock-model",
   endpoint: "http://127.0.0.1:11434/api/chat",
   maxModelItems: 25,
-  suggestionCount: 3,
+  suggestionCount: 1,
 };
 
 const range = { base: "v1.0.0", head: "HEAD", version: "Unreleased" };
@@ -22,6 +22,8 @@ test("renders scan progress inside the release control view", () => {
 
   assert.match(html, /Scanning v1\.0\.0\.\.HEAD/);
   assert.match(html, /Scanning\.\.\./);
+  assert.match(html, /data-action="cancel"/);
+  assert.match(html, /Stop/);
 });
 
 test("renders repository sources after refresh even before a draft exists", () => {
@@ -135,6 +137,74 @@ test("renders suggestion actions and review variants", () => {
   assert.match(html, /Make API responses easier to inspect/);
   assert.match(html, /data-action="applySuggestion" data-item="ci_1" data-index="0"/);
   assert.match(html, /data-action="skipSuggestion" data-item="ci_1"/);
+});
+
+test("renders live request inspection and per-request stop controls", () => {
+  const html = buildReleaseControlHtml({
+    modelSettings,
+    range,
+    busy: true,
+    requests: [
+      {
+        id: 42,
+        command: "releasepilot",
+        args: ["draft", "suggest", "--all-visible"],
+        label: "draft suggest",
+        status: "running",
+        startedAt: "2026-05-03T12:00:00.000Z",
+        stdout: "",
+        stderr: "[releasepilot:model] starting suggest provider=ollama title=Improve API",
+      },
+    ],
+  });
+
+  assert.match(html, /REQUESTS/);
+  assert.match(html, /1 running/);
+  assert.match(html, /releasepilot draft suggest --all-visible/);
+  assert.match(html, /starting suggest provider=ollama/);
+  assert.match(html, /data-action="cancelRequest" data-request="42"/);
+});
+
+test("renders model activity as a timeline with raw output preserved", () => {
+  const html = buildReleaseControlHtml({
+    modelSettings,
+    range,
+    busy: true,
+    requests: [
+      {
+        id: 43,
+        command: "releasepilot",
+        args: ["draft", "suggest", "--id", "ci_1"],
+        label: "draft suggest",
+        status: "running",
+        startedAt: "2026-05-03T12:00:00.000Z",
+        stdout: "",
+        stderr: "[releasepilot:model] provider=ollama task=suggest model=gemma4 endpoint=http://127.0.0.1 prompt_chars=123 evidence_keys=4",
+        activity: [
+          {
+            id: 1,
+            stream: "stderr",
+            category: "model",
+            message: "[releasepilot:model] provider=ollama task=suggest model=gemma4 endpoint=http://127.0.0.1 prompt_chars=123 evidence_keys=4",
+            receivedAt: "2026-05-03T12:00:01.000Z",
+          },
+          {
+            id: 2,
+            stream: "stderr",
+            category: "model",
+            message: "[releasepilot:model] response provider=ollama task=suggest content_chars=88 empty=False",
+            receivedAt: "2026-05-03T12:00:02.000Z",
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.match(html, /<ol class="activity">/);
+  assert.match(html, /provider=ollama task=suggest model=gemma4/);
+  assert.match(html, /response provider=ollama task=suggest content_chars=88/);
+  assert.match(html, /Raw output/);
+  assert.doesNotMatch(html, /\[releasepilot:model\] provider=ollama task=suggest model=gemma4<\/span>/);
 });
 
 function draftItem(overrides) {

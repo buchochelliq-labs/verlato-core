@@ -44,7 +44,7 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
 
 ## Next biggest ticket
 
-- [x] Add smarter split logic when one PR contains unrelated user-facing changes.
+- [ ] Add suggestion preview source evidence and too-similar detection.
 
 ## Suggested next items (recommended execution order)
 
@@ -55,9 +55,27 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
 2. **AI provider strategy (GitHub baked-in vs Copilot workflows)**
    - Add a provider selection mode that supports organization-managed GitHub-hosted models and Codex/Copilot-assisted workflows.
    - Document default model settings, token requirements, and local fallback behavior.
-3. **Confidence calibration**
+3. **Generated suggestion quality and observability**
+   - [x] Default generated suggestions to one "best" suggestion while keeping explicit multi-suggestion overrides.
+   - [x] Improve prompt guidance around "what changed + why it matters."
+   - [x] Include kind/audience context in suggestion prompts.
+   - [x] Add a descriptiveness floor and reject vague or overly short suggestions.
+   - [x] Prefer concrete active verbs for release-note wording.
+   - [x] Trace lifecycle stages: target selection, evidence build, prompt build, provider call, parse, filter, accept.
+   - [x] Log candidate rejection reasons and compact evidence stats.
+   - [ ] Consider a `--trace-suggestions` alias for discoverability.
+   - [x] Show compact generation details in the VS Code output channel.
+   - [x] Adjust VS Code copy for single-suggestion review.
+   - [ ] Add regenerate and tone-refinement actions.
+   - [ ] Show current vs suggested summary before applying.
+   - [x] Preserve advanced multi-suggestion mode.
+   - [ ] Store provider/model provenance for applied suggestions.
+   - [ ] Add preview source evidence and too-similar detection.
+   - [x] Add bad-output tests and prompt golden tests.
+   - [ ] Explore tone presets, project vocabulary hints, banned phrases, specificity scoring, and local feedback loops.
+4. **Confidence calibration**
    - Improve confidence scoring with richer evidence weighting and calibration tests.
-4. **State backend expansion**
+5. **State backend expansion**
    - Add optional SQLite backend for larger repositories and concurrent workflows.
-5. **Service-first editor integration**
+6. **Service-first editor integration**
    - Replace CLI fallbacks in the extension with a richer local service contract and connection lifecycle UX.

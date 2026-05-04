@@ -134,3 +134,28 @@ export interface ClientStatus {
   label: string;
   detail: string;
 }
+
+export type CommandRequestStatus = "running" | "completed" | "failed" | "cancelled";
+
+export interface CommandRequestSnapshot {
+  id: number;
+  command: string;
+  args: string[];
+  label: string;
+  status: CommandRequestStatus;
+  startedAt: string;
+  endedAt?: string;
+  stdout: string;
+  stderr: string;
+  activity?: CommandLogEntry[];
+  exitCode?: number | null;
+  error?: string;
+}
+
+export interface CommandLogEntry {
+  id: number;
+  stream: "stdout" | "stderr";
+  category: "model" | "process";
+  message: string;
+  receivedAt: string;
+}

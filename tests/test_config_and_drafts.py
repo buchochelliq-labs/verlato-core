@@ -135,6 +135,14 @@ def test_load_config_reads_suggestion_count(monkeypatch, tmp_path: Path):
     assert config.suggestion_count == 4
 
 
+def test_load_config_defaults_to_one_suggestion(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+
+    config = load_config()
+
+    assert config.suggestion_count == 1
+
+
 def test_draft_json_command_outputs_sections_and_targets(monkeypatch, tmp_path: Path, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
@@ -312,7 +320,11 @@ def test_draft_suggest_preview_returns_variants_without_persisting(monkeypatch, 
         def summarize(self, request: ProviderRequest) -> ProviderResponse:
             assert "Return exactly 3 distinct options as a numbered list" in request.prompt
             return ProviderResponse(
-                content="1. Make login guidance easier to follow\n2. Clarify the login flow\n3. Improve login recovery wording",
+                content=(
+                    "1. Make login guidance easier to follow\n"
+                    "2. Clarify the login flow\n"
+                    "3. Improve login recovery wording"
+                ),
                 confidence=0.9,
                 model="mock-local",
             )
@@ -323,7 +335,21 @@ def test_draft_suggest_preview_returns_variants_without_persisting(monkeypatch, 
     monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: [group])
     monkeypatch.setattr("releasepilot.cli.main.build_provider", lambda config, mode=None: VariantProvider())
 
-    rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"])
+    rc = main(
+        [
+            "draft",
+            "suggest",
+            "--base",
+            "v1.0.0",
+            "--id",
+            target_item.id,
+            "--preview",
+            "--count",
+            "3",
+            "--model-provider",
+            "mock",
+        ]
+    )
 
     assert rc == 0
     preview = json.loads(capsys.readouterr().out)
@@ -341,6 +367,37 @@ def test_draft_suggest_preview_returns_variants_without_persisting(monkeypatch, 
     assert state["items"] == []
 
 
+def test_draft_suggest_preview_defaults_to_one_suggestion(monkeypatch, tmp_path: Path, capsys):
+    state_path = tmp_path / "state.json"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+    group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
+    target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
+
+    class VariantProvider:
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            assert "Return exactly one sentence" in request.prompt
+            assert "Release context: kind=changed, audience=external" in request.prompt
+            return ProviderResponse(
+                content="1. Clarifies login guidance for users\n2. Documents login recovery behavior",
+                confidence=0.9,
+                model="mock-local",
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="mock-local")
+
+    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("releasepilot.cli.main.build_provider", lambda config, mode=None: VariantProvider())
+
+    rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"])
+
+    assert rc == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["count"] == 1
+    assert preview["items"][0]["suggestions"] == ["Clarifies login guidance for users"]
+
+
 def test_draft_suggest_batch_preview_excludes_hidden_items(monkeypatch, tmp_path: Path, capsys):
     state_path = tmp_path / "state.json"
     monkeypatch.chdir(tmp_path)
@@ -354,7 +411,11 @@ def test_draft_suggest_batch_preview_excludes_hidden_items(monkeypatch, tmp_path
 
     class VariantProvider:
         def summarize(self, request: ProviderRequest) -> ProviderResponse:
-            return ProviderResponse(content="1. Suggested wording", confidence=0.9, model="mock-local")
+            return ProviderResponse(
+                content="1. Clarifies review wording for visible release items",
+                confidence=0.9,
+                model="mock-local",
+            )
 
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
@@ -366,11 +427,56 @@ def test_draft_suggest_batch_preview_excludes_hidden_items(monkeypatch, tmp_path
     assert rc == 0
     capsys.readouterr()
 
-    rc = main(["draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preview", "--count", "2", "--model-provider", "mock"])
+    rc = main(
+        [
+            "draft",
+            "suggest",
+            "--base",
+            "v1.0.0",
+            "--all-visible",
+            "--preview",
+            "--count",
+            "2",
+            "--model-provider",
+            "mock",
+        ]
+    )
 
     assert rc == 0
     preview = json.loads(capsys.readouterr().out)
     assert [item["item_id"] for item in preview["items"]] == [first.id]
+
+
+def test_draft_suggest_trace_logs_filter_reasons(monkeypatch, tmp_path: Path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setenv("RELEASEPILOT_TRACE_MODEL_CALLS", "1")
+    group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
+    target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
+
+    class VariantProvider:
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(
+                content="1. Improve login\n2. Suggested wording\n3. Clarifies login guidance for reviewers",
+                confidence=0.9,
+                model="mock-local",
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="mock-local")
+
+    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("releasepilot.cli.main.build_provider", lambda config, mode=None: VariantProvider())
+
+    rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"])
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "suggest stage=target-selection" in captured.err
+    assert "suggest stage=evidence-built" in captured.err
+    assert "suggestion reject reason=repeats-title-or-commit" in captured.err
+    assert "suggestion reject reason=too-short-or-generic" in captured.err
+    assert "suggestion accept index=1" in captured.err
 
 
 def test_draft_suggest_defaults_to_ollama_when_no_provider_configured(monkeypatch, tmp_path: Path, capsys):
@@ -511,6 +617,27 @@ def test_scan_disables_provider_when_change_fanout_exceeds_limit(monkeypatch, tm
     assert all("provider-summary" not in signal for item in items for signal in item.evidence.commit_signals)
 
 
+def test_draft_suggest_all_visible_refuses_large_model_fanout(monkeypatch, tmp_path: Path):
+    groups = [
+        _mk_group(number=1, title="First change", commit_sha="a1", commit_message="first"),
+        _mk_group(number=2, title="Second change", commit_sha="b2", commit_message="second"),
+    ]
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("RELEASEPILOT_MODEL_MAX_ITEMS", "1")
+    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr(
+        "releasepilot.cli.main.build_provider",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fanout guard should stop provider setup")),
+    )
+
+    try:
+        main(["draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preview", "--model-provider", "mock"])
+    except SystemExit as exc:
+        assert "Refusing to request model suggestions for 2 visible item(s)" in str(exc)
+    else:
+        raise AssertionError("Expected all-visible suggestion fanout to be refused")
+
+
 def test_draft_prompt_outputs_prompt_without_calling_provider(monkeypatch, tmp_path: Path, capsys):
     monkeypatch.chdir(tmp_path)
     group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
@@ -528,7 +655,7 @@ def test_draft_prompt_outputs_prompt_without_calling_provider(monkeypatch, tmp_p
     prompt_preview = json.loads(capsys.readouterr().out)
     assert prompt_preview["item_id"] == target_item.id
     assert prompt_preview["provider"] == "ollama"
-    assert "Lead with observable impact, not file names." in prompt_preview["prompt"]
+    assert "Lead with what changed and why it matters" in prompt_preview["prompt"]
 
 
 def test_render_uses_edited_summary_and_skips_hidden_items(monkeypatch, tmp_path: Path, capsys):

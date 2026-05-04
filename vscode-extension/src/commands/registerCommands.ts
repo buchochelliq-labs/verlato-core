@@ -144,8 +144,8 @@ async function suggestItemSummary(
     const picked = await vscode.window.showQuickPick(
       suggestions.map((summary, index) => ({ label: summary, description: index === 0 ? "best" : undefined })),
       {
-        title: "Choose ReleasePilot suggestion",
-        placeHolder: "Pick a generated description to apply",
+        title: suggestions.length === 1 ? "Review ReleasePilot suggestion" : "Choose ReleasePilot suggestion",
+        placeHolder: suggestions.length === 1 ? "Apply the generated description" : "Pick a generated description to apply",
       },
     );
     if (!picked) {

@@ -97,3 +97,29 @@ def test_ollama_provider_reports_unavailable_server(monkeypatch):
 
     assert response.confidence == 0.0
     assert response.content.startswith("[ollama-unavailable]")
+
+
+def test_ollama_provider_traces_model_boundary(monkeypatch, capsys):
+    monkeypatch.setenv("RELEASEPILOT_TRACE_MODEL_CALLS", "1")
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        @staticmethod
+        def read():
+            return json.dumps({"message": {"content": "Local summary"}}).encode("utf-8")
+
+    monkeypatch.setattr("releasepilot.providers.ollama.request.urlopen", lambda req, timeout: FakeResponse())
+
+    provider = OllamaProvider(model="test-model")
+    provider.summarize(ProviderRequest(task="summarize", prompt="Summarize this change", evidence={"files": []}))
+
+    stderr = capsys.readouterr().err
+    assert "[releasepilot:model] provider=ollama task=summarize model=test-model" in stderr
+    assert "prompt_chars=21 evidence_keys=1" in stderr
+    assert "[releasepilot:model] post provider=ollama task=summarize" in stderr
+    assert "[releasepilot:model] response provider=ollama task=summarize content_chars=13 empty=False" in stderr

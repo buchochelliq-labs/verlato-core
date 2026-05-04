@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import re
+import sys
 
 from releasepilot.core.checksum import CHECKSUM_VERSION, build_checksum
 from releasepilot.core.conventional import parse_conventional_commit
@@ -15,6 +17,8 @@ from releasepilot.core.models import (
     default_review_status,
 )
 from releasepilot.providers.base import ProviderRequest, ReleasePilotProvider
+
+MAX_PROMPT_CHANGED_FILES = 20
 
 
 class Classifier:
@@ -39,6 +43,16 @@ class Classifier:
     VALID_KINDS = {"added", "changed", "fixed", "removed", "security", "internal"}
     VALID_AUDIENCES = {"external", "internal"}
     VALID_SEMVER = {"major", "minor", "patch", "none"}
+    LOW_DETAIL_SUGGESTIONS = {
+        "change",
+        "changes",
+        "update",
+        "updates",
+        "updated wording",
+        "improve",
+        "improvements",
+        "suggested wording",
+    }
 
     def __init__(self, provider: ReleasePilotProvider | None = None) -> None:
         self.diff_builder = DiffEvidenceBuilder()
@@ -193,16 +207,30 @@ class Classifier:
             pr_body=group.pr.body if group.pr else "",
             diff=diff,
             commits=group.commits,
+            kind=kind,
+            audience=audience,
         )
+        self._trace_model_call_start("summarize", title)
         summary_response = self.provider.summarize(
             ProviderRequest(task="summarize", prompt=summary_prompt, evidence=evidence)
         )
-        if summary_response.confidence >= 0.5 and not self._is_low_value_summary(summary_response.content, title, group):
+        self._trace_model_call("summarize", title, summary_response.model, summary_response.confidence)
+        summary_rejection = self._summary_rejection_reason(summary_response.content, title, group)
+        if summary_response.confidence >= 0.5 and summary_rejection is None:
             summary = summary_response.content
             confidence = max(confidence, min(summary_response.confidence, 0.95))
             commit_signals.append(f"provider-summary:{summary_response.model}")
+            self._trace_model_decision("summary accepted", title, summary_response.model)
         elif self._is_provider_error(summary_response.content):
             commit_signals.append(f"provider-error:{summary_response.model}:{summary_response.content}")
+            self._trace_model_decision("summary provider-error deterministic-fallback", title, summary_response.model)
+        else:
+            reason = summary_rejection or "low-confidence"
+            self._trace_model_decision(
+                f"summary rejected reason={reason} deterministic-fallback",
+                title,
+                summary_response.model,
+            )
 
         if allow_classification_override:
             classify_prompt = self._build_classification_prompt(
@@ -211,14 +239,25 @@ class Classifier:
                 diff_summary=diff.summary,
                 commits=group.commits,
             )
+            self._trace_model_call_start("classify", title)
             classify_response = self.provider.classify(
                 ProviderRequest(task="classify", prompt=classify_prompt, evidence=evidence)
             )
+            self._trace_model_call("classify", title, classify_response.model, classify_response.confidence)
             provider_classification = self._parse_provider_classification(classify_response.content)
             if provider_classification and classify_response.confidence >= 0.65:
                 kind, area, audience, semver = provider_classification
                 confidence = max(confidence, min(classify_response.confidence, 0.98))
                 commit_signals.append(f"provider-classification:{classify_response.model}")
+                self._trace_model_decision(
+                    f"classification accepted value={kind}/{area}/{audience}/{semver}",
+                    title,
+                    classify_response.model,
+                )
+            else:
+                self._trace_model_decision("classification rejected deterministic-fallback", title, classify_response.model)
+        else:
+            self._trace_model_decision("classification skipped deterministic-rule-confidence", title, "deterministic")
 
         return kind, area, audience, semver, summary, confidence
 
@@ -231,17 +270,28 @@ class Classifier:
         diff,
         commits: list,
         suggestion_count: int = 1,
+        kind: str | None = None,
+        audience: str | None = None,
     ) -> str:
         commit_lines = "; ".join(commit.message.splitlines()[0] for commit in commits)
         label_text = ", ".join(labels) if labels else "none"
+        file_statuses = sorted(diff.file_statuses.items())
         file_lines = "\n".join(
-            f"- {status} {path}" for path, status in sorted(diff.file_statuses.items())
+            f"- {status} {path}" for path, status in file_statuses[:MAX_PROMPT_CHANGED_FILES]
         ) or "- none"
+        if len(file_statuses) > MAX_PROMPT_CHANGED_FILES:
+            file_lines += f"\n- ... and {len(file_statuses) - MAX_PROMPT_CHANGED_FILES} more"
         hunk_lines = []
         for path, hunks in diff.representative_hunks.items():
             hunk_lines.append(f"{path}:")
             hunk_lines.extend(f"  {hunk}" for hunk in hunks)
         hunk_text = "\n".join(hunk_lines) or "none"
+        context_bits = []
+        if kind:
+            context_bits.append(f"kind={kind}")
+        if audience:
+            context_bits.append(f"audience={audience}")
+        context_text = ", ".join(context_bits) or "unspecified"
         output_instruction = (
             "Return exactly one sentence."
             if suggestion_count <= 1
@@ -249,10 +299,16 @@ class Classifier:
         )
         return (
             f"Write concise ReleasePilot description suggestions based primarily on the file diffs.\n"
-            f"Lead with observable impact, not file names. Avoid generic filler and do not just repeat the title or commits.\n"
-            f"For external/user-facing changes, use polished release-note wording. For internal, docs, tests, or maintenance changes, use concise commit-like wording.\n"
+            f"Lead with what changed and why it matters. Name the observable behavior, workflow, API, docs, "
+            f"test, or maintenance impact.\n"
+            f"Prefer concrete active verbs such as Adds, Fixes, Clarifies, Reduces, Preserves, Documents, "
+            f"or Validates.\n"
+            f"Avoid generic filler, file-name summaries, and text that just repeats the title or commits.\n"
+            f"For external/user-facing changes, use polished release-note wording. For internal, docs, tests, "
+            f"or maintenance changes, use concise commit-like wording.\n"
             f"{output_instruction}\n"
             f"Title: {title}\n"
+            f"Release context: {context_text}\n"
             f"Labels: {label_text}\n"
             f"Commits: {commit_lines}\n"
             f"PR body: {pr_body.strip() or 'none'}\n"
@@ -285,15 +341,23 @@ class Classifier:
         return kind, area, audience, semver
 
     def _is_low_value_summary(self, content: str, title: str, group: ChangeGroup) -> bool:
+        return self._summary_rejection_reason(content, title, group) is not None
+
+    def _summary_rejection_reason(self, content: str, title: str, group: ChangeGroup) -> str | None:
         normalized = (content or "").strip()
         if not normalized:
-            return True
+            return "empty"
         lowered = normalized.lower()
         if lowered.startswith(("[github-copilot-", "[ollama-", "[stub-")):
-            return True
+            return "provider-error-marker"
         candidates = {title.strip().lower()}
         candidates.update(commit.message.splitlines()[0].strip().lower() for commit in group.commits)
-        return lowered.rstrip(".") in {candidate.rstrip(".") for candidate in candidates if candidate}
+        if lowered.rstrip(".") in {candidate.rstrip(".") for candidate in candidates if candidate}:
+            return "repeats-title-or-commit"
+        words = re.findall(r"[a-z0-9]+", lowered)
+        if len(words) < 3 or lowered.rstrip(".") in self.LOW_DETAIL_SUGGESTIONS:
+            return "too-short-or-generic"
+        return None
 
     def _is_provider_error(self, content: str) -> bool:
         lowered = (content or "").strip().lower()
@@ -310,3 +374,22 @@ class Classifier:
 
         ordered = sorted(files_by_area.items(), key=lambda item: (-len(item[1]), item[0]))
         return ordered[0][0]
+
+    def _trace_model_call(self, task: str, title: str, model: str, confidence: float) -> None:
+        if os.getenv("RELEASEPILOT_TRACE_MODEL_CALLS") != "1":
+            return
+        print(
+            f"[releasepilot:model] {task} model={model} confidence={confidence:.2f} title={title}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    def _trace_model_call_start(self, task: str, title: str) -> None:
+        if os.getenv("RELEASEPILOT_TRACE_MODEL_CALLS") != "1":
+            return
+        print(f"[releasepilot:model] starting {task} title={title}", file=sys.stderr, flush=True)
+
+    def _trace_model_decision(self, decision: str, title: str, model: str) -> None:
+        if os.getenv("RELEASEPILOT_TRACE_MODEL_CALLS") != "1":
+            return
+        print(f"[releasepilot:model] decision {decision} model={model} title={title}", file=sys.stderr, flush=True)

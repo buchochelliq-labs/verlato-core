@@ -1,7 +1,14 @@
 import * as vscode from "vscode";
 
 import { ReleasePilotClient } from "../client/releasePilotClient";
-import { DraftDocument, DraftRangeRequest, DraftSuggestionPreview, ModelSettings, RepositoryOverview } from "../client/types";
+import {
+  CommandRequestSnapshot,
+  DraftDocument,
+  DraftRangeRequest,
+  DraftSuggestionPreview,
+  ModelSettings,
+  RepositoryOverview,
+} from "../client/types";
 import { buildReleaseControlHtml } from "./releaseControlMarkup";
 import { PreviewPanel } from "./previewPanel";
 
@@ -10,6 +17,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   private document: DraftDocument | undefined;
   private overview: RepositoryOverview | undefined;
   private suggestions: DraftSuggestionPreview | undefined;
+  private requests: CommandRequestSnapshot[] = [];
   private modelSettings: ModelSettings;
   private range: DraftRangeRequest = { base: "HEAD~10", head: "HEAD", version: "Unreleased" };
   private busy = false;
@@ -21,6 +29,11 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     private readonly previewPanel: PreviewPanel,
   ) {
     this.modelSettings = client.getModelSettings();
+    this.requests = client.getCommandRequests();
+    this.client.onDidChangeRequests((requests) => {
+      this.requests = requests;
+      this.render();
+    });
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -58,6 +71,14 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
         head: message.head || "HEAD",
         version: message.version || "Unreleased",
       };
+      return;
+    }
+    if (message.type === "cancel") {
+      this.cancelCurrentOperation();
+      return;
+    }
+    if (message.type === "cancelRequest" && message.requestId !== undefined) {
+      this.cancelRequest(message.requestId);
       return;
     }
     if (message.type === "useRef" && message.ref && message.slot) {
@@ -141,8 +162,9 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       try {
         const suggestions = await this.client.previewDraftSuggestions(this.range, itemId);
         this.suggestions = suggestions;
+        const generatedCount = suggestions.items[0]?.suggestions.length ?? 0;
         this.statusMessage = itemId
-          ? `Generated ${suggestions.items[0]?.suggestions.length ?? 0} suggestion(s).`
+          ? generatedCount === 1 ? "Generated one suggested description." : `Generated ${generatedCount} suggestions.`
           : `Generated suggestions for ${suggestions.items.length} item(s).`;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -220,12 +242,32 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     try {
       await task();
     } catch (error) {
-      this.errorMessage = error instanceof Error ? error.message : String(error);
-      vscode.window.showErrorMessage(this.errorMessage);
+      const message = error instanceof Error ? error.message : String(error);
+      if (message === "ReleasePilot command cancelled.") {
+        this.statusMessage = "Stopped current ReleasePilot command.";
+      } else {
+        this.errorMessage = message;
+        vscode.window.showErrorMessage(this.errorMessage);
+      }
     } finally {
       this.busy = false;
       this.render();
     }
+  }
+
+  private cancelCurrentOperation(): void {
+    if (!this.busy) {
+      return;
+    }
+    this.statusMessage = "Stopping current ReleasePilot command...";
+    this.client.cancelActiveCommands();
+    this.render();
+  }
+
+  private cancelRequest(requestId: number): void {
+    this.statusMessage = `Stopping request ${requestId}...`;
+    this.client.cancelCommand(requestId);
+    this.render();
   }
 
   private render(): void {
@@ -239,6 +281,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       range: this.range,
       busy: this.busy,
       suggestions: this.suggestions,
+      requests: this.requests,
       statusMessage: this.statusMessage,
       errorMessage: this.errorMessage,
     });
@@ -256,4 +299,5 @@ type ViewMessage = {
   ref?: string;
   slot?: "base" | "head";
   suggestionIndex?: number;
+  requestId?: number;
 };

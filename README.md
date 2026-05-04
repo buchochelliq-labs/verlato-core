@@ -157,6 +157,8 @@ When a provider is enabled, ReleasePilot sends compact file-diff evidence, repre
 
 You can also override the provider for one CLI run with `--model-provider mock`, `--model-provider ollama`, or `--model-provider github-copilot` on `scan`, `generate`, `reconcile`, and `draft` commands. The VS Code extension exposes the same override through the `releasepilot.modelProvider` setting; leave it as `configured` to honor `releasepilot.json` or environment variables. The `draft suggest` command defaults to `ollama` when no provider is configured because it explicitly asks the model for a summary.
 
+`draft suggest` generates one suggested description by default. Use `--count`, `RELEASEPILOT_SUGGESTION_COUNT`, `suggestion_count` in `releasepilot.json`, or the VS Code `releasepilot.suggestionCount` setting to request up to five variants. Set `RELEASEPILOT_TRACE_MODEL_CALLS=1` to log model-call and suggestion parsing diagnostics to stderr without changing JSON stdout.
+
 For local AI use, run Ollama locally and make sure the selected model is pulled before using `draft suggest`. For prompt debugging or manual model use, prefer `draft prompt`, which only returns the generated prompt and does not call any LLM. GitHub auth is no longer requested by default for configured/local flows.
 
 Config targets:

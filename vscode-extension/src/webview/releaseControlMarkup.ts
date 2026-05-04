@@ -1,4 +1,12 @@
-import type { DraftDocument, DraftItem, DraftRangeRequest, DraftSuggestionPreview, ModelSettings, RepositoryOverview } from "../client/types";
+import type {
+  CommandRequestSnapshot,
+  DraftDocument,
+  DraftItem,
+  DraftRangeRequest,
+  DraftSuggestionPreview,
+  ModelSettings,
+  RepositoryOverview,
+} from "../client/types";
 
 export interface ReleaseControlRenderState {
   document?: DraftDocument;
@@ -7,6 +15,7 @@ export interface ReleaseControlRenderState {
   range: DraftRangeRequest;
   busy: boolean;
   suggestions?: DraftSuggestionPreview;
+  requests?: CommandRequestSnapshot[];
   statusMessage?: string;
   errorMessage?: string;
 }
@@ -32,10 +41,12 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
       <button class="icon" data-action="suggestAll" title="Suggest descriptions">✧</button>
       <button class="icon" data-action="preview" title="Preview release notes">P</button>
       <button class="icon" data-action="refresh" title="Refresh repository activity">R</button>
+      ${state.busy ? `<button class="stop" data-action="cancel" title="Stop current request">Stop</button>` : ""}
       <button class="icon" data-action="changeModel" title="Change AI model">...</button>
     </div>
 
     ${renderNotice(state)}
+    ${renderRequests(state.requests ?? [])}
     ${renderSuggestions(state.suggestions)}
 
     <section class="section">
@@ -94,6 +105,8 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
       if (action === 'suggestAll') vscode.postMessage({ type: 'suggestAll' });
       if (action === 'preview') vscode.postMessage({ type: 'preview' });
       if (action === 'refresh') vscode.postMessage({ type: 'refresh' });
+      if (action === 'cancel') vscode.postMessage({ type: 'cancel' });
+      if (action === 'cancelRequest') vscode.postMessage({ type: 'cancelRequest', requestId: Number(button.dataset.request) });
       if (action === 'changeModel') vscode.postMessage({ type: 'changeModel' });
       if (action === 'applyChangelog') vscode.postMessage({ type: 'apply', target: 'changelog' });
       if (action === 'applyRelease') vscode.postMessage({ type: 'apply', target: 'github-release' });
@@ -132,6 +145,74 @@ function renderSuggestions(preview: DraftSuggestionPreview | undefined): string 
       <button class="skip" data-action="skipSuggestion" data-item="${escapeHtml(item.item_id)}">Skip</button>
     </article>`).join("")}
   </section>`;
+}
+
+function renderRequests(requests: CommandRequestSnapshot[]): string {
+  if (!requests.length) {
+    return "";
+  }
+  const runningCount = requests.filter((request) => request.status === "running").length;
+  return `<section class="section requests">
+    <div class="section-title">REQUESTS ${runningCount ? `<span>${runningCount} running</span>` : ""}</div>
+    ${requests.slice(0, 8).map(renderRequest).join("")}
+  </section>`;
+}
+
+function renderRequest(request: CommandRequestSnapshot): string {
+  const command = [request.command, ...request.args].join(" ");
+  const output = request.stderr || request.stdout || request.error || "";
+  const activity = request.activity?.length ? request.activity : parseActivityFromOutput(output);
+  return `<details class="request" ${request.status === "running" ? "open" : ""}>
+    <summary>
+      <span class="request-label">${escapeHtml(request.label || request.command)}</span>
+      <span class="badge ${escapeHtml(request.status)}">${escapeHtml(request.status)}</span>
+      ${request.status === "running" ? `<button class="request-stop" data-action="cancelRequest" data-request="${request.id}" title="Stop this request">Stop</button>` : ""}
+    </summary>
+    <code>${escapeHtml(command)}</code>
+    ${activity.length ? renderActivity(activity) : `<small>No model activity yet.</small>`}
+    ${output ? `<details class="raw"><summary>Raw output</summary><pre>${escapeHtml(output)}</pre></details>` : ""}
+  </details>`;
+}
+
+function renderActivity(activity: NonNullable<CommandRequestSnapshot["activity"]>): string {
+  return `<ol class="activity">
+    ${activity.slice(-20).map((entry) => `<li class="${escapeHtml(entry.category)}">
+      <time>${escapeHtml(formatActivityTime(entry.receivedAt))}</time>
+      <span>${escapeHtml(cleanActivityMessage(entry.message))}</span>
+    </li>`).join("")}
+  </ol>`;
+}
+
+function parseActivityFromOutput(output: string): NonNullable<CommandRequestSnapshot["activity"]> {
+  const entries: NonNullable<CommandRequestSnapshot["activity"]> = [];
+  output.split(/\r?\n/).forEach((line, index) => {
+    const trimmed = line.trim();
+    if (trimmed) {
+      entries.push({
+        id: index,
+        stream: "stderr",
+        category: trimmed.startsWith("[releasepilot:model]") ? "model" : "process",
+        message: trimmed,
+        receivedAt: "",
+      });
+    }
+  });
+  return entries;
+}
+
+function cleanActivityMessage(message: string): string {
+  return message.replace(/^\[releasepilot:model\]\s*/, "");
+}
+
+function formatActivityTime(value: string): string {
+  if (!value) {
+    return "--:--:--";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return "--:--:--";
+  }
+  return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 function countVisibleItems(document: DraftDocument | undefined): number {
@@ -259,6 +340,13 @@ function styles(): string {
     }
     button:hover { background: var(--vscode-button-secondaryHoverBackground); }
     .icon { width: 24px; min-height: 22px; background: transparent; color: var(--vscode-icon-foreground); }
+    .stop {
+      min-height: 22px;
+      padding: 0 7px;
+      color: var(--vscode-button-foreground);
+      background: var(--vscode-errorForeground);
+      font-size: 11px;
+    }
     .mini { width: 20px; min-height: 18px; }
     .notice {
       margin: 0 0 8px;
@@ -272,6 +360,7 @@ function styles(): string {
     .notice.error { border-left-color: var(--vscode-errorForeground); color: var(--vscode-errorForeground); }
     .section { margin-bottom: 10px; }
     .section-title { margin: 0 0 5px; color: var(--vscode-sideBarSectionHeader-foreground); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+    .section-title span { float: right; color: var(--vscode-descriptionForeground); font-weight: 400; }
     input {
       width: 100%;
       border: 1px solid var(--vscode-input-border, transparent);
@@ -305,6 +394,47 @@ function styles(): string {
     .actions button { min-height: 22px; font-size: 11px; }
     .suggestions { border-left: 2px solid var(--vscode-focusBorder); padding-left: 6px; }
     .suggestion { padding: 6px 0; border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.18)); }
+    .requests { border-left: 2px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.28)); padding-left: 6px; }
+    .request { border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.18)); padding: 4px 0; }
+    .request summary { display: flex; align-items: center; gap: 5px; text-transform: none; }
+    .request-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .request-stop { min-height: 18px; padding: 0 5px; color: var(--vscode-button-foreground); background: var(--vscode-errorForeground); font-size: 10px; }
+    .request code { display: block; color: var(--vscode-descriptionForeground); white-space: pre-wrap; word-break: break-word; font-size: 10px; margin: 2px 0; }
+    .activity {
+      list-style: none;
+      display: grid;
+      gap: 3px;
+      margin: 5px 0 0;
+      padding: 0;
+      font-size: 10px;
+      line-height: 1.35;
+    }
+    .activity li {
+      display: grid;
+      grid-template-columns: 54px minmax(0, 1fr);
+      gap: 5px;
+      padding: 3px 4px;
+      border-left: 2px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.24));
+      background: var(--vscode-input-background);
+    }
+    .activity li.model { border-left-color: var(--vscode-focusBorder); }
+    .activity time { color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; }
+    .activity span { min-width: 0; overflow-wrap: anywhere; }
+    .raw { margin-top: 4px; }
+    .raw summary { color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 400; text-transform: none; }
+    .request pre {
+      max-height: 130px;
+      overflow: auto;
+      margin: 4px 0 0;
+      padding: 5px;
+      color: var(--vscode-editor-foreground);
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-input-border, transparent);
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 10px;
+      line-height: 1.35;
+    }
     .variants { display: grid; gap: 4px; margin-top: 5px; }
     .variant { min-height: 0; padding: 5px 6px; text-align: left; line-height: 1.35; }
     .variant span { display: block; white-space: normal; }

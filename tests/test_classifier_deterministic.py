@@ -95,7 +95,7 @@ def test_provider_summary_prompt_includes_diff_hunks_and_files():
     item = Classifier(provider=provider).classify(group, base_ref="v1.0.0", head_ref="main")[0]
 
     assert item.content.summary == "Search now ranks matching results"
-    assert "Lead with observable impact, not file names." in provider.summary_request.prompt
+    assert "Lead with what changed and why it matters" in provider.summary_request.prompt
     assert "use polished release-note wording" in provider.summary_request.prompt
     assert "src/search.py" in provider.summary_request.prompt
     assert "+return ranked_results" in provider.summary_request.prompt
@@ -122,10 +122,41 @@ def test_provider_summary_prompt_supports_configurable_variants():
         diff=diff,
         commits=group.commits,
         suggestion_count=3,
+        kind="internal",
+        audience="internal",
     )
 
     assert "Return exactly 3 distinct options as a numbered list" in prompt
+    assert "Lead with what changed and why it matters" in prompt
+    assert "Release context: kind=internal, audience=internal" in prompt
+    assert "Prefer concrete active verbs" in prompt
     assert "internal, docs, tests, or maintenance changes, use concise commit-like wording" in prompt
+
+
+def test_provider_summary_prompt_caps_changed_file_list():
+    files = [
+        ChangedFile(path=f"src/module_{index:02}.py", status="modified", patch="")
+        for index in range(25)
+    ]
+    group = ChangeGroup(
+        pr=PullRequest(number=8, title="Improve modules", files=files),
+        commits=[Commit(sha="abc", message="update modules")],
+    )
+    classifier = Classifier()
+    diff = classifier.diff_builder.build(group.pr.files)
+
+    prompt = classifier._build_summary_prompt(
+        title="Improve modules",
+        labels=[],
+        pr_body="",
+        diff=diff,
+        commits=group.commits,
+    )
+
+    assert "src/module_00.py" in prompt
+    assert "src/module_19.py" in prompt
+    assert "src/module_20.py" not in prompt
+    assert "... and 5 more" in prompt
 
 
 def test_classifier_rejects_low_value_provider_summary():

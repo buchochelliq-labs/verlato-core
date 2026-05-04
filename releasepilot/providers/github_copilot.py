@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from http import HTTPStatus
 from urllib import error, request
 
@@ -45,6 +46,7 @@ class GitHubCopilotProvider(ReleasePilotProvider):
 
     def _invoke(self, *, task: str, request_data: ProviderRequest) -> ProviderResponse:
         if not self.token:
+            self._trace(f"unavailable provider=github-copilot task={task} reason=missing-token")
             return ProviderResponse(
                 content="[github-copilot-unavailable] missing GITHUB_TOKEN/GH_TOKEN and no logged-in gh user",
                 confidence=0.0,
@@ -64,6 +66,10 @@ class GitHubCopilotProvider(ReleasePilotProvider):
                 {"role": "user", "content": request_data.prompt},
             ],
         }
+        self._trace(
+            f"provider=github-copilot task={task} model={self.model} endpoint={self.endpoint} "
+            f"prompt_chars={len(request_data.prompt)} evidence_keys={len(request_data.evidence)}"
+        )
 
         payload = json.dumps(body).encode("utf-8")
         headers = {
@@ -75,15 +81,18 @@ class GitHubCopilotProvider(ReleasePilotProvider):
         req = request.Request(self.endpoint, data=payload, headers=headers, method="POST")
 
         try:
+            self._trace(f"post provider=github-copilot task={task} endpoint={self.endpoint}")
             with request.urlopen(req, timeout=self.timeout_seconds) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except error.HTTPError as exc:
+            self._trace(f"error provider=github-copilot task={task} http_status={exc.code}")
             return ProviderResponse(
                 content=f"[github-copilot-error] {self._format_http_error(exc)}",
                 confidence=0.0,
                 model=f"github-copilot:{self.model}",
             )
         except (error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            self._trace(f"error provider=github-copilot task={task} reason={type(exc).__name__}")
             return ProviderResponse(
                 content=f"[github-copilot-error] request failed: {exc}",
                 confidence=0.0,
@@ -99,6 +108,10 @@ class GitHubCopilotProvider(ReleasePilotProvider):
         if not content:
             content = "[github-copilot-empty] no content"
             confidence = 0.0
+        self._trace(
+            f"response provider=github-copilot task={task} choices={len(choices)} "
+            f"content_chars={len(content)} empty={content.startswith('[github-copilot-empty]')}"
+        )
 
         return ProviderResponse(content=content, confidence=confidence, model=f"github-copilot:{self.model}")
 
@@ -157,3 +170,8 @@ class GitHubCopilotProvider(ReleasePilotProvider):
             return None
         token = result.stdout.strip()
         return token or None
+
+    def _trace(self, message: str) -> None:
+        if os.getenv("RELEASEPILOT_TRACE_MODEL_CALLS") != "1":
+            return
+        print(f"[releasepilot:model] {message}", file=sys.stderr, flush=True)
