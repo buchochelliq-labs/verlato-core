@@ -39,12 +39,11 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
   <main>
     <div class="toolbar">
       <span class="title">RELEASE CONTROL</span>
-      ${renderModelBadge(state.modelSettings)}
       <button class="icon" data-action="suggestAll" title="Suggest descriptions">✧</button>
       <button class="icon" data-action="preview" title="Preview release notes">P</button>
       <button class="icon" data-action="refresh" title="Refresh repository activity">R</button>
       ${state.busy ? `<button class="stop" data-action="cancel" title="Stop current request">Stop</button>` : ""}
-      <button class="icon" data-action="changeModel" title="Change AI model">...</button>
+      ${renderModelBadge(state.modelSettings)}
     </div>
 
     ${renderNotice(state)}
