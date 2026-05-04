@@ -60,6 +60,21 @@ test("renders prompt payload telemetry toggle in the model panel", () => {
   assert.match(enabledHtml, /<small>On<\/small>/);
 });
 
+test("renders current model as a clickable hover badge", () => {
+  const html = buildReleaseControlHtml({
+    modelSettings: { ...modelSettings, provider: "ollama", model: "gemma4:latest", suggestionCount: 3 },
+    range,
+    busy: false,
+  });
+
+  assert.match(html, /class="model-badge" data-action="changeModel"/);
+  assert.match(html, /<span class="model-mark">AI<\/span>/);
+  assert.match(html, /<span class="model-name">gemma4:latest<\/span>/);
+  assert.match(html, /Provider: ollama/);
+  assert.match(html, /Suggestions: 3/);
+  assert.match(html, /Streaming: on/);
+});
+
 test("renders repository sources after refresh even before a draft exists", () => {
   const html = buildReleaseControlHtml({
     modelSettings,
@@ -230,9 +245,35 @@ test("renders live request inspection and per-request stop controls", () => {
 
   assert.match(html, /REQUESTS/);
   assert.match(html, /1 running/);
+  assert.match(html, /<details class="section tree-section requests" open>/);
+  assert.match(html, /<span class="badge running">running<\/span>/);
   assert.match(html, /releasepilot draft suggest --all-visible/);
   assert.match(html, /starting suggest provider=ollama/);
   assert.match(html, /data-action="cancelRequest" data-request="42"/);
+});
+
+test("collapses completed request groups until expanded", () => {
+  const html = buildReleaseControlHtml({
+    modelSettings,
+    range,
+    busy: false,
+    requests: [
+      {
+        id: 45,
+        command: "releasepilot",
+        args: ["draft", "prompt"],
+        label: "draft prompt",
+        status: "completed",
+        startedAt: "2026-05-03T12:00:00.000Z",
+        stdout: "",
+        stderr: "",
+      },
+    ],
+  });
+
+  assert.match(html, /<details class="section tree-section requests" >/);
+  assert.match(html, /<span class="badge completed">completed<\/span>/);
+  assert.match(html, /1 recent/);
 });
 
 test("renders model activity as a timeline with raw output preserved", () => {

@@ -39,6 +39,7 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
   <main>
     <div class="toolbar">
       <span class="title">RELEASE CONTROL</span>
+      ${renderModelBadge(state.modelSettings)}
       <button class="icon" data-action="suggestAll" title="Suggest descriptions">✧</button>
       <button class="icon" data-action="preview" title="Preview release notes">P</button>
       <button class="icon" data-action="refresh" title="Refresh repository activity">R</button>
@@ -47,61 +48,29 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
     </div>
 
     ${renderNotice(state)}
-    ${renderRequests(state.requests ?? [])}
-    ${renderSuggestions(state.suggestions)}
-
-    <section class="section">
-      <div class="section-title">DRAFT</div>
-      <input id="version" value="${escapeHtml(state.range.version ?? "Unreleased")}" placeholder="Release version">
-      <div class="range">
-        <input id="base" value="${escapeHtml(state.range.base)}" placeholder="Base tag, branch, or commit">
-        <input id="head" value="${escapeHtml(state.range.head ?? "HEAD")}" placeholder="Head">
+    <div class="layout">
+      <aside class="operations">
+        ${renderDraftPanel(state)}
+        ${renderModelPanel(state)}
+        ${renderRequests(state.requests ?? [])}
+      </aside>
+      <div class="workspace">
+        ${renderSuggestions(state.suggestions)}
+        <section class="meta">
+          <div><strong>${visibleItemCount}</strong><span>visible</span></div>
+          <div><strong>${unpublishedCount}</strong><span>unreleased</span></div>
+          <div><strong>${releasedCount}</strong><span>released</span></div>
+        </section>
+        <section class="section">
+          <div class="section-title">CHANGES</div>
+          ${sections.length ? sections.map(renderSection).join("") : `<p class="empty">Draft a release to see unreleased PRs, commits, and release-note items.</p>`}
+        </section>
+        <details class="section tree-section sources-panel">
+          <summary class="section-title">SOURCES <span>${sourceGroupCount(state.overview)} groups</span></summary>
+          ${renderSources(state.overview)}
+        </details>
       </div>
-      <button class="primary" data-action="scan">${state.busy ? "Scanning..." : "Draft Notes Between Refs"}</button>
-      <div class="split">
-        <button data-action="applyChangelog">Apply CHANGELOG</button>
-        <button data-action="applyRelease">Apply Release File</button>
-      </div>
-    </section>
-
-    <section class="meta">
-      <div><strong>${visibleItemCount}</strong><span>visible</span></div>
-      <div><strong>${unpublishedCount}</strong><span>unreleased</span></div>
-      <div><strong>${releasedCount}</strong><span>released</span></div>
-    </section>
-
-    <section class="section compact">
-      <div class="section-title">MODEL</div>
-      <button class="model" data-action="changeModel">
-        <span>${escapeHtml(state.modelSettings.provider)}</span>
-        <small>${escapeHtml(state.modelSettings.provider === "ollama" ? state.modelSettings.model : `fanout ${state.modelSettings.maxModelItems}`)}</small>
-      </button>
-      <div class="tone-row">
-        ${["release-note", "concise", "technical", "customer-facing"].map((tone) => `<button class="${state.modelSettings.suggestionTone === tone ? "selected" : ""}" data-action="setTone" data-tone="${tone}">${escapeHtml(tone)}</button>`).join("")}
-      </div>
-      <button class="telemetry-toggle" data-action="togglePromptPayloads">
-        <span>Prompt payloads</span>
-        <small>${state.modelSettings.includePromptPayloads ? "On" : "Off"}</small>
-      </button>
-      <button class="telemetry-toggle" data-action="toggleReasoningPayloads">
-        <span>Reasoning payloads</span>
-        <small>${state.modelSettings.includeReasoningPayloads ? "On" : "Off"}</small>
-      </button>
-      <button class="telemetry-toggle" data-action="togglePayloadRedaction">
-        <span>Payload redaction</span>
-        <small>${state.modelSettings.redactPayloads ? "On" : "Off"}</small>
-      </button>
-    </section>
-
-    <section class="section">
-      <div class="section-title">CHANGES</div>
-      ${sections.length ? sections.map(renderSection).join("") : `<p class="empty">Draft a release to see unreleased PRs, commits, and release-note items.</p>`}
-    </section>
-
-    <section class="section">
-      <div class="section-title">SOURCES</div>
-      ${renderSources(state.overview)}
-    </section>
+    </div>
   </main>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
@@ -151,6 +120,84 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
   </script>
 </body>
 </html>`;
+}
+
+function renderModelBadge(settings: ModelSettings): string {
+  const detail = modelDetail(settings);
+  return `<button class="model-badge" data-action="changeModel" title="${escapeHtml(detail)}" data-tooltip="${escapeHtml(detail)}">
+    <span class="model-mark">AI</span>
+    <span class="model-name">${escapeHtml(modelBadgeLabel(settings))}</span>
+  </button>`;
+}
+
+function renderDraftPanel(state: ReleaseControlRenderState): string {
+  return `<details class="section tree-section control-panel" open>
+    <summary class="section-title">DRAFT <span>${escapeHtml(state.range.version ?? "Unreleased")}</span></summary>
+    <input id="version" value="${escapeHtml(state.range.version ?? "Unreleased")}" placeholder="Release version">
+    <div class="range">
+      <input id="base" value="${escapeHtml(state.range.base)}" placeholder="Base tag, branch, or commit">
+      <input id="head" value="${escapeHtml(state.range.head ?? "HEAD")}" placeholder="Head">
+    </div>
+    <button class="primary" data-action="scan">${state.busy ? "Scanning..." : "Draft Notes Between Refs"}</button>
+    <div class="split">
+      <button data-action="applyChangelog">Apply CHANGELOG</button>
+      <button data-action="applyRelease">Apply Release File</button>
+    </div>
+  </details>`;
+}
+
+function renderModelPanel(state: ReleaseControlRenderState): string {
+  return `<details class="section tree-section control-panel">
+    <summary class="section-title">MODEL <span>${escapeHtml(state.modelSettings.provider)}</span></summary>
+    <button class="model" data-action="changeModel" title="${escapeHtml(modelDetail(state.modelSettings))}">
+      <span>${escapeHtml(state.modelSettings.provider)}</span>
+      <small>${escapeHtml(state.modelSettings.provider === "ollama" ? state.modelSettings.model : `fanout ${state.modelSettings.maxModelItems}`)}</small>
+    </button>
+    <div class="tone-row">
+      ${["release-note", "concise", "technical", "customer-facing"].map((tone) => `<button class="${state.modelSettings.suggestionTone === tone ? "selected" : ""}" data-action="setTone" data-tone="${tone}">${escapeHtml(tone)}</button>`).join("")}
+    </div>
+    <button class="telemetry-toggle" data-action="togglePromptPayloads">
+      <span>Prompt payloads</span>
+      <small>${state.modelSettings.includePromptPayloads ? "On" : "Off"}</small>
+    </button>
+    <button class="telemetry-toggle" data-action="toggleReasoningPayloads">
+      <span>Reasoning payloads</span>
+      <small>${state.modelSettings.includeReasoningPayloads ? "On" : "Off"}</small>
+    </button>
+    <button class="telemetry-toggle" data-action="togglePayloadRedaction">
+      <span>Payload redaction</span>
+      <small>${state.modelSettings.redactPayloads ? "On" : "Off"}</small>
+    </button>
+  </details>`;
+}
+
+function modelBadgeLabel(settings: ModelSettings): string {
+  if (settings.provider === "ollama") {
+    return settings.model || "Ollama";
+  }
+  if (settings.provider === "github-copilot") {
+    return "GitHub model";
+  }
+  if (settings.provider === "configured") {
+    return "Configured";
+  }
+  return settings.provider;
+}
+
+function modelDetail(settings: ModelSettings): string {
+  const providerDetail = settings.provider === "ollama"
+    ? `${settings.model} at ${settings.endpoint}`
+    : `fanout guard ${settings.maxModelItems}`;
+  return [
+    `Provider: ${settings.provider}`,
+    `Model: ${providerDetail}`,
+    `Tone: ${settings.suggestionTone}`,
+    `Suggestions: ${settings.suggestionCount}`,
+    `Streaming: ${settings.ollamaStreamResponses ? "on" : "off"}`,
+    `Prompt payloads: ${settings.includePromptPayloads ? "on" : "off"}`,
+    `Reasoning payloads: ${settings.includeReasoningPayloads ? "on" : "off"}`,
+    `Redaction: ${settings.redactPayloads ? "on" : "off"}`,
+  ].join("\n");
 }
 
 function renderSuggestions(preview: DraftSuggestionPreview | undefined): string {
@@ -254,10 +301,10 @@ function renderRequests(requests: CommandRequestSnapshot[]): string {
     return "";
   }
   const runningCount = requests.filter((request) => request.status === "running").length;
-  return `<section class="section requests">
-    <div class="section-title">REQUESTS ${runningCount ? `<span>${runningCount} running</span>` : ""}</div>
+  return `<details class="section tree-section requests" ${runningCount ? "open" : ""}>
+    <summary class="section-title">REQUESTS <span>${runningCount ? `${runningCount} running` : `${requests.length} recent`}</span></summary>
     ${requests.slice(0, 8).map(renderRequest).join("")}
-  </section>`;
+  </details>`;
 }
 
 function renderRequest(request: CommandRequestSnapshot): string {
@@ -552,6 +599,19 @@ function renderSources(overview: RepositoryOverview | undefined): string {
   return groups.length ? groups.join("") : `<p class="empty">Repository refresh succeeded, but no refs or commits were returned.</p>`;
 }
 
+function sourceGroupCount(overview: RepositoryOverview | undefined): number {
+  if (!overview) {
+    return 0;
+  }
+  return [
+    overview.commits.some((commit) => commit.prNumber !== null),
+    overview.tags.length > 0,
+    overview.branches.length > 0,
+    overview.commits.length > 0,
+    overview.releases.length > 0,
+  ].filter(Boolean).length;
+}
+
 function renderSourceGroup(title: string, refs: { label: string; ref: string; detail: string }[]): string {
   if (!refs.length) {
     return "";
@@ -586,19 +646,96 @@ function styles(): string {
       font: var(--vscode-font-size) var(--vscode-font-family);
     }
     main { padding: 8px 6px 18px; }
-    .toolbar { display: flex; align-items: center; gap: 4px; height: 24px; margin-bottom: 5px; }
-    .title { flex: 1; color: var(--vscode-sideBarTitle-foreground); font-size: 11px; text-transform: uppercase; }
+    .layout { display: grid; gap: 8px; }
+    .operations { display: grid; gap: 6px; align-content: start; }
+    .workspace { min-width: 0; }
+    @media (min-width: 620px) {
+      main { padding: 10px 10px 20px; }
+      .layout { grid-template-columns: minmax(220px, 285px) minmax(0, 1fr); align-items: start; }
+      .operations { position: sticky; top: 8px; }
+    }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      min-height: 28px;
+      margin-bottom: 8px;
+      padding: 3px 4px;
+      border-bottom: 1px solid color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 45%, transparent);
+      background: linear-gradient(90deg, color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 15%, transparent), transparent);
+    }
+    .title { flex: 1; color: var(--vscode-sideBarTitle-foreground); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+    .model-badge {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+      max-width: 42%;
+      min-height: 22px;
+      padding: 2px 6px 2px 3px;
+      color: var(--vscode-foreground);
+      background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 16%, var(--vscode-button-secondaryBackground, #2a2d2e));
+      border: 1px solid color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 38%, transparent);
+      border-radius: 999px;
+    }
+    .model-badge:hover {
+      background: color-mix(in srgb, var(--vscode-charts-green, #89d185) 20%, var(--vscode-button-secondaryHoverBackground, #3a3d41));
+    }
+    .model-badge::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      z-index: 3;
+      top: calc(100% + 6px);
+      right: 0;
+      display: none;
+      width: min(280px, 78vw);
+      padding: 7px 8px;
+      color: var(--vscode-editor-foreground);
+      background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+      border: 1px solid var(--vscode-editorWidget-border, var(--vscode-focusBorder, #3794ff));
+      box-shadow: 0 4px 16px rgba(0, 0, 0, .28);
+      white-space: pre-wrap;
+      text-align: left;
+      font-size: 11px;
+      line-height: 1.35;
+      pointer-events: none;
+    }
+    .model-badge:hover::after,
+    .model-badge:focus-visible::after {
+      display: block;
+    }
+    .model-mark {
+      display: inline-grid;
+      place-items: center;
+      width: 20px;
+      min-width: 20px;
+      height: 18px;
+      border-radius: 999px;
+      color: var(--vscode-button-foreground);
+      background: linear-gradient(135deg, var(--vscode-focusBorder, #3794ff), var(--vscode-charts-green, #89d185));
+      font-size: 9px;
+      font-weight: 700;
+    }
+    .model-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 10px;
+    }
     button {
       border: 0;
       color: var(--vscode-button-secondaryForeground);
-      background: var(--vscode-button-secondaryBackground);
+      background: color-mix(in srgb, var(--vscode-button-secondaryBackground, #2a2d2e) 88%, var(--vscode-focusBorder, #3794ff) 12%);
       min-height: 24px;
-      border-radius: 2px;
+      border-radius: 4px;
       font: inherit;
       cursor: pointer;
     }
     button:hover { background: var(--vscode-button-secondaryHoverBackground); }
     .icon { width: 24px; min-height: 22px; background: transparent; color: var(--vscode-icon-foreground); }
+    .icon:hover { color: var(--vscode-focusBorder, #3794ff); background: color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 18%, transparent); }
     .stop {
       min-height: 22px;
       padding: 0 7px;
@@ -618,8 +755,38 @@ function styles(): string {
     }
     .notice.error { border-left-color: var(--vscode-errorForeground); color: var(--vscode-errorForeground); }
     .section { margin-bottom: 10px; }
-    .section-title { margin: 0 0 5px; color: var(--vscode-sideBarSectionHeader-foreground); font-weight: 600; font-size: 11px; text-transform: uppercase; }
-    .section-title span { float: right; color: var(--vscode-descriptionForeground); font-weight: 400; }
+    .tree-section {
+      padding: 4px 5px 6px;
+      border-left: 2px solid color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 70%, var(--vscode-sideBarSectionHeader-border, transparent));
+      background: color-mix(in srgb, var(--vscode-input-background, #1f1f1f) 70%, transparent);
+    }
+    .control-panel {
+      border-left-color: color-mix(in srgb, var(--vscode-charts-green, #89d185) 68%, var(--vscode-focusBorder, #3794ff));
+    }
+    .sources-panel {
+      border-left-color: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 72%, var(--vscode-focusBorder, #3794ff));
+    }
+    .section-title {
+      margin: 0 0 5px;
+      color: var(--vscode-sideBarSectionHeader-foreground);
+      font-weight: 700;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+    .section-title span { float: right; color: var(--vscode-descriptionForeground); font-weight: 400; text-transform: none; }
+    summary.section-title {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      margin: 0 0 5px;
+      padding: 3px 2px;
+      border-radius: 4px;
+      list-style-position: inside;
+    }
+    summary.section-title:hover { background: color-mix(in srgb, var(--vscode-list-hoverBackground, #2a2d2e) 70%, transparent); }
+    summary.section-title span { float: none; margin-left: auto; }
+    summary::marker { color: var(--vscode-focusBorder, #3794ff); }
     input {
       width: 100%;
       border: 1px solid var(--vscode-input-border, transparent);
@@ -628,22 +795,28 @@ function styles(): string {
       padding: 4px 6px;
       outline: none;
       font: inherit;
-      border-radius: 2px;
+      border-radius: 4px;
       margin-bottom: 5px;
     }
     .range { display: grid; grid-template-columns: 1fr 76px; gap: 5px; }
-    .primary { width: 100%; color: var(--vscode-button-foreground); background: var(--vscode-button-background); margin-bottom: 5px; }
+    .primary { width: 100%; color: var(--vscode-button-foreground); background: var(--vscode-button-background); margin-bottom: 5px; box-shadow: inset 3px 0 0 color-mix(in srgb, var(--vscode-charts-green, #89d185) 75%, transparent); }
     .primary:hover { background: var(--vscode-button-hoverBackground); }
     .split { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
-    .meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin: 10px 0; }
-    .meta div { border-top: 1px solid var(--vscode-sideBarSectionHeader-border, transparent); padding-top: 5px; }
-    .meta strong { display: block; font-size: 15px; }
+    .meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin: 0 0 10px; }
+    .meta div {
+      border-top: 2px solid color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 45%, var(--vscode-sideBarSectionHeader-border, transparent));
+      padding: 6px 5px 5px;
+      background: color-mix(in srgb, var(--vscode-input-background, #1f1f1f) 65%, transparent);
+    }
+    .meta div:nth-child(2) { border-top-color: color-mix(in srgb, var(--vscode-charts-green, #89d185) 70%, var(--vscode-focusBorder, #3794ff)); }
+    .meta div:nth-child(3) { border-top-color: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 75%, var(--vscode-focusBorder, #3794ff)); }
+    .meta strong { display: block; font-size: 15px; color: var(--vscode-foreground); }
     .meta span, small, .item-meta, .empty { color: var(--vscode-descriptionForeground); font-size: 11px; }
     .model, .telemetry-toggle { width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 4px 6px; text-align: left; }
     .telemetry-toggle { margin-top: 4px; }
     .tone-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; margin-top: 5px; }
     .tone-row button { min-height: 22px; padding: 3px 4px; font-size: 10px; overflow-wrap: anywhere; }
-    .tone-row .selected { outline: 1px solid var(--vscode-focusBorder); }
+    .tone-row .selected { outline: 1px solid var(--vscode-focusBorder, #3794ff); background: color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 22%, var(--vscode-button-secondaryBackground, #2a2d2e)); }
     details { margin-bottom: 4px; }
     summary { cursor: pointer; padding: 3px 0; font-weight: 600; text-transform: uppercase; font-size: 11px; }
     summary span { color: var(--vscode-descriptionForeground); margin-left: 3px; }
@@ -666,12 +839,34 @@ function styles(): string {
     .item-head { display: flex; gap: 6px; align-items: baseline; }
     .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .badge { color: var(--vscode-descriptionForeground); font-size: 10px; }
+    .request .badge {
+      padding: 1px 5px;
+      border-radius: 999px;
+      color: var(--vscode-descriptionForeground);
+      background: var(--vscode-badge-background, var(--vscode-button-secondaryBackground));
+    }
+    .request .badge.running {
+      color: var(--vscode-editor-background);
+      background: var(--vscode-charts-green, #89d185);
+    }
+    .request .badge.completed {
+      color: var(--vscode-editor-background);
+      background: var(--vscode-charts-blue, #3794ff);
+    }
+    .request .badge.failed {
+      color: var(--vscode-button-foreground);
+      background: var(--vscode-errorForeground);
+    }
+    .request .badge.cancelled {
+      color: var(--vscode-editor-background);
+      background: var(--vscode-charts-yellow, #cca700);
+    }
     .item p { margin: 3px 0; color: var(--vscode-descriptionForeground); line-height: 1.35; }
     .actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-top: 5px; }
     .actions button { min-height: 22px; font-size: 11px; }
-    .suggestions { border-left: 2px solid var(--vscode-focusBorder); padding-left: 6px; }
+    .suggestions { border-left: 2px solid var(--vscode-focusBorder, #3794ff); padding-left: 6px; background: color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 8%, transparent); }
     .suggestion { padding: 6px 0; border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.18)); }
-    .requests { border-left: 2px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.28)); padding-left: 6px; }
+    .requests { border-left-color: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 65%, var(--vscode-focusBorder, #3794ff)); }
     .request { border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.18)); padding: 4px 0; }
     .request summary { display: flex; align-items: center; gap: 5px; text-transform: none; }
     .request-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -692,7 +887,7 @@ function styles(): string {
       gap: 5px;
       padding: 3px 4px;
       border-left: 2px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.24));
-      background: var(--vscode-input-background);
+      background: color-mix(in srgb, var(--vscode-input-background, #1f1f1f) 88%, var(--vscode-focusBorder, #3794ff) 12%);
     }
     .activity li.model { border-left-color: var(--vscode-focusBorder); }
     .activity time { color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; }
