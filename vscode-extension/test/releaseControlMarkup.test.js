@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { buildReleaseActivityHtml, buildReleaseControlHtml } = require("../dist/webview/releaseControlMarkup");
+const { buildReleaseActivityHtml, buildReleaseControlHtml, buildReleaseReleasesHtml } = require("../dist/webview/releaseControlMarkup");
 const manifest = require("../package.json");
 
 const modelSettings = {
@@ -54,6 +54,7 @@ test("renders prompt payload telemetry toggle in the model panel", () => {
   assert.match(disabledHtml, /data-action="togglePromptPayloads"/);
   assert.match(disabledHtml, /data-action="toggleReasoningPayloads"/);
   assert.match(disabledHtml, /data-action="togglePayloadRedaction"/);
+  assert.match(disabledHtml, /class="section tree-section model-panel"/);
   assert.match(disabledHtml, /Prompt payloads/);
   assert.match(disabledHtml, /Reasoning payloads/);
   assert.match(disabledHtml, /Payload redaction/);
@@ -100,18 +101,112 @@ test("renders repository sources as clickable data in the release control view",
   });
 
   assert.match(html, /Repository activity loaded: 1 recent commit/);
-  assert.match(html, /RELEASES/);
-  assert.match(html, /SOURCES/);
+  assert.match(html, /<details class="section tree-section sources-panel" id="sources-panel">/);
+  assert.match(html, /SOURCE SELECTION/);
   assert.match(html, /data-action="openSources"/);
+  assert.match(html, /<details class="source-dropdown" id="source-picker">/);
+  assert.doesNotMatch(html, /<details class="source-dropdown" id="source-picker" open>/);
+  assert.match(html, /data-action="closeSources"/);
   assert.match(html, /PRs From Commits/);
   assert.match(html, /Recent Commits/);
   assert.match(html, /Add release control UX/);
-  assert.match(html, /data-action="useBase" data-ref="f954ba2"/);
+  assert.match(html, /class="pr-toggle" type="checkbox" data-ref="f954ba2" data-refs="f954ba2"/);
+  assert.match(html, /class="source-toggle" type="checkbox" data-ref="f954ba2" data-refs="f954ba2"/);
   assert.match(html, /data-action="useHead" data-ref="f954ba2"/);
+  assert.match(html, /\.source-row\.auto-selected-source/);
+  assert.match(html, /auto-selected-chip/);
+  assert.match(html, /<span class="source-state"><\/span>/);
+});
+
+test("places all release control sections in one left stack", () => {
+  const html = buildReleaseControlHtml({
+    modelSettings,
+    range,
+    busy: false,
+    overview: {
+      branches: [],
+      tags: [],
+      commits: [],
+      releases: [],
+      unpublishedCount: 0,
+    },
+  });
+  const operations = html.match(/<aside class="operations">([\s\S]*?)<\/aside>/)?.[1] ?? "";
+  const metaIndex = operations.indexOf('class="meta"');
+  const changesIndex = operations.indexOf('id="changes-panel"');
+  const sourcesIndex = operations.indexOf('id="sources-panel"');
+  const modelIndex = operations.indexOf('class="section tree-section model-panel"');
+  const releasesIndex = operations.indexOf('id="releases-panel"');
+
+  assert.doesNotMatch(html, /class="workspace"/);
+  assert.ok(metaIndex > -1);
+  assert.ok(changesIndex > metaIndex);
+  assert.ok(sourcesIndex > changesIndex);
+  assert.ok(modelIndex > sourcesIndex);
+  assert.ok(releasesIndex > modelIndex);
+});
+
+test("renders draft range refs as selections and excludes released commits", () => {
+  const html = buildReleaseControlHtml({
+    modelSettings,
+    range: { base: "v1.0.0", head: "HEAD", version: "Unreleased" },
+    busy: false,
+    overview: {
+      branches: [{ name: "main", detail: "abc1234" }],
+      tags: [{ name: "v1.0.0", detail: "2026-05-01" }],
+      commits: [
+        { sha: "abc1234", subject: "Unreleased work", author: "alice", prNumber: 12, release: null },
+        { sha: "bbb2222", subject: "Earlier unreleased work", author: "alice", prNumber: 12, release: null },
+        { sha: "def5678", subject: "Already shipped", author: "bob", prNumber: 10, release: "v0.9.0" },
+      ],
+      releases: [],
+      unpublishedCount: 1,
+    },
+  });
+
+  assert.match(html, /<vscode-multi-select id="base" combobox filter="contains" position="below"/);
+  assert.doesNotMatch(html, /<select id="base"/);
+  assert.match(html, /<select id="head"/);
+  assert.doesNotMatch(html, /<input id="base"/);
+  assert.doesNotMatch(html, /<input id="head"/);
+  assert.match(html, /<vscode-option value="abc1234" description="Pull requests" data-related-refs="abc1234,bbb2222">PR #12 - 2 commit\(s\)<\/vscode-option>/);
+  assert.match(html, /function expandRelatedRefs\(control, refs\)/);
+  assert.match(html, /expandRelatedRefs\(base, manualRefs\)\.forEach/);
+  assert.match(html, /class="source-toggle" type="checkbox" data-ref="main" data-refs="main,abc1234,bbb2222"/);
+  assert.match(html, /class="source-toggle" type="checkbox" data-ref="abc1234" data-refs="abc1234,bbb2222"/);
+  assert.match(html, /class="source-toggle" type="checkbox" data-ref="bbb2222" data-refs="bbb2222" data-unselect-refs="abc1234,bbb2222"/);
+  assert.doesNotMatch(html, /def5678 - Already shipped/);
+});
+
+test("allows an intentionally empty base selection", () => {
+  const html = buildReleaseControlHtml({
+    modelSettings,
+    range: { base: "v1.0.0", head: "HEAD", version: "Unreleased" },
+    busy: false,
+    overview: {
+      branches: [],
+      tags: [{ name: "v1.0.0", detail: "2026-05-01" }],
+      commits: [],
+      releases: [],
+      unpublishedCount: 0,
+    },
+  });
+
+  assert.match(html, /baseSelectionTouched === true/);
+  assert.match(html, /return selected\[selected\.length - 1\] \|\| currentValue \|\| '';/);
+  assert.doesNotMatch(html, /ensureSelection\(base/);
+});
+
+test("loads VSCode Elements bundle when a webview asset URI is provided", () => {
+  const html = buildReleaseControlHtml({ modelSettings, range, busy: false }, {
+    webviewElementsScriptUri: "vscode-resource:/extension/media/vendor/vscode-elements.bundled.js",
+  });
+
+  assert.match(html, /<script type="module" nonce="\d+" src="vscode-resource:\/extension\/media\/vendor\/vscode-elements\.bundled\.js"><\/script>/);
 });
 
 test("renders releases as a dedicated sub-panel with notes, commits, and suggestions", () => {
-  const html = buildReleaseControlHtml({
+  const html = buildReleaseReleasesHtml({
     modelSettings,
     range,
     busy: false,
@@ -179,6 +274,8 @@ test("renders releases as a dedicated sub-panel with notes, commits, and suggest
   });
 
   assert.match(html, /id="releases-panel"/);
+  assert.match(html, /<details class="section tree-section releases-panel" id="releases-panel" open>/);
+  assert.match(buildReleaseControlHtml({ modelSettings, range, busy: false }), /id="releases-panel"/);
   assert.match(html, /data-release-state="unreleased"/);
   assert.match(html, /Release Note/);
   assert.match(html, /## Unreleased/);
@@ -249,7 +346,7 @@ test("renders scanner errors in the view", () => {
 });
 
 test("renders suggestion actions and review variants", () => {
-  const html = buildReleaseControlHtml({
+  const state = {
     modelSettings,
     range,
     busy: false,
@@ -300,10 +397,12 @@ test("renders suggestion actions and review variants", () => {
         },
       ],
     },
-  });
+  };
+  const controlHtml = buildReleaseControlHtml(state);
+  const html = buildReleaseReleasesHtml(state);
 
-  assert.match(html, /data-action="suggestAll"/);
-  assert.match(html, /data-action="suggest" data-item="ci_1"/);
+  assert.match(controlHtml, /data-action="suggestAll"/);
+  assert.match(controlHtml, /data-action="suggest" data-item="ci_1"/);
   assert.match(html, /SUGGESTIONS/);
   assert.match(html, /Current/);
   assert.match(html, /Suggested/);
@@ -596,12 +695,14 @@ test("contributes focused ReleasePilot views and optional walkthrough", () => {
 
   assert.deepEqual(views.map((view) => view.id), [
     "releasepilot.control",
+    "releasepilot.releases",
     "releasepilot.activity",
     "releasepilot.sources",
   ]);
   assert.equal(views[0].contextualTitle, "ReleasePilot Control");
-  assert.equal(views[1].contextualTitle, "ReleasePilot Activity");
-  assert.equal(views[2].contextualTitle, "ReleasePilot Sources");
+  assert.equal(views[1].contextualTitle, "ReleasePilot Releases");
+  assert.equal(views[2].contextualTitle, "ReleasePilot Activity");
+  assert.equal(views[3].contextualTitle, "ReleasePilot Sources");
   assert.equal(manifest.contributes.configuration.properties["releasepilot.notifications.successLevel"].default, "visible");
   assert.deepEqual(manifest.contributes.configuration.properties["releasepilot.notifications.successLevel"].enum, [
     "visible",

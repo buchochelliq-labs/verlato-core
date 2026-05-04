@@ -25,18 +25,32 @@ export interface ReleaseActivityRenderState {
   requests: CommandRequestSnapshot[];
 }
 
-export function buildReleaseControlHtml(state: ReleaseControlRenderState): string {
+export interface ReleaseReleasesRenderState {
+  document?: DraftDocument;
+  overview?: RepositoryOverview;
+  suggestions?: DraftSuggestionPreview;
+}
+
+export interface ReleaseControlAssets {
+  webviewElementsScriptUri?: string;
+}
+
+export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets: ReleaseControlAssets = {}): string {
   const nonce = String(Date.now());
   const sections = state.document?.sections ?? [];
   const itemCount = state.document?.item_count ?? 0;
   const visibleItemCount = countVisibleItems(state.document);
   const releasedCount = state.overview?.releases.reduce((sum, release) => sum + release.itemCount, 0) ?? 0;
   const unpublishedCount = state.overview?.unpublishedCount ?? itemCount;
+  const webviewElementsScript = assets.webviewElementsScriptUri
+    ? `<script type="module" nonce="${nonce}" src="${escapeHtml(assets.webviewElementsScriptUri)}"></script>`
+    : "";
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  ${webviewElementsScript}
   <style>${styles()}</style>
 </head>
 <body>
@@ -54,9 +68,6 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
     <div class="layout">
       <aside class="operations">
         ${renderDraftPanel(state)}
-        ${renderModelPanel(state)}
-      </aside>
-      <div class="workspace">
         <section class="meta" aria-label="Release item filters">
           <button class="meta-card" data-action="filterItems" data-filter="visible" title="Show visible draft items">
             <strong>${visibleItemCount}</strong><span>visible</span>
@@ -68,16 +79,23 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
             <strong>${releasedCount}</strong><span>released</span>
           </button>
         </section>
-        ${renderReleasesPanel(state)}
         <section class="section changes-panel" id="changes-panel">
           <div class="section-title">CHANGES</div>
           ${sections.length ? sections.map(renderSection).join("") : `<p class="empty">Draft a release to see unreleased PRs, commits, and release-note items.</p>`}
         </section>
-        <section class="section tree-section sources-panel" id="sources-panel">
-          <div class="section-title">SOURCES <button class="inline-action" data-action="openSources">Open View</button></div>
+        <details class="section tree-section sources-panel" id="sources-panel">
+          <summary class="section-title">SOURCE SELECTION <span>Base refs</span></summary>
+          <button class="inline-action panel-action" data-action="openSources">Open View</button>
+          <div class="selection-summary" id="base-selection-summary">
+            <strong>Base selection</strong>
+            <span id="base-selection-count">0 selected</span>
+          </div>
+          <div class="selection-list" id="base-selection-list"></div>
           ${renderSources(state.overview)}
-        </section>
-      </div>
+        </details>
+        ${renderModelPanel(state)}
+        ${renderReleasesPanel(state)}
+      </aside>
     </div>
   </main>
   <script nonce="${nonce}">
@@ -86,8 +104,62 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
     const base = document.getElementById('base');
     const head = document.getElementById('head');
     const version = document.getElementById('version');
+    function optionValue(option) {
+      return option.value || option.getAttribute('value') || option.textContent.trim();
+    }
+    function selectedValues(control) {
+      if (Array.isArray(control.value)) return control.value.filter(Boolean);
+      if (control.selectedOptions) return Array.from(control.selectedOptions).map((option) => option.value).filter(Boolean);
+      const selectedCustomOptions = Array.from(control.querySelectorAll('vscode-option[selected]')).map(optionValue).filter(Boolean);
+      if (selectedCustomOptions.length) return selectedCustomOptions;
+      return control.value ? [control.value] : [];
+    }
+    function setSelectedValues(control, values) {
+      const refs = values.filter(Boolean);
+      const options = Array.from(control.querySelectorAll('option, vscode-option'));
+      options.forEach((option) => {
+        const selected = refs.includes(optionValue(option));
+        option.selected = selected;
+        option.toggleAttribute('selected', selected);
+      });
+      if (control.tagName === 'VSCODE-MULTI-SELECT') control.value = refs;
+      else if (control.tagName === 'VSCODE-SINGLE-SELECT') control.value = refs[refs.length - 1] || '';
+      else if (control.multiple) {
+        Array.from(control.options).forEach((option) => { option.selected = refs.includes(option.value); });
+      } else if (refs.length) {
+        control.value = refs[refs.length - 1];
+      }
+    }
+    function hasOption(control, ref) {
+      return Array.from(control.querySelectorAll('option, vscode-option')).some((option) => optionValue(option) === ref);
+    }
+    function relatedRefsFor(control, ref) {
+      const option = Array.from(control.querySelectorAll('option, vscode-option')).find((candidate) => optionValue(candidate) === ref);
+      const relatedRefs = option?.dataset.relatedRefs || '';
+      return relatedRefs.split(',').filter(Boolean);
+    }
+    function expandRelatedRefs(control, refs) {
+      const expanded = [];
+      const seen = new Set();
+      const queue = refs.filter(Boolean);
+      while (queue.length) {
+        const ref = queue.shift();
+        if (!ref || seen.has(ref)) continue;
+        seen.add(ref);
+        expanded.push(ref);
+        relatedRefsFor(control, ref).forEach((relatedRef) => {
+          if (!seen.has(relatedRef)) queue.push(relatedRef);
+        });
+      }
+      return expanded;
+    }
+    function selectedRangeBase() {
+      const selected = selectedValues(base);
+      const currentValue = Array.isArray(base.value) ? base.value[base.value.length - 1] : base.value;
+      return selected[selected.length - 1] || currentValue || '';
+    }
     function syncRange() {
-      vscode.postMessage({ type: 'setRange', base: base.value, head: head.value, version: version.value });
+      vscode.postMessage({ type: 'setRange', base: selectedRangeBase(), head: head.value, version: version.value });
     }
     [base, head, version].forEach((input) => input.addEventListener('input', syncRange));
     document.addEventListener('click', (event) => {
@@ -100,7 +172,7 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
         document.body.dataset.filter = filter;
         document.querySelectorAll('.meta-card').forEach((card) => card.classList.toggle('active', card.dataset.filter === filter));
         const target = filter === 'released' || filter === 'unreleased' ? document.getElementById('releases-panel') : document.getElementById('changes-panel');
-        target?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        target?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
         vscode.setState({ ...getStoredState(), releaseFilter: filter });
       }
       if (action === 'scan') vscode.postMessage({ type: 'scan' });
@@ -108,6 +180,10 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
       if (action === 'preview') vscode.postMessage({ type: 'preview' });
       if (action === 'refresh') vscode.postMessage({ type: 'refresh' });
       if (action === 'openSources') vscode.postMessage({ type: 'openSources' });
+      if (action === 'closeSources') {
+        const picker = document.getElementById('source-picker');
+        if (picker) picker.open = false;
+      }
       if (action === 'cancel') vscode.postMessage({ type: 'cancel' });
       if (action === 'cancelRequest') vscode.postMessage({ type: 'cancelRequest', requestId: Number(button.dataset.request) });
       if (action === 'changeModel') vscode.postMessage({ type: 'changeModel' });
@@ -135,11 +211,131 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
       if (action === 'feedbackPositive') vscode.postMessage({ type: 'feedbackPositive', itemId: button.dataset.item });
       if (action === 'feedbackNegative') vscode.postMessage({ type: 'feedbackNegative', itemId: button.dataset.item });
     });
+    const storedState = getStoredState();
+    const storedBaseRefs = storedState.selectedBaseRefs || [];
+    const storedManualBaseRefs = storedState.manualBaseRefs || [];
+    const hasStoredBaseSelection = storedState.baseSelectionTouched === true;
+    const initialBaseRefs = selectedValues(base);
+    const selectedBaseRefs = new Set(hasStoredBaseSelection ? storedBaseRefs : expandRelatedRefs(base, initialBaseRefs));
+    const manualBaseRefs = new Set(hasStoredBaseSelection ? storedManualBaseRefs : initialBaseRefs);
+    function setBaseSelection(ref, selected, manual) {
+      if (!ref) return;
+      if (selected) selectedBaseRefs.add(ref);
+      else {
+        selectedBaseRefs.delete(ref);
+        manualBaseRefs.delete(ref);
+      }
+      if (manual) {
+        if (selected) manualBaseRefs.add(ref);
+        else manualBaseRefs.delete(ref);
+      }
+    }
+    function syncBaseSelection() {
+      document.querySelectorAll('.source-toggle[data-ref]').forEach((input) => {
+        input.checked = selectedBaseRefs.has(input.dataset.ref);
+      });
+      document.querySelectorAll('.pr-toggle[data-refs]').forEach((input) => {
+        const refs = input.dataset.refs.split(',').filter(Boolean);
+        input.checked = refs.length > 0 && refs.every((ref) => selectedBaseRefs.has(ref));
+        input.indeterminate = refs.some((ref) => selectedBaseRefs.has(ref)) && !input.checked;
+      });
+      document.querySelectorAll('.source-row[data-ref]').forEach((row) => {
+        const ref = row.dataset.ref;
+        const isSelected = selectedBaseRefs.has(ref);
+        const isAutoSelected = isSelected && !manualBaseRefs.has(ref);
+        row.classList.toggle('selected-source', isSelected);
+        row.classList.toggle('auto-selected-source', isAutoSelected);
+        const state = row.querySelector('.source-state');
+        if (state) {
+          state.textContent = isAutoSelected ? 'auto-selected' : isSelected ? 'selected' : '';
+        }
+      });
+      const refs = Array.from(selectedBaseRefs);
+      const autoRefs = refs.filter((ref) => !manualBaseRefs.has(ref));
+      const selectedRefs = refs.filter((ref) => hasOption(base, ref));
+      setSelectedValues(base, selectedRefs.length ? selectedRefs : refs);
+      const count = document.getElementById('base-selection-count');
+      const list = document.getElementById('base-selection-list');
+      const autoLabel = autoRefs.length ? ' | ' + autoRefs.length + ' auto-selected' : '';
+      if (count) count.textContent = (refs.length === 1 ? '1 selected' : refs.length + ' selected') + autoLabel;
+      if (list) {
+        list.textContent = '';
+        refs.slice(0, 8).forEach((ref) => {
+          const chip = document.createElement('span');
+          chip.textContent = ref;
+          chip.classList.toggle('auto-selected-chip', !manualBaseRefs.has(ref));
+          list.appendChild(chip);
+        });
+      }
+      const sourcePickerCount = document.getElementById('source-picker-count');
+      const sourcePickerLabel = document.getElementById('source-picker-label');
+      if (sourcePickerCount) sourcePickerCount.textContent = (refs.length === 1 ? '1 selected' : refs.length + ' selected') + autoLabel;
+      if (sourcePickerLabel) sourcePickerLabel.textContent = refs[refs.length - 1] || 'Select sources';
+      vscode.setState({ ...getStoredState(), selectedBaseRefs: refs, manualBaseRefs: Array.from(manualBaseRefs), baseSelectionTouched: true });
+      syncRange();
+    }
+    document.addEventListener('change', (event) => {
+      const input = event.target;
+      if (!(input instanceof HTMLInputElement)) return;
+      if (input.classList.contains('source-toggle')) {
+        const refs = (input.checked ? input.dataset.refs : input.dataset.unselectRefs || input.dataset.refs || input.dataset.ref || '').split(',').filter(Boolean);
+        refs.forEach((ref) => setBaseSelection(ref, input.checked, ref === input.dataset.ref));
+        syncBaseSelection();
+      }
+      if (input.classList.contains('pr-toggle')) {
+        const refs = (input.checked ? input.dataset.refs : input.dataset.unselectRefs || input.dataset.refs).split(',').filter(Boolean);
+        refs.forEach((ref) => setBaseSelection(ref, input.checked, false));
+        syncBaseSelection();
+      }
+    });
+    base.addEventListener('change', () => {
+      selectedBaseRefs.clear();
+      manualBaseRefs.clear();
+      const manualRefs = selectedValues(base);
+      const manualRefSet = new Set(manualRefs);
+      expandRelatedRefs(base, manualRefs).forEach((ref) => setBaseSelection(ref, true, manualRefSet.has(ref)));
+      syncBaseSelection();
+    });
     const restoredFilter = getStoredState().releaseFilter;
     if (restoredFilter) {
       document.body.dataset.filter = restoredFilter;
       document.querySelectorAll('.meta-card').forEach((card) => card.classList.toggle('active', card.dataset.filter === restoredFilter));
     }
+    syncBaseSelection();
+  </script>
+</body>
+</html>`;
+}
+
+export function buildReleaseReleasesHtml(state: ReleaseReleasesRenderState): string {
+  const nonce = String(Date.now());
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>${styles()}</style>
+</head>
+<body>
+  <main>
+    ${renderReleasesPanel(state)}
+  </main>
+  <script nonce="${nonce}">
+    const vscode = acquireVsCodeApi();
+    ${scrollStateScript()}
+    document.addEventListener('click', (event) => {
+      const button = event.target.closest('button');
+      if (!button) return;
+      const action = button.dataset.action;
+      if (action === 'useBase') vscode.postMessage({ type: 'useRef', ref: button.dataset.ref, slot: 'base' });
+      else if (action === 'useHead') vscode.postMessage({ type: 'useRef', ref: button.dataset.ref, slot: 'head' });
+      else if (action === 'copyText') {
+        const block = button.closest('details')?.querySelector('pre');
+        vscode.postMessage({ type: 'copyText', text: block?.textContent || '', label: button.dataset.copyLabel || 'payload' });
+      } else {
+        vscode.postMessage({ type: 'openControl' });
+      }
+    });
   </script>
 </body>
 </html>`;
@@ -192,8 +388,18 @@ function renderDraftPanel(state: ReleaseControlRenderState): string {
     <summary class="section-title">DRAFT <span>${escapeHtml(state.range.version ?? "Unreleased")}</span></summary>
     <input id="version" value="${escapeHtml(state.range.version ?? "Unreleased")}" placeholder="Release version">
     <div class="range">
-      <input id="base" value="${escapeHtml(state.range.base)}" placeholder="Base tag, branch, or commit">
-      <input id="head" value="${escapeHtml(state.range.head ?? "HEAD")}" placeholder="Head">
+      <div class="select-field">
+        <vscode-label for="base">Base</vscode-label>
+        <vscode-multi-select id="base" combobox filter="contains" position="below" title="Choose one or more release base refs">
+          ${renderVscodeRefOptions(state, "base")}
+        </vscode-multi-select>
+      </div>
+      <div class="select-field">
+        <span>Head</span>
+        <select id="head" title="Choose the release head ref">
+          ${renderNativeRefOptions(state, "head")}
+        </select>
+      </div>
     </div>
     <button class="primary" data-action="scan">${state.busy ? "Scanning..." : "Draft Notes Between Refs"}</button>
     <div class="split">
@@ -203,8 +409,96 @@ function renderDraftPanel(state: ReleaseControlRenderState): string {
   </details>`;
 }
 
+function refOptionsForState(state: ReleaseControlRenderState, slot: "base" | "head"): { value: string; label: string; group: string; relatedRefs: string[]; selected: boolean }[] {
+  const current = slot === "base" ? state.range.base : state.range.head ?? "HEAD";
+  const options = releaseRefOptions(state.overview, slot);
+  const hasCurrent = options.some((option) => option.value === current);
+  return [
+    ...(!hasCurrent ? [{ value: current, label: `${current} (current)`, group: "Current", relatedRefs: [current] }] : []),
+    ...options,
+  ].map((option) => ({ ...option, selected: option.value === current }));
+}
+
+function renderNativeRefOptions(state: ReleaseControlRenderState, slot: "base" | "head"): string {
+  const rendered = refOptionsForState(state, slot);
+  return rendered.map((option, index, all) => {
+    const previous = all[index - 1];
+    const next = all[index + 1];
+    const openGroup = previous?.group !== option.group ? `<optgroup label="${escapeHtml(option.group)}">` : "";
+    const closeGroup = next?.group !== option.group ? "</optgroup>" : "";
+    return `${openGroup}<option value="${escapeHtml(option.value)}" data-related-refs="${escapeHtml(option.relatedRefs.join(","))}"${option.selected ? " selected" : ""}>${escapeHtml(option.label)}</option>${closeGroup}`;
+  }).join("");
+}
+
+function renderVscodeRefOptions(state: ReleaseControlRenderState, slot: "base" | "head"): string {
+  const rendered = refOptionsForState(state, slot);
+  return rendered.map((option) => {
+    const description = option.group === "Current" ? "current" : option.group;
+    return `<vscode-option value="${escapeHtml(option.value)}" description="${escapeHtml(description)}" data-related-refs="${escapeHtml(option.relatedRefs.join(","))}"${option.selected ? " selected" : ""}>${escapeHtml(option.label)}</vscode-option>`;
+  }).join("");
+}
+
+function releaseRefOptions(
+  overview: RepositoryOverview | undefined,
+  slot: "base" | "head",
+): { value: string; label: string; group: string; relatedRefs: string[] }[] {
+  const options: { value: string; label: string; group: string; relatedRefs: string[] }[] = [];
+  if (slot === "head") {
+    options.push({ value: "HEAD", label: "HEAD", group: "Heads", relatedRefs: ["HEAD"] });
+  }
+  if (!overview) {
+    if (slot === "base") {
+      options.push({ value: "HEAD~10", label: "HEAD~10", group: "Base refs", relatedRefs: ["HEAD~10"] });
+    }
+    return options;
+  }
+  const unreleasedCommits = overview.commits.filter((commit) => commit.release === null);
+  if (slot === "base") {
+    options.push(...overview.tags.map((tag) => ({
+      value: tag.name,
+      label: tag.detail ? `${tag.name} - ${tag.detail}` : tag.name,
+      group: "Tags",
+      relatedRefs: [tag.name],
+    })));
+    options.push(...groupCommitsByPr(unreleasedCommits).map((pr) => ({
+      value: pr.commits[0].sha,
+      label: `PR #${pr.prNumber} - ${pr.commits.length === 1 ? pr.commits[0].subject : `${pr.commits.length} commit(s)`}`,
+      group: "Pull requests",
+      relatedRefs: pr.commits.map((commit) => commit.sha),
+    })));
+  }
+  options.push(...overview.branches.map((branch) => ({
+    value: branch.name,
+    label: branch.detail ? `${branch.name} - ${branch.detail}` : branch.name,
+    group: slot === "head" ? "Branches / heads" : "Branches",
+    relatedRefs: [branch.name, ...unreleasedCommits
+      .filter((commit) => Boolean(branch.detail) && commit.sha.startsWith(branch.detail ?? ""))
+      .map((commit) => commit.sha)],
+  })));
+  options.push(...unreleasedCommits.map((commit) => ({
+    value: commit.sha,
+    label: `${commit.sha} - ${commit.subject}`,
+    group: "Unreleased commits",
+    relatedRefs: [commit.sha],
+  })));
+  return dedupeRefOptions(options);
+}
+
+function dedupeRefOptions(
+  options: { value: string; label: string; group: string; relatedRefs: string[] }[],
+): { value: string; label: string; group: string; relatedRefs: string[] }[] {
+  const seen = new Set<string>();
+  return options.filter((option) => {
+    if (seen.has(option.value)) {
+      return false;
+    }
+    seen.add(option.value);
+    return true;
+  });
+}
+
 function renderModelPanel(state: ReleaseControlRenderState): string {
-  return `<details class="section tree-section control-panel">
+  return `<details class="section tree-section model-panel">
     <summary class="section-title">MODEL <span>${escapeHtml(state.modelSettings.provider)}</span></summary>
     <button class="model" data-action="changeModel" title="${escapeHtml(modelDetail(state.modelSettings))}">
       <span>${escapeHtml(state.modelSettings.provider)}</span>
@@ -289,14 +583,14 @@ function renderSuggestions(preview: DraftSuggestionPreview | undefined): string 
   </section>`;
 }
 
-function renderReleasesPanel(state: ReleaseControlRenderState): string {
+function renderReleasesPanel(state: ReleaseReleasesRenderState): string {
   const released = state.overview?.releases ?? [];
   const releaseCount = released.length + 1;
-  return `<section class="section tree-section releases-panel" id="releases-panel">
-    <div class="section-title">RELEASES <span>${releaseCount}</span></div>
+  return `<details class="section tree-section releases-panel" id="releases-panel" open>
+    <summary class="section-title">RELEASES <span>${releaseCount}</span></summary>
     ${renderUnreleasedRelease(state.document, state.suggestions, state.overview)}
     ${renderReleasedReleases(state.overview)}
-  </section>`;
+  </details>`;
 }
 
 function renderUnreleasedRelease(
@@ -809,45 +1103,151 @@ function renderSources(overview: RepositoryOverview | undefined): string {
   if (!overview) {
     return `<p class="empty">Refresh to load PRs, tags, branches, commits, and release associations.</p>`;
   }
-  const prs = overview.commits
-    .filter((commit) => commit.prNumber !== null)
-    .slice(0, 6)
-    .map((commit) => ({
-      label: `PR #${commit.prNumber}`,
-      ref: commit.sha,
-      detail: commit.release ? `released in ${commit.release}` : commit.subject,
-    }));
+  const unreleasedCommits = overview.commits.filter((commit) => commit.release === null);
+  const prs = groupCommitsByPr(unreleasedCommits).slice(0, 6);
   const tags = overview.tags.slice(0, 6).map((tag) => ({ label: tag.name, ref: tag.name, detail: tag.detail ?? "tag" }));
-  const branches = overview.branches.slice(0, 5).map((branch) => ({ label: branch.name, ref: branch.name, detail: branch.detail ?? "branch" }));
-  const commits = overview.commits.slice(0, 8).map((commit) => ({
+  const branches = overview.branches.slice(0, 5).map((branch) => ({
+    label: branch.name,
+    ref: branch.name,
+    detail: branch.detail ?? "branch",
+    relatedRefs: [
+      branch.name,
+      ...commitAndEarlierRefs(branch.detail ?? "", unreleasedCommits),
+    ],
+    unselectRefs: [
+      branch.name,
+      ...commitAndLaterRefs(branch.detail ?? "", unreleasedCommits),
+    ],
+  }));
+  const commits = unreleasedCommits.slice(0, 8).map((commit) => ({
     label: commit.sha,
     ref: commit.sha,
-    detail: commit.release ? `released in ${commit.release}` : commit.subject,
+    detail: commit.subject,
+    relatedRefs: commitAndEarlierRefs(commit.sha, unreleasedCommits),
+    unselectRefs: commitAndLaterRefs(commit.sha, unreleasedCommits),
   }));
   const groups = [
-    renderSourceGroup("PRs From Commits", prs),
+    renderPrSourceGroup("PRs From Commits", prs, unreleasedCommits),
     renderSourceGroup("Tags", tags),
     renderSourceGroup("Branches", branches),
     renderSourceGroup("Recent Commits", commits),
   ].filter(Boolean);
-  return groups.length ? groups.join("") : `<p class="empty">Repository refresh succeeded, but no refs or commits were returned.</p>`;
+  if (!groups.length) {
+    return `<p class="empty">Repository refresh succeeded, but no refs or commits were returned.</p>`;
+  }
+  return `<details class="source-dropdown" id="source-picker">
+    <summary>
+      <span id="source-picker-label">Select sources</span>
+      <small id="source-picker-count">0 selected</small>
+    </summary>
+    <div class="source-dropdown-menu">
+      <div class="source-table-head" aria-hidden="true">
+        <span></span>
+        <span>Ref</span>
+        <span>Detail</span>
+        <span></span>
+      </div>
+      ${groups.join("")}
+      <button class="inline-action source-done" data-action="closeSources">Done</button>
+    </div>
+  </details>`;
 }
 
-function renderSourceGroup(title: string, refs: { label: string; ref: string; detail: string }[]): string {
+function groupCommitsByPr(
+  commits: { sha: string; subject: string; prNumber: number | null; release: string | null }[],
+): { prNumber: number; commits: { sha: string; subject: string; release: string | null }[] }[] {
+  const groups = new Map<number, { prNumber: number; commits: { sha: string; subject: string; release: string | null }[] }>();
+  commits.forEach((commit) => {
+    if (commit.prNumber === null) {
+      return;
+    }
+    const group = groups.get(commit.prNumber) ?? { prNumber: commit.prNumber, commits: [] };
+    group.commits.push({ sha: commit.sha, subject: commit.subject, release: commit.release });
+    groups.set(commit.prNumber, group);
+  });
+  return Array.from(groups.values());
+}
+
+function renderPrSourceGroup(
+  title: string,
+  prs: { prNumber: number; commits: { sha: string; subject: string; release: string | null }[] }[],
+  unreleasedCommits: { sha: string }[],
+): string {
+  if (!prs.length) {
+    return "";
+  }
+  const kind = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  return `<details class="source-group" open>
+    <summary data-source-kind="${escapeHtml(kind)}">${escapeHtml(title)} <span>${prs.length}</span></summary>
+    ${prs.map((pr) => {
+      const refs = commitAndEarlierRefs(pr.commits[0].sha, unreleasedCommits).join(",");
+      const unselectRefs = commitAndLaterRefs(pr.commits[0].sha, unreleasedCommits).join(",");
+      const detail = pr.commits.length === 1 ? pr.commits[0].subject : `${pr.commits.length} commit(s)`;
+      return `<div class="source-row pr-row" data-ref="${escapeHtml(pr.commits[0].sha)}">
+        <label class="source-main source-check" title="Select PR #${pr.prNumber} and all commits in it">
+          <input class="pr-toggle" type="checkbox" data-ref="${escapeHtml(pr.commits[0].sha)}" data-refs="${escapeHtml(refs)}" data-unselect-refs="${escapeHtml(unselectRefs)}">
+          <span>${escapeHtml(`PR #${pr.prNumber}`)}</span>
+          <small>${escapeHtml(detail)} <span class="source-state"></span></small>
+        </label>
+        <button class="source-slot" data-action="useHead" data-ref="${escapeHtml(pr.commits[0].sha)}" title="Use PR tip as head ref">HEAD</button>
+      </div>
+      <div class="pr-commits">
+        ${pr.commits.map((commit) => renderSourceRow({
+          label: commit.sha,
+          ref: commit.sha,
+          detail: commit.release ? `released in ${commit.release}` : commit.subject,
+          relatedRefs: commitAndEarlierRefs(commit.sha, unreleasedCommits),
+          unselectRefs: commitAndLaterRefs(commit.sha, unreleasedCommits),
+        })).join("")}
+      </div>`;
+    }).join("")}
+  </details>`;
+}
+
+function commitAndEarlierRefs(
+  ref: string,
+  commits: { sha: string }[],
+): string[] {
+  const index = commits.findIndex((commit) => commit.sha === ref || commit.sha.startsWith(ref));
+  if (index < 0) {
+    return [];
+  }
+  return commits.slice(index).map((commit) => commit.sha);
+}
+
+function commitAndLaterRefs(
+  ref: string,
+  commits: { sha: string }[],
+): string[] {
+  const index = commits.findIndex((commit) => commit.sha === ref || commit.sha.startsWith(ref));
+  if (index < 0) {
+    return [];
+  }
+  return commits.slice(0, index + 1).map((commit) => commit.sha);
+}
+
+function renderSourceGroup(title: string, refs: { label: string; ref: string; detail: string; relatedRefs?: string[]; unselectRefs?: string[] }[]): string {
   if (!refs.length) {
     return "";
   }
   const kind = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
   return `<details class="source-group" open>
     <summary data-source-kind="${escapeHtml(kind)}">${escapeHtml(title)} <span>${refs.length}</span></summary>
-    ${refs.map((ref) => `<div class="source-row">
-      <button class="source-main" data-action="useBase" data-ref="${escapeHtml(ref.ref)}" title="Use as base ref">
-        <span>${escapeHtml(ref.label)}</span>
-        <small>${escapeHtml(ref.detail)}</small>
-      </button>
-      <button class="source-slot" data-action="useHead" data-ref="${escapeHtml(ref.ref)}" title="Use as head ref">HEAD</button>
-    </div>`).join("")}
+    ${refs.map(renderSourceRow).join("")}
   </details>`;
+}
+
+function renderSourceRow(ref: { label: string; ref: string; detail: string; relatedRefs?: string[]; unselectRefs?: string[] }): string {
+  const relatedRefs = ref.relatedRefs?.length ? ref.relatedRefs : [ref.ref];
+  const unselectRefs = ref.unselectRefs?.length ? ref.unselectRefs : relatedRefs;
+  return `<div class="source-row" data-ref="${escapeHtml(ref.ref)}">
+    <label class="source-main source-check" title="Select as base ref">
+      <input class="source-toggle" type="checkbox" data-ref="${escapeHtml(ref.ref)}" data-refs="${escapeHtml(relatedRefs.join(","))}" data-unselect-refs="${escapeHtml(unselectRefs.join(","))}">
+      <span>${escapeHtml(ref.label)}</span>
+      <small>${escapeHtml(ref.detail)} <span class="source-state"></span></small>
+    </label>
+    <button class="source-slot" data-action="useHead" data-ref="${escapeHtml(ref.ref)}" title="Use as head ref">HEAD</button>
+  </div>`;
 }
 
 function escapeHtml(value: string): string {
@@ -868,13 +1268,10 @@ function styles(): string {
       font: var(--vscode-font-size) var(--vscode-font-family);
     }
     main { padding: 8px 6px 18px; }
-    .layout { display: grid; gap: 8px; }
-    .operations { display: grid; gap: 6px; align-content: start; }
-    .workspace { min-width: 0; }
+    .layout { display: block; }
+    .operations { display: grid; gap: 6px; align-content: start; min-width: 0; }
     @media (min-width: 620px) {
       main { padding: 10px 10px 20px; }
-      .layout { grid-template-columns: minmax(220px, 285px) minmax(0, 1fr); align-items: start; }
-      .operations { position: sticky; top: 8px; }
     }
     .toolbar {
       display: flex;
@@ -985,11 +1382,17 @@ function styles(): string {
     .control-panel {
       border-left-color: color-mix(in srgb, var(--vscode-charts-green, #89d185) 68%, var(--vscode-focusBorder, #3794ff));
     }
+    .model-panel {
+      border-left-color: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 70%, var(--vscode-focusBorder, #3794ff));
+    }
     .sources-panel {
       border-left-color: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 72%, var(--vscode-focusBorder, #3794ff));
+      margin-top: 8px;
     }
     .releases-panel {
       border-left-color: color-mix(in srgb, var(--vscode-charts-green, #89d185) 62%, var(--vscode-focusBorder, #3794ff));
+      min-width: 0;
+      overflow: hidden;
     }
     .section-title {
       margin: 0 0 5px;
@@ -1012,7 +1415,8 @@ function styles(): string {
     summary.section-title:hover { background: color-mix(in srgb, var(--vscode-list-hoverBackground, #2a2d2e) 70%, transparent); }
     summary.section-title span { float: none; margin-left: auto; }
     summary::marker { color: var(--vscode-focusBorder, #3794ff); }
-    input {
+    input,
+    select {
       width: 100%;
       border: 1px solid var(--vscode-input-border, transparent);
       color: var(--vscode-input-foreground);
@@ -1023,11 +1427,39 @@ function styles(): string {
       border-radius: 4px;
       margin-bottom: 5px;
     }
-    .range { display: grid; grid-template-columns: 1fr 76px; gap: 5px; }
+    select {
+      min-height: 25px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    select[multiple] {
+      min-height: 132px;
+      overflow: auto;
+    }
+    vscode-multi-select,
+    vscode-single-select {
+      width: 100%;
+      margin-bottom: 5px;
+      --dropdown-z-index: 10;
+    }
+    .range { display: grid; grid-template-columns: minmax(0, 1fr) minmax(92px, 35%); gap: 5px; }
+    .select-field {
+      min-width: 0;
+      display: grid;
+      gap: 2px;
+    }
+    .select-field span,
+    .select-field vscode-label {
+      color: var(--vscode-descriptionForeground);
+      font-size: 10px;
+      text-transform: uppercase;
+      font-weight: 700;
+    }
     .primary { width: 100%; color: var(--vscode-button-foreground); background: var(--vscode-button-background); margin-bottom: 5px; box-shadow: inset 3px 0 0 color-mix(in srgb, var(--vscode-charts-green, #89d185) 75%, transparent); }
     .primary:hover { background: var(--vscode-button-hoverBackground); }
     .split { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
     .meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin: 0 0 10px; }
+    .operations .meta { margin-top: 10px; }
     .meta-card {
       border-top: 2px solid color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 45%, var(--vscode-sideBarSectionHeader-border, transparent));
       padding: 6px 5px 5px;
@@ -1072,6 +1504,10 @@ function styles(): string {
       padding: 1px 5px;
       font-size: 10px;
       text-transform: none;
+    }
+    .panel-action {
+      float: none;
+      margin: 0 0 5px;
     }
     .item { padding: 6px 0 7px; border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.18)); }
     .item.hidden { opacity: .58; }
@@ -1141,15 +1577,25 @@ function styles(): string {
     .release-card {
       margin: 5px 0;
       border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.18));
+      min-width: 0;
     }
     .release-card > summary {
       display: flex;
       align-items: baseline;
       gap: 6px;
       text-transform: none;
+      min-width: 0;
     }
-    .release-card > summary span { color: var(--vscode-foreground); margin-left: 0; }
+    .release-card > summary span {
+      color: var(--vscode-foreground);
+      margin-left: 0;
+      max-width: 42%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .release-card > summary small {
+      flex: 1;
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -1187,6 +1633,7 @@ function styles(): string {
       gap: 6px;
       padding: 3px 0;
       border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.12));
+      min-width: 0;
     }
     .release-row span {
       min-width: 0;
@@ -1194,7 +1641,23 @@ function styles(): string {
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .release-commit .source-main { grid-template-columns: 72px minmax(0, 1fr); }
+    .release-row small {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .release-commit .source-main {
+      display: grid;
+      grid-template-columns: minmax(46px, 64px) minmax(0, 1fr);
+      min-width: 0;
+    }
+    .release-commit.source-row {
+      grid-template-columns: minmax(0, 1fr) 45px;
+      gap: 4px;
+      padding: 2px 0;
+    }
+    .release-commit .source-main small { max-width: 100%; }
     .requests { border-left-color: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 65%, var(--vscode-focusBorder, #3794ff)); }
     .request { border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.18)); padding: 4px 0; }
     .request summary { display: flex; align-items: center; gap: 5px; text-transform: none; }
@@ -1205,6 +1668,8 @@ function styles(): string {
       padding: 5px;
       border-left: 2px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.24));
       background: color-mix(in srgb, var(--vscode-input-background, #1f1f1f) 72%, transparent);
+      min-width: 0;
+      overflow: hidden;
     }
     .command-panel { padding-top: 3px; padding-bottom: 3px; }
     .activity-panel {
@@ -1304,11 +1769,181 @@ function styles(): string {
     .skip { margin-top: 4px; min-height: 20px; font-size: 11px; }
     .suggestion-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 4px; }
     .suggestion-actions button { min-height: 20px; font-size: 11px; }
-    .source-group { margin-bottom: 2px; }
-    .source-row { display: grid; grid-template-columns: minmax(0, 1fr) 45px; gap: 4px; margin-bottom: 4px; }
-    .source-main { overflow: hidden; display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 3px 6px; text-align: left; }
-    .source-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .source-main small { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%; }
-    .source-slot { padding: 0 4px; font-size: 10px; }
+    .source-dropdown {
+      margin-top: 6px;
+    }
+    .source-dropdown > summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-height: 28px;
+      padding: 4px 7px;
+      color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+      background: var(--vscode-dropdown-background, var(--vscode-input-background));
+      border: 1px solid var(--vscode-dropdown-border, var(--vscode-input-border, transparent));
+      border-radius: 4px;
+      cursor: pointer;
+      text-transform: none;
+    }
+    .source-dropdown > summary span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 600;
+    }
+    .source-dropdown > summary small {
+      flex: 0 0 auto;
+      color: var(--vscode-descriptionForeground);
+    }
+    .source-dropdown-menu {
+      max-height: 280px;
+      overflow: auto;
+      margin-top: 4px;
+      padding: 4px;
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-input-border, transparent);
+      border-radius: 4px;
+    }
+    .source-table-head,
+    .source-row {
+      display: grid;
+      grid-template-columns: 18px minmax(96px, 24%) minmax(0, 1fr) 45px;
+      gap: 6px;
+      align-items: center;
+      min-width: 0;
+    }
+    .source-table-head {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      padding: 3px 6px;
+      color: var(--vscode-descriptionForeground);
+      background: var(--vscode-input-background);
+      border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.18));
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .source-table-head span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .source-group { margin-bottom: 3px; }
+    .source-group > summary {
+      padding: 5px 4px 3px;
+      border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.14));
+    }
+    .source-row {
+      min-height: 27px;
+      margin: 0;
+      padding: 2px 4px;
+      border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.10));
+    }
+    .source-row.selected-source {
+      background: color-mix(in srgb, var(--vscode-list-activeSelectionBackground, #04395e) 44%, transparent);
+    }
+    .source-row.auto-selected-source {
+      border-left: 2px solid var(--vscode-charts-green, #89d185);
+      background: color-mix(in srgb, var(--vscode-charts-green, #89d185) 12%, var(--vscode-list-hoverBackground, transparent));
+    }
+    .source-main {
+      display: contents;
+      min-width: 0;
+      overflow: hidden;
+      padding: 0;
+      text-align: left;
+    }
+    .source-check {
+      color: var(--vscode-button-secondaryForeground);
+      cursor: pointer;
+    }
+    .source-check:hover {
+      background: color-mix(in srgb, var(--vscode-list-hoverBackground, var(--vscode-button-secondaryHoverBackground)) 70%, transparent);
+    }
+    .source-check input {
+      width: 13px;
+      height: 13px;
+      margin: 0;
+      justify-self: start;
+    }
+    .source-main span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 600;
+    }
+    .source-main small {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--vscode-descriptionForeground);
+    }
+    .source-state {
+      display: inline-block;
+      margin-left: 4px;
+      color: var(--vscode-charts-green, #89d185);
+      font-weight: 700;
+    }
+    .source-slot {
+      min-height: 20px;
+      padding: 0 4px;
+      font-size: 10px;
+    }
+    .pr-row {
+      background: color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 8%, transparent);
+    }
+    .pr-commits {
+      margin: 0 0 6px;
+      padding: 0;
+    }
+    .pr-commits .source-row {
+      padding-left: 16px;
+      grid-template-columns: 18px minmax(84px, 23%) minmax(0, 1fr) 45px;
+    }
+    .source-done {
+      width: 100%;
+      min-height: 24px;
+      margin-top: 3px;
+    }
+    .selection-summary {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 2px 0 4px;
+      padding: 4px 5px;
+      background: var(--vscode-input-background);
+      border-left: 2px solid color-mix(in srgb, var(--vscode-charts-green, #89d185) 70%, var(--vscode-focusBorder, #3794ff));
+    }
+    .selection-summary strong {
+      font-size: 10px;
+      text-transform: uppercase;
+    }
+    .selection-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-bottom: 6px;
+    }
+    .selection-list span {
+      max-width: 100%;
+      padding: 2px 5px;
+      border-radius: 4px;
+      color: var(--vscode-foreground);
+      background: color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 18%, var(--vscode-input-background, #1f1f1f));
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 10px;
+    }
+    .selection-list span.auto-selected-chip {
+      color: var(--vscode-editor-background);
+      background: color-mix(in srgb, var(--vscode-charts-green, #89d185) 78%, var(--vscode-focusBorder, #3794ff));
+    }
   `;
 }

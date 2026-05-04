@@ -325,6 +325,8 @@ def _merge_review_state(items: list[ChangeItem]) -> list[ChangeItem]:
     for item in items:
         persisted = by_checksum.get((item.checksum_version, item.checksum)) or by_id.get(item.id)
         if persisted:
+            if persisted.published:
+                continue
             item.status = persisted.status
             item.reviewed_by = persisted.reviewed_by
             item.reviewed_at = persisted.reviewed_at

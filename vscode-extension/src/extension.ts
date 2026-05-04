@@ -6,6 +6,7 @@ import { ReleaseSourcesProvider } from "./tree/releaseSourcesProvider";
 import { ReleaseActivityViewProvider } from "./webview/releaseActivityView";
 import { PreviewPanel } from "./webview/previewPanel";
 import { ReleaseControlViewProvider } from "./webview/releaseControlView";
+import { ReleaseReleasesViewProvider } from "./webview/releaseReleasesView";
 
 export function activate(context: vscode.ExtensionContext): void {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -17,8 +18,13 @@ export function activate(context: vscode.ExtensionContext): void {
   const client = new ReleasePilotClient(workspaceFolder, context.extensionPath, output);
   const previewPanel = new PreviewPanel();
   const releaseSourcesProvider = new ReleaseSourcesProvider();
-  const releaseControlView = new ReleaseControlViewProvider(client, previewPanel, (_document, overview) => {
+  let releaseReleasesView: ReleaseReleasesViewProvider;
+  const releaseControlView = new ReleaseControlViewProvider(context.extensionUri, client, previewPanel, (document, overview, _modelSettings, suggestions) => {
     releaseSourcesProvider.refresh(overview);
+    releaseReleasesView.refresh(document, overview, suggestions);
+  });
+  releaseReleasesView = new ReleaseReleasesViewProvider((ref, slot) => {
+    releaseControlView.useRef(ref, slot);
   });
   const releaseActivityView = new ReleaseActivityViewProvider(client);
   const releaseViewState = {
@@ -40,6 +46,7 @@ export function activate(context: vscode.ExtensionContext): void {
     client,
     statusBarItem,
     vscode.window.registerWebviewViewProvider("releasepilot.control", releaseControlView),
+    vscode.window.registerWebviewViewProvider("releasepilot.releases", releaseReleasesView),
     vscode.window.registerWebviewViewProvider("releasepilot.activity", releaseActivityView),
     vscode.window.createTreeView("releasepilot.sources", { treeDataProvider: releaseSourcesProvider }),
     vscode.commands.registerCommand("releasepilot.openControl", () => {

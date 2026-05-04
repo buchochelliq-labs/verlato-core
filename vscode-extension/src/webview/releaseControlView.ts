@@ -26,12 +26,14 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   private errorMessage: string | undefined;
 
   constructor(
+    private readonly extensionUri: vscode.Uri,
     private readonly client: ReleasePilotClient,
     private readonly previewPanel: PreviewPanel,
     private readonly onDidRefresh?: (
       document?: DraftDocument,
       overview?: RepositoryOverview,
       modelSettings?: ModelSettings,
+      suggestions?: DraftSuggestionPreview,
     ) => void,
   ) {
     this.modelSettings = client.getModelSettings();
@@ -44,7 +46,12 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView;
-    webviewView.webview.options = { enableScripts: true };
+    webviewView.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [
+        vscode.Uri.joinPath(this.extensionUri, "media", "vendor"),
+      ],
+    };
     webviewView.webview.onDidReceiveMessage((message) => {
       void this.handleMessage(message as ViewMessage);
     });
@@ -64,17 +71,22 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       this.modelSettings = modelSettings;
     }
     this.render();
-    this.onDidRefresh?.(document, overview, modelSettings);
+    this.onDidRefresh?.(document, overview, modelSettings, this.suggestions);
   }
 
   getDocument(): DraftDocument | undefined {
     return this.document;
   }
 
+  useRef(ref: string, slot: "base" | "head"): void {
+    this.range = { ...this.range, [slot]: ref };
+    this.render();
+  }
+
   private async handleMessage(message: ViewMessage): Promise<void> {
     if (message.type === "setRange") {
       this.range = {
-        base: message.base || "HEAD~10",
+        base: message.base ?? "",
         head: message.head || "HEAD",
         version: message.version || "Unreleased",
       };
@@ -138,6 +150,9 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     if (message.type === "openSources") {
       await vscode.commands.executeCommand("releasepilot.sources.focus");
     }
+    if (message.type === "openReleases") {
+      await vscode.commands.executeCommand("releasepilot.releases.focus");
+    }
     if (message.type === "changeModel") {
       await vscode.commands.executeCommand("releasepilot.changeModel");
     }
@@ -165,6 +180,11 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async scan(showPreview: boolean): Promise<void> {
+    if (!this.hasSelectedBase()) {
+      this.statusMessage = "No base refs selected.";
+      this.render();
+      return;
+    }
     await this.runBusy(async () => {
       const document = await this.client.getDraft(this.range);
       const overview = await this.client.getRepositoryOverview();
@@ -205,6 +225,11 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async apply(target: "changelog" | "github-release"): Promise<void> {
+    if (!this.hasSelectedBase()) {
+      this.statusMessage = "No base refs selected.";
+      this.render();
+      return;
+    }
     await this.runBusy(async () => {
       const result = await this.client.applyDraft(this.range, target);
       await handleNotificationAction(
@@ -226,10 +251,16 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async suggest(itemId?: string): Promise<void> {
+    if (!this.hasSelectedBase()) {
+      this.statusMessage = "No base refs selected.";
+      this.render();
+      return;
+    }
     await this.runBusy(async () => {
       try {
         const suggestions = await this.client.previewDraftSuggestions(this.range, itemId);
         this.suggestions = suggestions;
+        this.onDidRefresh?.(this.document, this.overview, this.modelSettings, this.suggestions);
         const generatedCount = suggestions.items[0]?.suggestions.length ?? 0;
         this.statusMessage = itemId
           ? generatedCount === 1 ? "Generated one suggested description." : `Generated ${generatedCount} suggestions.`
@@ -246,6 +277,11 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async applySuggestion(itemId: string, suggestionIndex: number): Promise<void> {
+    if (!this.hasSelectedBase()) {
+      this.statusMessage = "No base refs selected.";
+      this.render();
+      return;
+    }
     const suggestionItem = this.suggestions?.items.find((item) => item.item_id === itemId);
     const summary = suggestionItem?.suggestions[suggestionIndex];
     if (!summary) {
@@ -289,6 +325,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     if (render) {
       this.render();
     }
+    this.onDidRefresh?.(this.document, this.overview, this.modelSettings, this.suggestions);
   }
 
   private async regenerateSuggestion(itemId: string): Promise<void> {
@@ -311,6 +348,11 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async markItem(itemId: string, status: "needs-review" | "ready" | "accepted" | "hidden"): Promise<void> {
+    if (!this.hasSelectedBase()) {
+      this.statusMessage = "No base refs selected.";
+      this.render();
+      return;
+    }
     await this.runBusy(async () => {
       await this.client.reviewDraftItem(this.range, itemId, { status });
       const document = await this.client.getDraft(this.range);
@@ -321,6 +363,11 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async openPrompt(itemId: string): Promise<void> {
+    if (!this.hasSelectedBase()) {
+      this.statusMessage = "No base refs selected.";
+      this.render();
+      return;
+    }
     await this.runBusy(async () => {
       const promptPreview = await this.client.getModelPrompt(this.range, itemId);
       await vscode.env.clipboard.writeText(promptPreview.prompt);
@@ -415,6 +462,10 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     this.render();
   }
 
+  private hasSelectedBase(): boolean {
+    return this.range.base.trim().length > 0;
+  }
+
   private render(): void {
     if (!this.view) {
       return;
@@ -429,6 +480,10 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       requests: this.requests,
       statusMessage: this.statusMessage,
       errorMessage: this.errorMessage,
+    }, {
+      webviewElementsScriptUri: this.view.webview.asWebviewUri(
+        vscode.Uri.joinPath(this.extensionUri, "media", "vendor", "vscode-elements.bundled.js"),
+      ).toString(),
     });
   }
 }

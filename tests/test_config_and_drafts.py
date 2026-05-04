@@ -20,6 +20,7 @@ from releasepilot.core.models import (
 )
 from releasepilot.providers.base import ProviderRequest, ProviderResponse
 from releasepilot.providers.stub import StubProvider
+from releasepilot.state.store import StateData, StateStore
 
 
 def _mk_item(
@@ -322,6 +323,27 @@ def test_draft_review_persists_and_overlays_review_state(monkeypatch, tmp_path: 
     assert document["sections"][0]["items"][0]["original_summary"] == "Improves login flows"
     assert document["sections"][0]["items"][0]["summary_source"].startswith("Human edited summary")
     assert "Improve login" not in document["rendered"]["github-release"]
+
+
+def test_draft_json_excludes_items_already_published_in_another_release(monkeypatch, tmp_path: Path, capsys):
+    state_path = tmp_path / "state.json"
+    published = _mk_item("ci_1")
+    published.published = True
+    published.published_in = "v1.0.0"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+    StateStore(str(state_path)).save(StateData(items=[published]))
+    monkeypatch.setattr(
+        "releasepilot.cli.main.detect_change_items",
+        lambda base, head: [_mk_item("ci_1", base_ref=base, head_ref=head)],
+    )
+
+    rc = main(["draft", "json", "--base", "v0.9.0", "--head", "HEAD", "--version", "v1.1.0"])
+
+    assert rc == 0
+    document = json.loads(capsys.readouterr().out)
+    assert document["item_count"] == 0
+    assert document["sections"] == []
 
 
 def test_draft_suggest_persists_model_summary(monkeypatch, tmp_path: Path, capsys):

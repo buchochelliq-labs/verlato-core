@@ -162,10 +162,11 @@ export class ReleasePilotClient implements vscode.Disposable {
     ]);
     const releases = summarizeReleases(state.items);
     const releaseByCommit = mapReleaseByCommit(state.items);
+    const prByCommit = mapPrByCommit(state.items);
     return {
       branches: parseRefs(branchesRaw),
       tags: parseRefs(tagsRaw),
-      commits: parseCommits(commitsRaw, releaseByCommit),
+      commits: parseCommits(commitsRaw, releaseByCommit, prByCommit),
       releases,
       unpublishedCount: state.items.filter((item) => !item.published).length,
     };
@@ -617,7 +618,7 @@ function parseRefs(raw: string): RepositoryRef[] {
     });
 }
 
-function parseCommits(raw: string, releaseByCommit: Map<string, string>): RepositoryCommit[] {
+function parseCommits(raw: string, releaseByCommit: Map<string, string>, prByCommit: Map<string, number>): RepositoryCommit[] {
   return raw
     .split(/\r?\n/)
     .filter(Boolean)
@@ -627,7 +628,7 @@ function parseCommits(raw: string, releaseByCommit: Map<string, string>): Reposi
         sha,
         subject,
         author: `${author || "unknown"}${date ? `, ${date}` : ""}`,
-        prNumber: extractPrNumber(subject),
+        prNumber: prByCommit.get(sha) ?? extractPrNumber(subject),
         release: releaseByCommit.get(sha) ?? null,
       };
     });
@@ -670,6 +671,20 @@ function mapReleaseByCommit(items: StateItem[]): Map<string, string> {
     }
     for (const sha of item.source?.commit_shas ?? []) {
       byCommit.set(sha.slice(0, 7), item.published_in);
+    }
+  }
+  return byCommit;
+}
+
+function mapPrByCommit(items: StateItem[]): Map<string, number> {
+  const byCommit = new Map<string, number>();
+  for (const item of items) {
+    if (!item.source?.pr_number) {
+      continue;
+    }
+    for (const sha of item.source.commit_shas ?? []) {
+      byCommit.set(sha, item.source.pr_number);
+      byCommit.set(sha.slice(0, 7), item.source.pr_number);
     }
   }
   return byCommit;

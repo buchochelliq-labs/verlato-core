@@ -17,6 +17,7 @@
   ],
   "activationEvents": [
     "onView:releasepilot.control",
+    "onView:releasepilot.releases",
     "onView:releasepilot.activity",
     "onView:releasepilot.sources",
     "onCommand:releasepilot.openControl",
@@ -60,6 +61,13 @@
           "id": "releasepilot.control",
           "name": "Control",
           "contextualTitle": "ReleasePilot Control",
+          "icon": "media/releasepilot.svg",
+          "type": "webview"
+        },
+        {
+          "id": "releasepilot.releases",
+          "name": "Releases",
+          "contextualTitle": "ReleasePilot Releases",
           "icon": "media/releasepilot.svg",
           "type": "webview"
         },
@@ -339,7 +347,7 @@
         },
         {
           "command": "releasepilot.refreshRepository",
-          "when": "view == releasepilot.control || view == releasepilot.sources",
+          "when": "view == releasepilot.control || view == releasepilot.releases || view == releasepilot.sources",
           "group": "navigation"
         },
         {
@@ -410,6 +418,7 @@
   "devDependencies": {
     "@types/node": "^20.16.0",
     "@types/vscode": "^1.90.0",
+    "@vscode-elements/elements": "^2.5.1",
     "typescript": "^5.6.0"
   }
 }
