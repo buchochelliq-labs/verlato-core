@@ -44,22 +44,18 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
 
 ## Next biggest ticket
 
-- [ ] Add regenerate and tone-refinement actions.
+- [ ] Explore tone presets, project vocabulary hints, banned phrases, specificity scoring, and local feedback loops.
 
 ## Detailed remaining work (current view)
 
-1. **Suggestion iteration UX**
-   - Add regenerate actions for one item and for all visible items.
-   - Add tone-refinement actions without making tone a hidden global side effect.
-   - Decide whether tone presets should live in config, workspace settings, or both.
-2. **Project language controls**
+1. **Project language controls**
    - Explore vocabulary hints, banned phrases, and project-specific release-note style guidance.
    - Add scoring or validation so generated text stays concrete and avoids vague marketing phrasing.
    - Capture lightweight local feedback that can improve future prompts without persisting sensitive payloads by default.
-3. **Service-first editor integration**
+2. **Service-first editor integration**
    - Replace remaining CLI fallback flows in the extension with a richer local service contract.
    - Add connection lifecycle states so VS Code can show when the service is starting, ready, degraded, or unavailable.
-4. **Scale and collaboration**
+3. **Scale and collaboration**
    - Add auth/session strategy for non-local or multi-client MCP transports.
    - Add an optional SQLite state backend for larger repositories and concurrent workflows.
 
@@ -83,7 +79,7 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
    - [ ] Consider a `--trace-suggestions` alias for discoverability.
    - [x] Show compact generation details in the VS Code output channel.
    - [x] Adjust VS Code copy for single-suggestion review.
-   - [ ] Add regenerate and tone-refinement actions.
+   - [x] Add regenerate and tone-refinement actions.
    - [x] Show current vs suggested summary before applying.
    - [x] Preserve advanced multi-suggestion mode.
    - [x] Store provider/model provenance for applied suggestions.
@@ -99,7 +95,8 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
    - [x] Add optional structured JSON export for model logs.
    - [ ] Add OTLP export for model logs.
    - [x] Add bad-output tests and prompt golden tests.
-   - [ ] Explore tone presets, project vocabulary hints, banned phrases, specificity scoring, and local feedback loops.
+   - [x] Add explicit tone presets for suggestion prompts.
+   - [ ] Explore project vocabulary hints, banned phrases, specificity scoring, and local feedback loops.
 4. **Confidence calibration**
    - Improve confidence scoring with richer evidence weighting and calibration tests.
 5. **State backend expansion**

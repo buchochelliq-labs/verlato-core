@@ -131,6 +131,31 @@ def test_provider_summary_prompt_supports_configurable_variants():
     assert "Release context: kind=internal, audience=internal" in prompt
     assert "Prefer concrete active verbs" in prompt
     assert "internal, docs, tests, or maintenance changes, use concise commit-like wording" in prompt
+    assert "Tone: polished release-note wording" in prompt
+
+
+def test_provider_summary_prompt_includes_requested_tone():
+    group = ChangeGroup(
+        pr=PullRequest(
+            number=7,
+            title="Improve search",
+            files=[ChangedFile(path="src/search.py", status="modified", patch="+rank API results")],
+        ),
+        commits=[Commit(sha="abc", message="feat: improve search ranking")],
+    )
+    classifier = Classifier()
+    diff = classifier.diff_builder.build(group.pr.files)
+
+    prompt = classifier._build_summary_prompt(
+        title="Improve search",
+        labels=[],
+        pr_body="",
+        diff=diff,
+        commits=group.commits,
+        tone="technical",
+    )
+
+    assert "Tone: precise engineering wording" in prompt
 
 
 def test_provider_summary_prompt_caps_changed_file_list():

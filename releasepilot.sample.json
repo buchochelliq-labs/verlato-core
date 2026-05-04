@@ -1,6 +1,7 @@
 {
   "state_path": ".releasepilot_state.json",
   "suggestion_count": 1,
+  "suggestion_tone": "release-note",
   "github": {
     "repo": "owner/repo",
     "token_env": "GITHUB_TOKEN"

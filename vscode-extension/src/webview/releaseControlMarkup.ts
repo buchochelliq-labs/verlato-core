@@ -76,6 +76,9 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
         <span>${escapeHtml(state.modelSettings.provider)}</span>
         <small>${escapeHtml(state.modelSettings.provider === "ollama" ? state.modelSettings.model : `fanout ${state.modelSettings.maxModelItems}`)}</small>
       </button>
+      <div class="tone-row">
+        ${["release-note", "concise", "technical", "customer-facing"].map((tone) => `<button class="${state.modelSettings.suggestionTone === tone ? "selected" : ""}" data-action="setTone" data-tone="${tone}">${escapeHtml(tone)}</button>`).join("")}
+      </div>
       <button class="telemetry-toggle" data-action="togglePromptPayloads">
         <span>Prompt payloads</span>
         <small>${state.modelSettings.includePromptPayloads ? "On" : "Off"}</small>
@@ -121,6 +124,7 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
       if (action === 'cancel') vscode.postMessage({ type: 'cancel' });
       if (action === 'cancelRequest') vscode.postMessage({ type: 'cancelRequest', requestId: Number(button.dataset.request) });
       if (action === 'changeModel') vscode.postMessage({ type: 'changeModel' });
+      if (action === 'setTone') vscode.postMessage({ type: 'setTone', tone: button.dataset.tone });
       if (action === 'togglePromptPayloads') vscode.postMessage({ type: 'togglePromptPayloads' });
       if (action === 'toggleReasoningPayloads') vscode.postMessage({ type: 'toggleReasoningPayloads' });
       if (action === 'togglePayloadRedaction') vscode.postMessage({ type: 'togglePayloadRedaction' });
@@ -139,6 +143,8 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
       if (action === 'suggest') vscode.postMessage({ type: 'suggest', itemId: button.dataset.item });
       if (action === 'applySuggestion') vscode.postMessage({ type: 'applySuggestion', itemId: button.dataset.item, suggestionIndex: Number(button.dataset.index) });
       if (action === 'skipSuggestion') vscode.postMessage({ type: 'skipSuggestion', itemId: button.dataset.item });
+      if (action === 'regenerateSuggestion') vscode.postMessage({ type: 'regenerateSuggestion', itemId: button.dataset.item });
+      if (action === 'regenerateAll') vscode.postMessage({ type: 'regenerateAll' });
     });
   </script>
 </body>
@@ -150,11 +156,12 @@ function renderSuggestions(preview: DraftSuggestionPreview | undefined): string 
     return "";
   }
   return `<section class="section suggestions">
-    <div class="section-title">SUGGESTIONS</div>
+    <div class="section-title">SUGGESTIONS <button class="inline-action" data-action="regenerateAll">Regenerate</button></div>
     ${preview.items.map((item) => `<article class="suggestion">
       <div class="item-head">
         <span class="name">${escapeHtml(item.title)}</span>
         <span class="badge">${escapeHtml(item.provider)}</span>
+        ${item.tone ? `<span class="badge">${escapeHtml(item.tone)}</span>` : ""}
       </div>
       ${renderSuggestionComparison(item)}
       ${renderProviderReasoning(item)}
@@ -166,7 +173,10 @@ function renderSuggestions(preview: DraftSuggestionPreview | undefined): string 
         </button>`).join("")}
       </div>
       ${renderRejectedSuggestions(item)}
-      <button class="skip" data-action="skipSuggestion" data-item="${escapeHtml(item.item_id)}">Skip</button>
+      <div class="suggestion-actions">
+        <button data-action="regenerateSuggestion" data-item="${escapeHtml(item.item_id)}">Regenerate</button>
+        <button class="skip" data-action="skipSuggestion" data-item="${escapeHtml(item.item_id)}">Skip</button>
+      </div>
     </article>`).join("")}
   </section>`;
 }
@@ -577,6 +587,9 @@ function styles(): string {
     .meta span, small, .item-meta, .empty { color: var(--vscode-descriptionForeground); font-size: 11px; }
     .model, .telemetry-toggle { width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 4px 6px; text-align: left; }
     .telemetry-toggle { margin-top: 4px; }
+    .tone-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; margin-top: 5px; }
+    .tone-row button { min-height: 22px; padding: 3px 4px; font-size: 10px; overflow-wrap: anywhere; }
+    .tone-row .selected { outline: 1px solid var(--vscode-focusBorder); }
     details { margin-bottom: 4px; }
     summary { cursor: pointer; padding: 3px 0; font-weight: 600; text-transform: uppercase; font-size: 11px; }
     summary span { color: var(--vscode-descriptionForeground); margin-left: 3px; }
@@ -584,6 +597,13 @@ function styles(): string {
       float: right;
       min-height: 16px;
       padding: 0 5px;
+      font-size: 10px;
+      text-transform: none;
+    }
+    .inline-action {
+      float: right;
+      min-height: 18px;
+      padding: 1px 5px;
       font-size: 10px;
       text-transform: none;
     }
@@ -681,6 +701,8 @@ function styles(): string {
     .evidence-row strong, .rejected-row strong { min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
     .evidence-row small, .rejected-row small { grid-column: 2; min-width: 0; overflow-wrap: anywhere; }
     .skip { margin-top: 4px; min-height: 20px; font-size: 11px; }
+    .suggestion-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 4px; }
+    .suggestion-actions button { min-height: 20px; font-size: 11px; }
     .source-group { margin-bottom: 2px; }
     .source-row { display: grid; grid-template-columns: minmax(0, 1fr) 45px; gap: 4px; margin-bottom: 4px; }
     .source-main { overflow: hidden; display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 3px 6px; text-align: left; }

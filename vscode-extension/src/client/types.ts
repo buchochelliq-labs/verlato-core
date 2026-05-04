@@ -77,6 +77,7 @@ export interface SummaryProvenance {
   provider?: string;
   model?: string;
   prompt_sha?: string;
+  tone?: string;
   suggestion_index?: number;
   similarity_to_current?: number;
   response_metadata?: Record<string, unknown>;
@@ -90,6 +91,7 @@ export interface DraftPromptPreview {
   item_id: string;
   title: string;
   provider: string;
+  tone?: string;
   prompt: string;
   prompt_budget?: Record<string, number>;
 }
@@ -127,6 +129,7 @@ export interface ModelSettings {
   ollamaTimeoutSeconds: number;
   maxModelItems: number;
   suggestionCount: number;
+  suggestionTone: string;
   includePromptPayloads: boolean;
   includeReasoningPayloads: boolean;
   redactPayloads: boolean;
@@ -140,6 +143,7 @@ export interface DraftSuggestionItem {
   current_summary: string;
   provider: string;
   prompt_sha?: string;
+  tone?: string;
   provider_metadata?: Record<string, unknown>;
   provider_reasoning?: string;
   source_evidence?: DraftSuggestionEvidence[];
@@ -174,6 +178,7 @@ export interface DraftSuggestionPreview {
   head_ref: string;
   provider: string;
   count: number;
+  tone?: string;
   items: DraftSuggestionItem[];
 }
 

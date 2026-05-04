@@ -308,6 +308,16 @@ async function changeModelSettings(
   if (suggestionCountRaw === undefined) {
     return;
   }
+  const suggestionTone = await vscode.window.showQuickPick(
+    ["release-note", "concise", "technical", "customer-facing"],
+    {
+      title: "Suggestion tone",
+      placeHolder: "Choose the writing style for generated summaries",
+    },
+  );
+  if (!suggestionTone) {
+    return;
+  }
 
   await client.updateModelSettings({
     provider,
@@ -316,6 +326,7 @@ async function changeModelSettings(
     ollamaTimeoutSeconds,
     maxModelItems: Number(maxRaw),
     suggestionCount: Number(suggestionCountRaw),
+    suggestionTone,
   });
   await client.initialize();
   treeProvider.refresh(undefined, undefined, client.getModelSettings());

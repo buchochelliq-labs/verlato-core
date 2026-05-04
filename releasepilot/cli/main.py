@@ -25,6 +25,7 @@ from releasepilot.providers.model_logging import model_payload_redaction_enabled
 from releasepilot.state.store import StateStore
 
 MODEL_PROVIDER_CHOICES = ["stub", "mock", "ollama", "github-copilot"]
+SUGGESTION_TONE_CHOICES = ["release-note", "concise", "technical", "customer-facing"]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -74,6 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     draft_suggest.add_argument("--all-visible", action="store_true")
     draft_suggest.add_argument("--preview", action="store_true")
     draft_suggest.add_argument("--count", type=int)
+    draft_suggest.add_argument("--tone", choices=SUGGESTION_TONE_CHOICES)
     draft_suggest.add_argument("--reviewer")
     draft_suggest.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Override the configured model provider.")
     draft_prompt = draft_sub.add_parser("prompt")
@@ -82,6 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     draft_prompt.add_argument("--from-latest-tag", action="store_true")
     draft_prompt.add_argument("--from-latest-published", action="store_true")
     draft_prompt.add_argument("--id", required=True)
+    draft_prompt.add_argument("--tone", choices=SUGGESTION_TONE_CHOICES)
     draft_prompt.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Optional provider hint for the previewed prompt.")
 
     render = sub.add_parser("render")
@@ -138,7 +141,7 @@ def detect_change_items(base: str, head: str, model_provider: str | None = None)
     provider = None
     if max_model_items < 0 or len(groups) <= max_model_items:
         provider = build_provider(config.provider, mode=model_provider)
-    classifier = Classifier(provider=provider)
+    classifier = Classifier(provider=provider, summary_tone=_resolve_suggestion_tone(config.suggestion_tone))
     return [item for group in groups for item in classifier.classify(group, base, head)]
 
 
@@ -249,6 +252,12 @@ def _resolve_suggestion_count(configured: int, requested: int | None = None) -> 
     return max(1, min(value, 5))
 
 
+def _resolve_suggestion_tone(configured: str, requested: str | None = None) -> str:
+    raw = requested or os.getenv("RELEASEPILOT_SUGGESTION_TONE") or configured
+    tone = (raw or "release-note").strip().lower()
+    return tone if tone in SUGGESTION_TONE_CHOICES else "release-note"
+
+
 def _merge_review_state(items: list[ChangeItem]) -> list[ChangeItem]:
     existing = _build_store().load().items
     by_checksum = {(item.checksum_version, item.checksum): item for item in existing}
@@ -341,12 +350,17 @@ def _request_draft_model_input(
     item_id: str,
     reviewer: str | None,
     model_provider: str | None = None,
+    tone: str | None = None,
 ) -> ChangeItem:
     effective_model_provider = _resolve_suggest_model_provider(model_provider)
     target_group = _find_group_for_item_id(base, head, item_id)
 
     config = _load_config()
-    provider_classifier = Classifier(provider=build_provider(config.provider, mode=effective_model_provider))
+    suggestion_tone = _resolve_suggestion_tone(config.suggestion_tone, requested=tone)
+    provider_classifier = Classifier(
+        provider=build_provider(config.provider, mode=effective_model_provider),
+        summary_tone=suggestion_tone,
+    )
     candidate = provider_classifier.classify(target_group, base, head, summary_only=True)[0]
 
     if not any(signal.startswith("provider-summary:") for signal in candidate.evidence.commit_signals):
@@ -366,6 +380,7 @@ def _request_draft_model_input(
         provider=effective_model_provider,
         model=_provider_model_from_signals(candidate.evidence.commit_signals),
         prompt_sha=None,
+        tone=suggestion_tone,
         response_metadata={},
     )
     return _persist_review_update(
@@ -385,12 +400,14 @@ def _preview_draft_model_suggestions(
     all_visible: bool,
     count: int | None,
     model_provider: str | None = None,
+    tone: str | None = None,
 ) -> dict:
     if all_visible == bool(item_id):
         raise SystemExit("Provide exactly one suggestion target: --id or --all-visible")
 
     config = _load_config()
     suggestion_count = _resolve_suggestion_count(config.suggestion_count, requested=count)
+    suggestion_tone = _resolve_suggestion_tone(config.suggestion_tone, requested=tone)
     suggestion_count_source = (
         "cli" if count is not None else "env" if os.getenv("RELEASEPILOT_SUGGESTION_COUNT") else "config"
     )
@@ -437,7 +454,7 @@ def _preview_draft_model_suggestions(
     )
 
     provider = build_provider(config.provider, mode=effective_model_provider)
-    provider_classifier = Classifier(provider=provider)
+    provider_classifier = Classifier(provider=provider, summary_tone=suggestion_tone)
 
     items = []
     for group, baseline_item in targets:
@@ -457,12 +474,14 @@ def _preview_draft_model_suggestions(
             suggestion_count=suggestion_count,
             kind=baseline_item.classification.kind,
             audience=baseline_item.classification.audience,
+            tone=suggestion_tone,
         )
         prompt = prompt_result.prompt
         evidence = {
             "title": baseline_item.content.title,
             "item_id": baseline_item.id,
             "suggestion_count": suggestion_count,
+            "tone": suggestion_tone,
             "diff_summary": diff.summary,
             "representative_hunks": diff.representative_hunks,
             "file_count": file_count,
@@ -516,6 +535,7 @@ def _preview_draft_model_suggestions(
                 "current_summary": baseline_item.edited_summary or baseline_item.content.summary,
                 "provider": response.model,
                 "prompt_sha": prompt_sha,
+                "tone": suggestion_tone,
                 "provider_metadata": response.metadata,
                 "provider_reasoning": provider_reasoning,
                 "source_evidence": source_evidence,
@@ -530,6 +550,7 @@ def _preview_draft_model_suggestions(
         "head_ref": head,
         "provider": effective_model_provider or "configured",
         "count": suggestion_count,
+        "tone": suggestion_tone,
         "items": items,
     }
 
@@ -932,6 +953,7 @@ def _summary_provenance(
     provider: str | None,
     model: str | None,
     prompt_sha: str | None,
+    tone: str | None,
     response_metadata: dict[str, object] | None,
 ) -> dict[str, object]:
     provenance: dict[str, object] = {
@@ -944,6 +966,8 @@ def _summary_provenance(
         provenance["model"] = model
     if prompt_sha:
         provenance["prompt_sha"] = prompt_sha
+    if tone:
+        provenance["tone"] = tone
     if response_metadata:
         provenance["response_metadata"] = response_metadata
     return provenance
@@ -1095,8 +1119,11 @@ def _build_draft_model_prompt(
     head: str,
     item_id: str,
     model_provider: str | None = None,
+    tone: str | None = None,
 ) -> dict[str, str]:
     effective_model_provider = _resolve_suggest_model_provider(model_provider)
+    config = _load_config()
+    suggestion_tone = _resolve_suggestion_tone(config.suggestion_tone, requested=tone)
     target_group = _find_group_for_item_id(base, head, item_id)
     classifier = Classifier()
     draft_item = classifier.classify(target_group, base, head)[0]
@@ -1107,11 +1134,13 @@ def _build_draft_model_prompt(
         pr_body=target_group.pr.body if target_group.pr else "",
         diff=diff,
         commits=target_group.commits,
+        tone=suggestion_tone,
     )
     return {
         "item_id": draft_item.id,
         "title": draft_item.content.title,
         "provider": effective_model_provider or "configured",
+        "tone": suggestion_tone,
         "prompt": prompt_result.prompt,
         "prompt_budget": prompt_result.budget,
     }
@@ -1182,6 +1211,7 @@ def _run_draft_suggest(
     item_id: str,
     reviewer: str | None,
     model_provider: str | None = None,
+    tone: str | None = None,
 ) -> int:
     updated = _request_draft_model_input(
         base=base,
@@ -1189,6 +1219,7 @@ def _run_draft_suggest(
         item_id=item_id,
         reviewer=reviewer,
         model_provider=model_provider,
+        tone=tone,
     )
     print(json.dumps(updated.to_dict(), indent=2))
     return 0
@@ -1200,12 +1231,14 @@ def _run_draft_prompt(
     head: str,
     item_id: str,
     model_provider: str | None = None,
+    tone: str | None = None,
 ) -> int:
     prompt_preview = _build_draft_model_prompt(
         base=base,
         head=head,
         item_id=item_id,
         model_provider=model_provider,
+        tone=tone,
     )
     print(json.dumps(prompt_preview, indent=2))
     return 0
@@ -1324,6 +1357,7 @@ def main(argv: list[str] | None = None) -> int:
                     all_visible=args.all_visible,
                     count=args.count,
                     model_provider=args.model_provider,
+                    tone=args.tone,
                 )
                 print(json.dumps(suggestions, indent=2))
                 return 0
@@ -1337,6 +1371,7 @@ def main(argv: list[str] | None = None) -> int:
                 item_id=args.id,
                 reviewer=args.reviewer,
                 model_provider=args.model_provider,
+                tone=args.tone,
             )
         if args.draft_command == "prompt":
             base, head = _resolve_range(args)
@@ -1345,6 +1380,7 @@ def main(argv: list[str] | None = None) -> int:
                 head=head,
                 item_id=args.id,
                 model_provider=args.model_provider,
+                tone=args.tone,
             )
         base, head = _resolve_range(args)
         document = build_draft_document(

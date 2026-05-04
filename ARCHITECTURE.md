@@ -32,7 +32,7 @@ This document captures the current MVP architecture and should be reviewed befor
 - `releasepilot/core/diff_evidence.py`
   - Builds compact `DiffEvidence` from changed files and patch hunks.
 - `releasepilot/core/classifier.py`
-  - Heuristic classification layer with diff fallback signals.
+  - Heuristic classification layer with diff fallback signals and model prompt construction for summary suggestions.
 - `releasepilot/core/reconciler.py`
   - Reconciliation by checksum against persisted state.
 - `releasepilot/core/generator.py`
@@ -42,7 +42,9 @@ This document captures the current MVP architecture and should be reviewed befor
 - `releasepilot/github/adapter.py`
   - GitHub adapter boundary, including stub implementation.
 - `releasepilot/providers/`
-  - BYOM provider abstraction with stub + deterministic mock providers.
+  - BYOM provider abstraction with stub, deterministic mock, Ollama, GitHub-hosted model, and model-log sink support.
+- `vscode-extension/`
+  - Editor UX for draft review, suggestion preview/regeneration, tone selection, realtime model telemetry, and apply flows.
 - `releasepilot/mcp/service.py`
   - Shared service interface used by MCP tools.
 - `releasepilot/mcp/server.py`
@@ -59,16 +61,22 @@ This document captures the current MVP architecture and should be reviewed befor
 7. `MarkdownGenerator` renders organized output sections.
 8. `releasepilot/mcp/server.py` exposes agent-facing MCP tools over stdio for Copilot and other MCP clients.
 
+For model-assisted suggestion previews, `draft suggest --preview` builds a bounded prompt from PR metadata, changed-file evidence, representative hunks, kind/audience context, and the selected tone preset. The CLI emits realtime model telemetry to stderr and optional JSONL debug logs. VS Code consumes those events as a request timeline, lets users regenerate one item or all visible suggestions, and passes summary provenance back through `draft review` when a suggestion is applied.
+
 ## Extensibility seams
 
 - **GitHub adapter boundary** allows replacement with real API implementation and easy mocking in tests.
 - **Provider boundary** allows future model-backed summarization/classification without changing core pipeline contracts.
 - **Diff evidence bundle** is intentionally compact and model-friendly.
+- **Suggestion tone** is explicit CLI/config/editor state, so prompt style changes are reproducible and recorded in applied-summary provenance.
+- **Model telemetry export** normalizes CLI and provider debug logs into a structured JSON document while preserving default redaction.
 - **MCP tool surface** gives agent clients a stable, discoverable set of release-note operations.
 
 ## Near-term architecture improvements
 
 - Add explicit PR changed-file retrieval API in adapter interface.
+- Add OTLP export for model logs.
+- Explore project vocabulary hints, banned phrases, and specificity feedback loops.
 - Add SQLite state backend option.
 - Introduce richer evidence scoring and confidence calibration.
 - Expand the local stdio server into a richer multi-client or networked transport.

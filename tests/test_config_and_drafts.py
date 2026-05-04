@@ -145,6 +145,16 @@ def test_load_config_reads_suggestion_count(monkeypatch, tmp_path: Path):
     assert config.suggestion_count == 4
 
 
+def test_load_config_reads_suggestion_tone(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "releasepilot.json"
+    config_path.write_text(json.dumps({"suggestion_tone": "technical"}))
+    monkeypatch.chdir(tmp_path)
+
+    config = load_config()
+
+    assert config.suggestion_tone == "technical"
+
+
 def test_load_config_defaults_to_one_suggestion(monkeypatch, tmp_path: Path):
     monkeypatch.chdir(tmp_path)
 
@@ -312,6 +322,7 @@ def test_draft_suggest_persists_model_summary(monkeypatch, tmp_path: Path, capsy
     assert suggested["summary_provenance"]["source"] == "model-generated"
     assert suggested["summary_provenance"]["provider"] == "mock"
     assert suggested["summary_provenance"]["model"] == "mock-local"
+    assert suggested["summary_provenance"]["tone"] == "release-note"
     assert suggested["summary_provenance"]["applied_at"]
 
     rc = main(["draft", "json", "--base", "v1.0.0"])
@@ -383,6 +394,7 @@ def test_draft_suggest_preview_returns_variants_without_persisting(monkeypatch, 
     class VariantProvider:
         def summarize(self, request: ProviderRequest) -> ProviderResponse:
             assert "Return exactly 3 distinct options as a numbered list" in request.prompt
+            assert "Tone: precise engineering wording" in request.prompt
             return ProviderResponse(
                 content=(
                     "1. Make login guidance easier to follow\n"
@@ -410,6 +422,8 @@ def test_draft_suggest_preview_returns_variants_without_persisting(monkeypatch, 
             "--preview",
             "--count",
             "3",
+            "--tone",
+            "technical",
             "--model-provider",
             "mock",
         ]
@@ -418,7 +432,9 @@ def test_draft_suggest_preview_returns_variants_without_persisting(monkeypatch, 
     assert rc == 0
     preview = json.loads(capsys.readouterr().out)
     assert preview["count"] == 3
+    assert preview["tone"] == "technical"
     assert preview["items"][0]["item_id"] == target_item.id
+    assert preview["items"][0]["tone"] == "technical"
     assert preview["items"][0]["suggestions"] == [
         "Make login guidance easier to follow",
         "Clarify the login flow",

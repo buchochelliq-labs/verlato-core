@@ -34,6 +34,17 @@ class SummaryPrompt:
     budget: dict[str, int]
 
 
+def _summary_tone_instruction(tone: str) -> str:
+    normalized = (tone or "release-note").strip().lower()
+    instructions = {
+        "release-note": "polished release-note wording for a broad product audience.",
+        "concise": "short, direct wording with no extra qualifiers.",
+        "technical": "precise engineering wording that names APIs, files, protocols, or internal behavior when useful.",
+        "customer-facing": "plain customer-facing wording that emphasizes user-visible value and avoids internal jargon.",
+    }
+    return instructions.get(normalized, instructions["release-note"])
+
+
 class Classifier:
     LABEL_AREA_RULES = {
         "frontend": "frontend",
@@ -67,9 +78,10 @@ class Classifier:
         "suggested wording",
     }
 
-    def __init__(self, provider: ReleasePilotProvider | None = None) -> None:
+    def __init__(self, provider: ReleasePilotProvider | None = None, *, summary_tone: str = "release-note") -> None:
         self.diff_builder = DiffEvidenceBuilder()
         self.provider = provider
+        self.summary_tone = summary_tone
 
     def classify(self, group: ChangeGroup, base_ref: str, head_ref: str, *, summary_only: bool = False) -> list[ChangeItem]:
         pr = group.pr
@@ -226,6 +238,7 @@ class Classifier:
             commits=group.commits,
             kind=kind,
             audience=audience,
+            tone=self.summary_tone,
         )
         self._trace_model_call_start("summarize", title)
         summary_response = provider.summarize(
@@ -289,6 +302,7 @@ class Classifier:
         suggestion_count: int = 1,
         kind: str | None = None,
         audience: str | None = None,
+        tone: str = "release-note",
     ) -> str:
         return self._build_summary_prompt_with_budget(
             title=title,
@@ -299,6 +313,7 @@ class Classifier:
             suggestion_count=suggestion_count,
             kind=kind,
             audience=audience,
+            tone=tone,
         ).prompt
 
     def _build_summary_prompt_with_budget(
@@ -312,6 +327,7 @@ class Classifier:
         suggestion_count: int = 1,
         kind: str | None = None,
         audience: str | None = None,
+        tone: str = "release-note",
     ) -> SummaryPrompt:
         commit_subjects = [commit.message.splitlines()[0] for commit in commits[:MAX_PROMPT_COMMITS]]
         commit_lines = "; ".join(commit_subjects) or "none"
@@ -355,6 +371,7 @@ class Classifier:
             if suggestion_count <= 1
             else f"Return exactly {suggestion_count} distinct options as a numbered list, one sentence per option."
         )
+        tone_instruction = _summary_tone_instruction(tone)
         prompt = (
             f"Write concise ReleasePilot description suggestions based primarily on the file diffs.\n"
             f"Lead with what changed and why it matters. Name the observable behavior, workflow, API, docs, "
@@ -364,6 +381,7 @@ class Classifier:
             f"Avoid generic filler, file-name summaries, and text that just repeats the title or commits.\n"
             f"For external/user-facing changes, use polished release-note wording. For internal, docs, tests, "
             f"or maintenance changes, use concise commit-like wording.\n"
+            f"Tone: {tone_instruction}\n"
             f"{output_instruction}\n"
             f"Title: {title}\n"
             f"Release context: {context_text}\n"

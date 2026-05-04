@@ -179,6 +179,17 @@
           "maximum": 5,
           "description": "Number of AI description suggestions to generate for each release item."
         },
+        "releasepilot.suggestionTone": {
+          "type": "string",
+          "default": "release-note",
+          "enum": [
+            "release-note",
+            "concise",
+            "technical",
+            "customer-facing"
+          ],
+          "description": "Tone preset used when generating AI description suggestions."
+        },
         "releasepilot.telemetry.includePromptPayloads": {
           "type": "boolean",
           "default": false,

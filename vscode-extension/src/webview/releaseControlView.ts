@@ -98,6 +98,15 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     if (message.type === "suggestAll") {
       await this.suggest();
     }
+    if (message.type === "setTone" && message.tone) {
+      await this.setTone(message.tone);
+    }
+    if (message.type === "regenerateSuggestion" && message.itemId) {
+      await this.regenerateSuggestion(message.itemId);
+    }
+    if (message.type === "regenerateAll") {
+      await this.suggest();
+    }
     if (message.type === "applySuggestion" && message.itemId && message.suggestionIndex !== undefined) {
       await this.applySuggestion(message.itemId, message.suggestionIndex);
     }
@@ -202,6 +211,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
           provider: this.suggestions?.provider,
           model: suggestionItem?.provider,
           prompt_sha: suggestionItem?.prompt_sha,
+          tone: suggestionItem?.tone ?? this.suggestions?.tone ?? this.client.getModelSettings().suggestionTone,
           suggestion_index: suggestionIndex,
           similarity_to_current: detail?.similarity_to_current,
           response_metadata: suggestionItem?.provider_metadata,
@@ -228,6 +238,17 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     if (render) {
       this.render();
     }
+  }
+
+  private async regenerateSuggestion(itemId: string): Promise<void> {
+    await this.suggest(itemId);
+  }
+
+  private async setTone(tone: string): Promise<void> {
+    await this.client.updateModelSettings({ suggestionTone: tone });
+    this.modelSettings = this.client.getModelSettings();
+    this.statusMessage = `Suggestion tone set to ${tone}.`;
+    this.render();
   }
 
   private async markItem(itemId: string, status: "needs-review" | "ready" | "accepted" | "hidden"): Promise<void> {
@@ -367,4 +388,5 @@ type ViewMessage = {
   requestId?: number;
   text?: string;
   label?: string;
+  tone?: string;
 };

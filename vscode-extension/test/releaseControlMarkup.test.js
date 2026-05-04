@@ -10,6 +10,7 @@ const modelSettings = {
   ollamaTimeoutSeconds: 120,
   maxModelItems: 25,
   suggestionCount: 1,
+  suggestionTone: "release-note",
   includePromptPayloads: false,
   includeReasoningPayloads: false,
   redactPayloads: true,
@@ -197,6 +198,8 @@ test("renders suggestion actions and review variants", () => {
   assert.match(html, /12% similar to current/);
   assert.match(html, /data-action="applySuggestion" data-item="ci_1" data-index="0"/);
   assert.match(html, /data-action="skipSuggestion" data-item="ci_1"/);
+  assert.match(html, /data-action="regenerateSuggestion" data-item="ci_1"/);
+  assert.match(html, /data-action="regenerateAll"/);
 });
 
 test("renders live request inspection and per-request stop controls", () => {
