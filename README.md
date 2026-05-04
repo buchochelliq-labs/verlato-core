@@ -169,6 +169,8 @@ Payload redaction is enabled by default whenever payload telemetry is shown or p
 
 When a generated suggestion is applied, ReleasePilot stores summary provenance with the draft item, including source, provider/model, prompt hash when available, tone, style profile, response metadata, and apply timestamp. Draft JSON includes this provenance so model-assisted release-note text remains auditable after review.
 
+ReleasePilot also records lightweight local feedback in `.releasepilot_state.json` under `feedback_events`. Apply/edit actions are inferred automatically, and VS Code records skip, regenerate, useful, and not-useful actions. By default feedback stores hashes and metrics instead of full summary text. Set `feedback_include_text=true` or `RELEASEPILOT_FEEDBACK_INCLUDE_TEXT=1` only when you explicitly want accepted/edited summary text persisted. Export feedback with `releasepilot feedback export --output feedback.json`.
+
 Persisted debug logs can be exported with `releasepilot model-logs export --file <model-debug.jsonl> --output model-export.json`. The export normalizes CLI and provider records into a `releasepilot.model_logs.v1` JSON document and reapplies redaction by default.
 
 For local AI use, run Ollama locally and make sure the selected model is pulled before using `draft suggest`. For prompt debugging or manual model use, prefer `draft prompt`, which only returns the generated prompt and does not call any LLM. GitHub auth is no longer requested by default for configured/local flows.

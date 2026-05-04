@@ -31,7 +31,9 @@ def test_state_store_roundtrip(tmp_path):
             "prompt_sha": "abc123",
         },
     )
-    store.append_new([item])
+    from releasepilot.state.store import StateData
+
+    store.save(StateData(items=[item], feedback_events=[{"event": "suggestion_applied", "item_id": "ci_1"}]))
     loaded = store.load()
     assert len(loaded.items) == 1
     assert loaded.items[0].id == "ci_1"
@@ -43,6 +45,7 @@ def test_state_store_roundtrip(tmp_path):
         "model": "mock-local",
         "prompt_sha": "abc123",
     }
+    assert loaded.feedback_events == [{"event": "suggestion_applied", "item_id": "ci_1"}]
 
 
 def test_state_store_raises_for_invalid_json(tmp_path):

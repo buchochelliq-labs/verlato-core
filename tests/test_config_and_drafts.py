@@ -179,6 +179,16 @@ def test_load_config_reads_suggestion_style(monkeypatch, tmp_path: Path):
     assert config.suggestion_style.specificity_floor == 0.4
 
 
+def test_load_config_reads_feedback_text_opt_in(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "releasepilot.json"
+    config_path.write_text(json.dumps({"feedback_include_text": True}))
+    monkeypatch.chdir(tmp_path)
+
+    config = load_config()
+
+    assert config.feedback_include_text is True
+
+
 def test_load_config_defaults_to_one_suggestion(monkeypatch, tmp_path: Path):
     monkeypatch.chdir(tmp_path)
 
@@ -357,6 +367,11 @@ def test_draft_suggest_persists_model_summary(monkeypatch, tmp_path: Path, capsy
     assert item["original_summary"] != "Model-written summary"
     assert item["summary_provenance"]["model"] == "mock-local"
     assert item["summary_source"] == "LLM summary generated from diff evidence (mock-local)"
+    state = json.loads(state_path.read_text())
+    assert state["feedback_events"][0]["event"] == "suggestion_applied"
+    assert state["feedback_events"][0]["item_id"] == target_item.id
+    assert state["feedback_events"][0]["metadata"]["summary_sha"]
+    assert "summary" not in state["feedback_events"][0]["metadata"]
 
 
 def test_draft_review_persists_model_suggestion_provenance(monkeypatch, tmp_path: Path, capsys):
@@ -406,6 +421,37 @@ def test_draft_review_persists_model_suggestion_provenance(monkeypatch, tmp_path
     item = document["sections"][0]["items"][0]
     assert item["summary_provenance"]["prompt_sha"] == "promptabc123"
     assert item["summary_source"] == "LLM summary generated from diff evidence (gemma4:latest)"
+
+
+def test_feedback_record_and_export(monkeypatch, tmp_path: Path, capsys):
+    state_path = tmp_path / "state.json"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+
+    rc = main(
+        [
+            "feedback",
+            "record",
+            "--event",
+            "suggestion_skipped",
+            "--item-id",
+            "ci_1",
+            "--metadata-json",
+            json.dumps({"scope": "item"}),
+        ]
+    )
+
+    assert rc == 0
+    recorded = json.loads(capsys.readouterr().out)
+    assert recorded["recorded"] is True
+
+    rc = main(["feedback", "export"])
+    assert rc == 0
+    exported = json.loads(capsys.readouterr().out)
+    assert exported["schema_version"] == "releasepilot.feedback.v1"
+    assert exported["record_count"] == 1
+    assert exported["records"][0]["event"] == "suggestion_skipped"
+    assert exported["records"][0]["metadata"] == {"scope": "item"}
 
 
 def test_draft_suggest_preview_returns_variants_without_persisting(monkeypatch, tmp_path: Path, capsys):

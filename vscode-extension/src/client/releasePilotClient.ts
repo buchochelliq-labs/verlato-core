@@ -140,6 +140,19 @@ export class ReleasePilotClient implements vscode.Disposable {
     ]);
   }
 
+  async recordFeedback(event: string, itemId: string, metadata: Record<string, unknown> = {}): Promise<void> {
+    await this.runJsonCommand<Record<string, never>>([
+      "feedback",
+      "record",
+      "--event",
+      event,
+      "--item-id",
+      itemId,
+      "--metadata-json",
+      JSON.stringify(metadata),
+    ]);
+  }
+
   async getRepositoryOverview(): Promise<RepositoryOverview> {
     const [branchesRaw, tagsRaw, commitsRaw, state] = await Promise.all([
       this.runGitCommand(["branch", "--format=%(refname:short)%09%(objectname:short)"]),
@@ -173,6 +186,7 @@ export class ReleasePilotClient implements vscode.Disposable {
       projectVocabulary: config.get<string[]>("projectVocabulary") ?? [],
       bannedPhrases: config.get<string[]>("bannedPhrases") ?? [],
       specificityFloor: config.get<number>("specificityFloor") ?? 0,
+      feedbackIncludeText: config.get<boolean>("feedbackIncludeText") ?? false,
       includePromptPayloads: config.get<boolean>("telemetry.includePromptPayloads") ?? false,
       includeReasoningPayloads: config.get<boolean>("telemetry.includeReasoningPayloads") ?? false,
       redactPayloads: config.get<boolean>("telemetry.redactPayloads") ?? true,
@@ -215,6 +229,9 @@ export class ReleasePilotClient implements vscode.Disposable {
     }
     if (settings.specificityFloor !== undefined) {
       await config.update("specificityFloor", settings.specificityFloor, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.feedbackIncludeText !== undefined) {
+      await config.update("feedbackIncludeText", settings.feedbackIncludeText, vscode.ConfigurationTarget.Workspace);
     }
     if (settings.includePromptPayloads !== undefined) {
       await config.update("telemetry.includePromptPayloads", settings.includePromptPayloads, vscode.ConfigurationTarget.Workspace);
@@ -488,6 +505,7 @@ export class ReleasePilotClient implements vscode.Disposable {
     env.RELEASEPILOT_PROJECT_VOCABULARY = settings.projectVocabulary.join(",");
     env.RELEASEPILOT_BANNED_PHRASES = settings.bannedPhrases.join(",");
     env.RELEASEPILOT_SPECIFICITY_FLOOR = String(settings.specificityFloor);
+    env.RELEASEPILOT_FEEDBACK_INCLUDE_TEXT = settings.feedbackIncludeText ? "1" : "0";
     env.RELEASEPILOT_TRACE_MODEL_CALLS = "1";
     env.RELEASEPILOT_OLLAMA_STREAM = settings.ollamaStreamResponses ? "1" : "0";
     if (settings.includePromptPayloads) {

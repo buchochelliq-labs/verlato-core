@@ -1144,6 +1144,7 @@ def _run_feedback_record(*, event: str, item_id: str, metadata_json: str | None)
             raise SystemExit("Invalid feedback metadata JSON: expected an object")
         metadata = parsed
     _append_feedback_event(event=event, item_id=item_id, metadata=metadata)
+    print(json.dumps({"recorded": True, "event": event, "item_id": item_id}, indent=2))
     return 0
 
 
@@ -1536,6 +1537,12 @@ def main(argv: list[str] | None = None) -> int:
             output_path=args.output,
             events=args.event,
         )
+
+    if args.command == "feedback":
+        if args.feedback_command == "record":
+            return _run_feedback_record(event=args.event, item_id=args.item_id, metadata_json=args.metadata_json)
+        if args.feedback_command == "export":
+            return _run_feedback_export(output_format=args.format, output_path=args.output, events=args.event)
 
     if args.command == "draft":
         if args.draft_command == "review":

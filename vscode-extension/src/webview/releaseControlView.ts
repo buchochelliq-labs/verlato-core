@@ -105,12 +105,24 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       await this.regenerateSuggestion(message.itemId);
     }
     if (message.type === "regenerateAll") {
+      this.suggestions?.items.forEach((item) => this.recordFeedback("suggestion_regenerated", item.item_id, { scope: "all-visible" }));
       await this.suggest();
+    }
+    if (message.type === "feedbackPositive" && message.itemId) {
+      this.recordFeedback("suggestion_marked_useful", message.itemId);
+      this.statusMessage = `Recorded useful feedback for ${message.itemId}.`;
+      this.render();
+    }
+    if (message.type === "feedbackNegative" && message.itemId) {
+      this.recordFeedback("suggestion_marked_not_useful", message.itemId);
+      this.statusMessage = `Recorded not useful feedback for ${message.itemId}.`;
+      this.render();
     }
     if (message.type === "applySuggestion" && message.itemId && message.suggestionIndex !== undefined) {
       await this.applySuggestion(message.itemId, message.suggestionIndex);
     }
     if (message.type === "skipSuggestion" && message.itemId) {
+      this.recordFeedback("suggestion_skipped", message.itemId);
       this.skipSuggestion(message.itemId);
     }
     if (message.type === "refresh") {
@@ -243,7 +255,15 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async regenerateSuggestion(itemId: string): Promise<void> {
+    this.recordFeedback("suggestion_regenerated", itemId, { scope: "item" });
     await this.suggest(itemId);
+  }
+
+  private recordFeedback(event: string, itemId: string, metadata: Record<string, unknown> = {}): void {
+    this.client.recordFeedback(event, itemId, metadata).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      vscode.window.showWarningMessage(`ReleasePilot feedback was not recorded: ${message}`);
+    });
   }
 
   private async setTone(tone: string): Promise<void> {

@@ -15,6 +15,7 @@ const modelSettings = {
   projectVocabulary: [],
   bannedPhrases: [],
   specificityFloor: 0,
+  feedbackIncludeText: false,
   includePromptPayloads: false,
   includeReasoningPayloads: false,
   redactPayloads: true,
@@ -204,6 +205,8 @@ test("renders suggestion actions and review variants", () => {
   assert.match(html, /data-action="skipSuggestion" data-item="ci_1"/);
   assert.match(html, /data-action="regenerateSuggestion" data-item="ci_1"/);
   assert.match(html, /data-action="regenerateAll"/);
+  assert.match(html, /data-action="feedbackPositive" data-item="ci_1"/);
+  assert.match(html, /data-action="feedbackNegative" data-item="ci_1"/);
 });
 
 test("renders live request inspection and per-request stop controls", () => {

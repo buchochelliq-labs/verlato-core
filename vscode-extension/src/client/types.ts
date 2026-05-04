@@ -137,6 +137,7 @@ export interface ModelSettings {
   projectVocabulary: string[];
   bannedPhrases: string[];
   specificityFloor: number;
+  feedbackIncludeText: boolean;
   includePromptPayloads: boolean;
   includeReasoningPayloads: boolean;
   redactPayloads: boolean;

@@ -145,6 +145,8 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
       if (action === 'skipSuggestion') vscode.postMessage({ type: 'skipSuggestion', itemId: button.dataset.item });
       if (action === 'regenerateSuggestion') vscode.postMessage({ type: 'regenerateSuggestion', itemId: button.dataset.item });
       if (action === 'regenerateAll') vscode.postMessage({ type: 'regenerateAll' });
+      if (action === 'feedbackPositive') vscode.postMessage({ type: 'feedbackPositive', itemId: button.dataset.item });
+      if (action === 'feedbackNegative') vscode.postMessage({ type: 'feedbackNegative', itemId: button.dataset.item });
     });
   </script>
 </body>
@@ -176,6 +178,8 @@ function renderSuggestions(preview: DraftSuggestionPreview | undefined): string 
       <div class="suggestion-actions">
         <button data-action="regenerateSuggestion" data-item="${escapeHtml(item.item_id)}">Regenerate</button>
         <button class="skip" data-action="skipSuggestion" data-item="${escapeHtml(item.item_id)}">Skip</button>
+        <button data-action="feedbackPositive" data-item="${escapeHtml(item.item_id)}">Useful</button>
+        <button data-action="feedbackNegative" data-item="${escapeHtml(item.item_id)}">Not useful</button>
       </div>
     </article>`).join("")}
   </section>`;

@@ -218,6 +218,11 @@
           "maximum": 1,
           "description": "Optional minimum specificity score for generated suggestions. Leave 0 to disable specificity rejection."
         },
+        "releasepilot.feedbackIncludeText": {
+          "type": "boolean",
+          "default": false,
+          "description": "Persist full accepted/edited summary text in local feedback events. Disabled by default; feedback otherwise stores hashes and metrics."
+        },
         "releasepilot.telemetry.includePromptPayloads": {
           "type": "boolean",
           "default": false,

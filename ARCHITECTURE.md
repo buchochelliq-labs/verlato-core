@@ -61,7 +61,7 @@ This document captures the current MVP architecture and should be reviewed befor
 7. `MarkdownGenerator` renders organized output sections.
 8. `releasepilot/mcp/server.py` exposes agent-facing MCP tools over stdio for Copilot and other MCP clients.
 
-For model-assisted suggestion previews, `draft suggest --preview` builds a bounded prompt from PR metadata, changed-file evidence, representative hunks, kind/audience context, the selected tone preset, and optional project language controls. Project style controls include guidance text, preferred vocabulary, banned phrases, and an opt-in specificity floor. The CLI emits realtime model telemetry to stderr and optional JSONL debug logs. VS Code consumes those events as a request timeline, lets users regenerate one item or all visible suggestions, and passes summary provenance back through `draft review` when a suggestion is applied.
+For model-assisted suggestion previews, `draft suggest --preview` builds a bounded prompt from PR metadata, changed-file evidence, representative hunks, kind/audience context, the selected tone preset, and optional project language controls. Project style controls include guidance text, preferred vocabulary, banned phrases, and an opt-in specificity floor. The CLI emits realtime model telemetry to stderr and optional JSONL debug logs. VS Code consumes those events as a request timeline, lets users regenerate one item or all visible suggestions, records lightweight local feedback, and passes summary provenance back through `draft review` when a suggestion is applied.
 
 ## Extensibility seams
 
@@ -70,6 +70,7 @@ For model-assisted suggestion previews, `draft suggest --preview` builds a bound
 - **Diff evidence bundle** is intentionally compact and model-friendly.
 - **Suggestion tone** is explicit CLI/config/editor state, so prompt style changes are reproducible and recorded in applied-summary provenance.
 - **Project language controls** stay explicit in config/env/editor settings and are copied into applied-summary provenance for auditability.
+- **Feedback events** live in `.releasepilot_state.json` as lean records by default. Full text is opt-in, and export is handled by the dedicated `feedback export` command.
 - **Model telemetry export** normalizes CLI and provider debug logs into a structured JSON document while preserving default redaction.
 - **MCP tool surface** gives agent clients a stable, discoverable set of release-note operations.
 
@@ -77,7 +78,7 @@ For model-assisted suggestion previews, `draft suggest --preview` builds a bound
 
 - Add explicit PR changed-file retrieval API in adapter interface.
 - Add OTLP export for model logs.
-- Expand local feedback loops that learn from accepted/rejected wording without persisting raw prompt payloads by default.
-- Add SQLite state backend option.
+- Use local feedback aggregates to suggest prompt/style adjustments without persisting raw prompt payloads by default.
+- Add DuckDB/Delta-backed analytical storage for larger repositories and feedback/model telemetry exploration.
 - Introduce richer evidence scoring and confidence calibration.
 - Expand the local stdio server into a richer multi-client or networked transport.

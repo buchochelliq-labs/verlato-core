@@ -44,20 +44,21 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
 
 ## Next biggest ticket
 
-- [ ] Add local feedback loops for accepted/rejected wording.
+- [ ] Add DuckDB/Delta-backed analytical storage for larger repositories and feedback/model telemetry exploration.
 
 ## Detailed remaining work (current view)
 
 1. **Project language controls**
    - [x] Add vocabulary hints, banned phrases, and project-specific release-note style guidance.
    - [x] Add opt-in specificity scoring so generated text can reject vague candidates.
-   - Capture lightweight local feedback that can improve future prompts without persisting sensitive payloads by default.
+   - [x] Capture lightweight local feedback that can improve future prompts without persisting sensitive payloads by default.
+   - [ ] Use feedback aggregates to suggest prompt/style adjustments.
 2. **Service-first editor integration**
    - Replace remaining CLI fallback flows in the extension with a richer local service contract.
    - Add connection lifecycle states so VS Code can show when the service is starting, ready, degraded, or unavailable.
 3. **Scale and collaboration**
    - Add auth/session strategy for non-local or multi-client MCP transports.
-   - Add an optional SQLite state backend for larger repositories and concurrent workflows.
+   - Add optional DuckDB/Delta-backed analytical storage for larger repositories and feedback/model telemetry exploration.
 
 ## Suggested next items (recommended execution order)
 
@@ -97,10 +98,11 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
    - [x] Add bad-output tests and prompt golden tests.
    - [x] Add explicit tone presets for suggestion prompts.
    - [x] Add project vocabulary hints, banned phrases, specificity scoring, and style guidance.
-   - [ ] Add local feedback loops for accepted/rejected wording.
+   - [x] Add local feedback loops for accepted/rejected wording.
+   - [ ] Use local feedback to recommend prompt/style adjustments.
 4. **Confidence calibration**
    - Improve confidence scoring with richer evidence weighting and calibration tests.
 5. **State backend expansion**
-   - Add optional SQLite backend for larger repositories and concurrent workflows.
+   - Add optional DuckDB/Delta-backed analytical storage for larger repositories and feedback/model telemetry exploration.
 6. **Service-first editor integration**
    - Replace CLI fallbacks in the extension with a richer local service contract and connection lifecycle UX.
