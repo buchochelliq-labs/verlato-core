@@ -52,7 +52,7 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
    - [x] Add vocabulary hints, banned phrases, and project-specific release-note style guidance.
    - [x] Add opt-in specificity scoring so generated text can reject vague candidates.
    - [x] Capture lightweight local feedback that can improve future prompts without persisting sensitive payloads by default.
-   - [ ] Use feedback aggregates to suggest prompt/style adjustments.
+   - [x] Use feedback aggregates to suggest prompt/style adjustments.
 2. **Service-first editor integration**
    - Replace remaining CLI fallback flows in the extension with a richer local service contract.
    - Add connection lifecycle states so VS Code can show when the service is starting, ready, degraded, or unavailable.
@@ -61,6 +61,19 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
    - Add optional DuckDB/Delta-backed analytical storage for larger repositories and feedback/model telemetry exploration.
 
 ## Suggested next items (recommended execution order)
+
+1. **Service-first editor integration**
+   - Replace remaining CLI-backed VS Code flows with a richer local service contract.
+   - Add connection lifecycle states so VS Code can show starting, ready, degraded, and unavailable service states.
+2. **Feedback-driven prompt tuning**
+   - Use accepted, rejected, skipped, and regenerated suggestion feedback to recommend project style and prompt adjustments.
+   - Surface safe aggregate recommendations without persisting raw prompt or response text by default.
+3. **Scale backend**
+   - Add optional DuckDB/Delta-backed analytical storage for larger repositories, release lineage exploration, feedback events, and model telemetry.
+4. **Model log export maturity**
+   - Add OTLP export for provider/model telemetry so model-call diagnostics can feed standard observability tooling.
+
+## Previous next items
 
 1. **MCP transport and auth**
    - [x] Expose the local service interface via a stdio server process.
@@ -77,7 +90,7 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
    - [x] Prefer concrete active verbs for release-note wording.
    - [x] Trace lifecycle stages: target selection, evidence build, prompt build, provider call, parse, filter, accept.
    - [x] Log candidate rejection reasons and compact evidence stats.
-   - [ ] Consider a `--trace-suggestions` alias for discoverability.
+   - [x] Consider a `--trace-suggestions` alias for discoverability.
    - [x] Show compact generation details in the VS Code output channel.
    - [x] Adjust VS Code copy for single-suggestion review.
    - [x] Add regenerate and tone-refinement actions.
@@ -99,7 +112,7 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
    - [x] Add explicit tone presets for suggestion prompts.
    - [x] Add project vocabulary hints, banned phrases, specificity scoring, and style guidance.
    - [x] Add local feedback loops for accepted/rejected wording.
-   - [ ] Use local feedback to recommend prompt/style adjustments.
+   - [x] Use local feedback to recommend prompt/style adjustments.
 4. **Confidence calibration**
    - Improve confidence scoring with richer evidence weighting and calibration tests.
 5. **State backend expansion**

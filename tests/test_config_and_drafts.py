@@ -454,6 +454,48 @@ def test_feedback_record_and_export(monkeypatch, tmp_path: Path, capsys):
     assert exported["records"][0]["metadata"] == {"scope": "item"}
 
 
+def test_feedback_recommend_uses_safe_aggregates(monkeypatch, tmp_path: Path, capsys):
+    state_path = tmp_path / "state.json"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+    events = [
+        ("suggestion_regenerated", "concise", {}),
+        ("suggestion_regenerated", "concise", {}),
+        ("suggestion_skipped", "concise", {}),
+        ("suggestion_applied", "technical", {"specificity_score": 0.3}),
+        ("summary_edited", "technical", {"specificity_score": 0.4}),
+    ]
+    for index, (event, tone, extra) in enumerate(events):
+        metadata = {"tone": tone, **extra}
+        rc = main(
+            [
+                "feedback",
+                "record",
+                "--event",
+                event,
+                "--item-id",
+                f"ci_{index}",
+                "--metadata-json",
+                json.dumps(metadata),
+            ]
+        )
+        assert rc == 0
+        capsys.readouterr()
+
+    rc = main(["feedback", "recommend"])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema_version"] == "releasepilot.feedback_recommendations.v1"
+    assert payload["event_count"] == 5
+    assert payload["signals"]["average_specificity"] == 0.35
+    kinds = {recommendation["kind"] for recommendation in payload["recommendations"]}
+    assert "tighten-style-guidance" in kinds
+    assert "generate-more-options" in kinds
+    assert "raise-specificity-floor" in kinds
+    assert "prefer-tone" in kinds
+
+
 def test_draft_suggest_preview_returns_variants_without_persisting(monkeypatch, tmp_path: Path, capsys):
     state_path = tmp_path / "state.json"
     monkeypatch.chdir(tmp_path)
@@ -755,6 +797,48 @@ def test_draft_suggest_trace_logs_filter_reasons(monkeypatch, tmp_path: Path, ca
     assert "decision suggestions parsed=1 requested=1 accepted=Clarifies login guidance for reviewers rejected=2" in captured.err
     preview = json.loads(captured.out)
     assert preview["items"][0]["provider_reasoning"] == ""
+
+
+def test_draft_suggest_trace_suggestions_alias_enables_trace(monkeypatch, tmp_path: Path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.delenv("RELEASEPILOT_TRACE_MODEL_CALLS", raising=False)
+    group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
+    target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
+
+    class VariantProvider:
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(
+                content="1. Clarifies login guidance for reviewers",
+                confidence=0.9,
+                model="mock-local",
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="mock-local")
+
+    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("releasepilot.cli.main.build_provider", lambda config, mode=None: VariantProvider())
+
+    rc = main(
+        [
+            "draft",
+            "suggest",
+            "--base",
+            "v1.0.0",
+            "--id",
+            target_item.id,
+            "--preview",
+            "--trace-suggestions",
+            "--model-provider",
+            "mock",
+        ]
+    )
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "suggest stage=target-selection" in captured.err
+    assert json.loads(captured.out)["items"][0]["suggestions"] == ["Clarifies login guidance for reviewers"]
 
 
 def test_draft_suggest_can_include_provider_reasoning_payload(monkeypatch, tmp_path: Path, capsys):

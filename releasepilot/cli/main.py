@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+from collections import Counter
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
@@ -77,7 +78,16 @@ def build_parser() -> argparse.ArgumentParser:
     draft_suggest.add_argument("--count", type=int)
     draft_suggest.add_argument("--tone", choices=SUGGESTION_TONE_CHOICES)
     draft_suggest.add_argument("--reviewer")
-    draft_suggest.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Override the configured model provider.")
+    draft_suggest.add_argument(
+        "--trace-suggestions",
+        action="store_true",
+        help="Emit compact suggestion lifecycle trace logs for this invocation.",
+    )
+    draft_suggest.add_argument(
+        "--model-provider",
+        choices=MODEL_PROVIDER_CHOICES,
+        help="Override the configured model provider.",
+    )
     draft_prompt = draft_sub.add_parser("prompt")
     draft_prompt.add_argument("--base")
     draft_prompt.add_argument("--head", default="HEAD")
@@ -112,7 +122,12 @@ def build_parser() -> argparse.ArgumentParser:
     feedback_export = feedback_sub.add_parser("export")
     feedback_export.add_argument("--format", choices=["json", "jsonl"], default="json")
     feedback_export.add_argument("--output")
-    feedback_export.add_argument("--event", action="append", help="Filter to one feedback event type. Can be provided more than once.")
+    feedback_export.add_argument(
+        "--event",
+        action="append",
+        help="Filter to one feedback event type. Can be provided more than once.",
+    )
+    feedback_sub.add_parser("recommend")
 
     state = sub.add_parser("state")
     state_sub = state.add_subparsers(dest="state_command", required=True)
@@ -1177,6 +1192,169 @@ def _run_feedback_export(*, output_format: str, output_path: str | None, events:
     return 0
 
 
+def _run_feedback_recommend() -> int:
+    payload = _build_feedback_recommendations(_build_store().load().feedback_events)
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def _build_feedback_recommendations(events: list[dict]) -> dict[str, object]:
+    safe_events = [event for event in events if isinstance(event, dict)]
+    event_counts = Counter(str(event.get("event") or "unknown") for event in safe_events)
+    tone_counts: dict[str, Counter[str]] = {}
+    specificity_scores: list[float] = []
+    skipped_or_negative = {
+        "suggestion_skipped",
+        "suggestion_rejected",
+        "suggestion_not_useful",
+        "suggestion_regenerated",
+    }
+
+    for event in safe_events:
+        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        event_name = str(event.get("event") or "unknown")
+        tone = metadata.get("tone")
+        if isinstance(tone, str) and tone:
+            tone_counts.setdefault(tone, Counter())[event_name] += 1
+        specificity = _feedback_float(metadata.get("specificity_score"))
+        if specificity is not None and event_name in {"suggestion_applied", "summary_edited"}:
+            specificity_scores.append(specificity)
+
+    recommendations: list[dict[str, object]] = []
+    positive_count = event_counts["suggestion_applied"] + event_counts["summary_edited"]
+    negative_count = sum(event_counts[name] for name in skipped_or_negative)
+    regenerated_count = event_counts["suggestion_regenerated"]
+    total_count = len(safe_events)
+
+    if total_count == 0:
+        recommendations.append(
+            {
+                "kind": "collect-more-feedback",
+                "title": "Collect more feedback before tuning prompts",
+                "detail": (
+                    "No local feedback events are available yet, so ReleasePilot cannot infer style preferences safely."
+                ),
+                "confidence": "high",
+            }
+        )
+    if total_count and negative_count >= max(3, positive_count):
+        recommendations.append(
+            {
+                "kind": "tighten-style-guidance",
+                "title": "Add project-specific style guidance",
+                "detail": (
+                    f"{negative_count} skip/reject/regenerate event(s) versus {positive_count} applied/edit event(s) "
+                    "suggest that generated summaries are missing the project's preferred voice."
+                ),
+                "confidence": "medium",
+                "suggested_config": {
+                    "suggestion_style": {
+                        "guidance": "Describe the user-visible outcome first, then include the concrete changed area.",
+                    }
+                },
+            }
+        )
+    if regenerated_count >= 2:
+        recommendations.append(
+            {
+                "kind": "generate-more-options",
+                "title": "Consider a larger suggestion count",
+                "detail": (
+                    f"{regenerated_count} regenerate event(s) suggest reviewers often need another option before "
+                    "applying wording."
+                ),
+                "confidence": "medium",
+                "suggested_config": {"suggestion_count": 2},
+            }
+        )
+    if specificity_scores:
+        average_specificity = sum(specificity_scores) / len(specificity_scores)
+        if average_specificity < 0.45:
+            recommendations.append(
+                {
+                    "kind": "raise-specificity-floor",
+                    "title": "Raise the specificity floor",
+                    "detail": (
+                        "Accepted or edited suggestions average "
+                        f"{average_specificity:.2f} specificity, so vague candidates may still be getting through."
+                    ),
+                    "confidence": "medium",
+                    "suggested_config": {"suggestion_style": {"specificity_floor": 0.45}},
+                }
+            )
+    best_tone = _feedback_best_tone(tone_counts)
+    if best_tone:
+        tone, accepted, total = best_tone
+        recommendations.append(
+            {
+                "kind": "prefer-tone",
+                "title": f"Prefer the {tone} tone",
+                "detail": f"{accepted} of {total} feedback event(s) for this tone were applied or edited.",
+                "confidence": "low" if total < 5 else "medium",
+                "suggested_config": {"suggestion_tone": tone},
+            }
+        )
+    if total_count and not recommendations:
+        recommendations.append(
+            {
+                "kind": "keep-current-style",
+                "title": "Keep the current prompt style",
+                "detail": (
+                    "Current aggregate feedback does not show a strong reason to adjust prompt or style settings."
+                ),
+                "confidence": "medium",
+            }
+        )
+
+    return {
+        "schema_version": "releasepilot.feedback_recommendations.v1",
+        "event_count": total_count,
+        "event_counts": dict(sorted(event_counts.items())),
+        "signals": {
+            "positive_count": positive_count,
+            "negative_count": negative_count,
+            "regenerated_count": regenerated_count,
+            "average_specificity": round(sum(specificity_scores) / len(specificity_scores), 3)
+            if specificity_scores
+            else None,
+            "tones": {
+                tone: dict(sorted(counts.items()))
+                for tone, counts in sorted(tone_counts.items())
+            },
+        },
+        "recommendations": recommendations,
+    }
+
+
+def _feedback_float(value: object) -> float | None:
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _feedback_best_tone(tone_counts: dict[str, Counter[str]]) -> tuple[str, int, int] | None:
+    best: tuple[str, int, int, float] | None = None
+    for tone, counts in tone_counts.items():
+        accepted = counts["suggestion_applied"] + counts["summary_edited"]
+        total = sum(counts.values())
+        if total < 2 or accepted == 0:
+            continue
+        rate = accepted / total
+        if rate < 0.6:
+            continue
+        candidate = (tone, accepted, total, rate)
+        if best is None or (candidate[3], candidate[1], candidate[2]) > (best[3], best[1], best[2]):
+            best = candidate
+    if best is None:
+        return None
+    return best[0], best[1], best[2]
+
+
 def _append_feedback_event(*, event: str, item_id: str, metadata: dict[str, object] | None = None) -> None:
     store = _build_store()
     state = store.load()
@@ -1543,6 +1721,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_feedback_record(event=args.event, item_id=args.item_id, metadata_json=args.metadata_json)
         if args.feedback_command == "export":
             return _run_feedback_export(output_format=args.format, output_path=args.output, events=args.event)
+        if args.feedback_command == "recommend":
+            return _run_feedback_recommend()
 
     if args.command == "draft":
         if args.draft_command == "review":
@@ -1559,6 +1739,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.draft_command == "suggest":
             base, head = _resolve_range(args)
+            if args.trace_suggestions:
+                os.environ["RELEASEPILOT_TRACE_MODEL_CALLS"] = "1"
             if args.preview:
                 suggestions = _preview_draft_model_suggestions(
                     base=base,
