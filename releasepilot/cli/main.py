@@ -1353,10 +1353,12 @@ def _persist_review_update(
 
     if summary is not None:
         normalized_summary = summary.strip()
+        prior_summary = match.edited_summary or match.content.summary
         match.edited_summary = normalized_summary or None
         if normalized_summary:
             if summary_provenance is not None:
                 match.summary_provenance = _normalize_summary_provenance(summary_provenance)
+                feedback_event = "suggestion_applied"
             elif match.summary_provenance:
                 match.summary_provenance = {
                     **match.summary_provenance,
@@ -1365,11 +1367,30 @@ def _persist_review_update(
                     else "human-edited",
                     "edited_at": date.today().isoformat(),
                 }
+                feedback_event = "summary_edited"
             else:
                 match.summary_provenance = {
                     "source": "human-edited",
                     "applied_at": date.today().isoformat(),
                 }
+                feedback_event = "summary_edited"
+            feedback_metadata = {
+                **_feedback_summary_metadata(normalized_summary, include_text=_feedback_include_text()),
+                "previous_summary_sha": hashlib.sha256(prior_summary.encode("utf-8")).hexdigest()[:12],
+                "source": match.summary_provenance.get("source") if match.summary_provenance else None,
+                "tone": match.summary_provenance.get("tone") if match.summary_provenance else None,
+                "style_profile": match.summary_provenance.get("style_profile") if match.summary_provenance else None,
+                "similarity_to_current": match.summary_provenance.get("similarity_to_current") if match.summary_provenance else None,
+                "specificity_score": match.summary_provenance.get("specificity_score") if match.summary_provenance else None,
+            }
+            state.feedback_events.append(
+                {
+                    "event": feedback_event,
+                    "item_id": match.id,
+                    "recorded_at": date.today().isoformat(),
+                    "metadata": {key: value for key, value in feedback_metadata.items() if value is not None},
+                }
+            )
         else:
             match.summary_provenance = None
         if normalized_summary and status is None and match.status != "hidden":
