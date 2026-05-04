@@ -76,7 +76,7 @@ test("renders current model as a clickable hover badge", () => {
   assert.match(html, /Streaming: on/);
 });
 
-test("keeps repository sources out of the release control view", () => {
+test("renders repository sources as clickable data in the release control view", () => {
   const html = buildReleaseControlHtml({
     modelSettings,
     range,
@@ -100,8 +100,13 @@ test("keeps repository sources out of the release control view", () => {
   });
 
   assert.match(html, /Repository activity loaded: 1 recent commit/);
-  assert.doesNotMatch(html, /PRs From Commits/);
-  assert.doesNotMatch(html, /Add release control UX/);
+  assert.match(html, /SOURCES/);
+  assert.match(html, /data-action="openSources"/);
+  assert.match(html, /PRs From Commits/);
+  assert.match(html, /Recent Commits/);
+  assert.match(html, /Add release control UX/);
+  assert.match(html, /data-action="useBase" data-ref="f954ba2"/);
+  assert.match(html, /data-action="useHead" data-ref="f954ba2"/);
 });
 
 test("counts visible draft items separately from hidden reviewed items", () => {
@@ -130,7 +135,11 @@ test("counts visible draft items separately from hidden reviewed items", () => {
     },
   });
 
+  assert.match(html, /class="meta-card" data-action="filterItems" data-filter="visible"/);
   assert.match(html, /<strong>1<\/strong><span>visible<\/span>/);
+  assert.match(html, /data-visibility="visible"/);
+  assert.match(html, /data-visibility="hidden"/);
+  assert.match(html, /body\[data-filter="visible"\] \.item\[data-visibility="hidden"\]/);
   assert.match(html, /Visible item/);
   assert.match(html, /Hidden item/);
   assert.match(html, /item hidden/);
@@ -483,6 +492,10 @@ test("renders coalesced stream chunk activity as live blocks", () => {
   assert.match(html, /Reasoning stream 18 chars/);
   assert.match(html, /Response stream 19 chars/);
   assert.match(html, /<details class="payload stream-payload" open>/);
+  assert.match(html, /<pre class="stream-scroll" tabindex="0" data-scroll-key="request-44-stream-task-reasoning">/);
+  assert.match(html, /let restoringScroll = false;/);
+  assert.match(html, /if \(restoringScroll\) return;/);
+  assert.match(html, /\.request \.stream-payload pre \{/);
   assert.match(html, /Thinking through diff/);
   assert.match(html, /Adds model tracing/);
 });

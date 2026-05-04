@@ -75,11 +75,22 @@ export class ReleasePilotTreeProvider implements vscode.TreeDataProvider<Release
       if (!this.overview) {
         return [new EmptyNode("Refresh repository activity to load release associations.")];
       }
-      const releases = this.overview.releases.map((release) => new ReleaseNode(release.version, release.itemCount));
+      const releases = this.overview.releases.map((release) => new ReleaseNode(
+        release.version,
+        release.itemCount,
+        this.commitsForRelease(release.version).length,
+      ));
       return [
-        new ReleaseNode("Unpublished", this.overview.unpublishedCount),
+        new ReleaseNode("Unpublished", this.overview.unpublishedCount, this.commitsForRelease(null).length),
         ...releases,
       ];
+    }
+    if (element instanceof ReleaseNode) {
+      const commits = this.commitsForRelease(element.version === "Unpublished" ? null : element.version);
+      if (!commits.length) {
+        return [new EmptyNode("No recent commits found for this release association.")];
+      }
+      return commits.map((commit) => new RepositoryCommitNode(commit));
     }
     if (element instanceof RootNode && element.kind === "model") {
       if (!this.modelSettings) {
@@ -109,6 +120,10 @@ export class ReleasePilotTreeProvider implements vscode.TreeDataProvider<Release
     return STATUS_ORDER.filter((status) => (grouped.get(status)?.length ?? 0) > 0).map(
       (status) => new StatusGroupNode(status, grouped.get(status) ?? []),
     );
+  }
+
+  private commitsForRelease(version: string | null): RepositoryCommit[] {
+    return (this.overview?.commits ?? []).filter((commit) => commit.release === version);
   }
 }
 
@@ -146,14 +161,23 @@ class RepositoryCommitNode extends vscode.TreeItem {
     ].filter(Boolean).join(" | ");
     this.tooltip = `${commit.subject}\n${commit.author}`;
     this.contextValue = "releasepilot.commit";
+    this.command = {
+      command: "releasepilot.openCommit",
+      title: "Open Commit",
+      arguments: [commit.sha],
+    };
   }
 }
 
 class ReleaseNode extends vscode.TreeItem {
-  constructor(version: string, itemCount: number) {
-    super(version, vscode.TreeItemCollapsibleState.None);
+  constructor(readonly version: string, itemCount: number, commitCount: number) {
+    super(version, commitCount > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
     this.description = `${itemCount} item(s)`;
     this.contextValue = "releasepilot.release";
+    this.tooltip = [
+      `${version}: ${itemCount} release-note item(s)`,
+      commitCount ? `${commitCount} recent commit(s) available to open.` : "No recent commits are currently mapped here.",
+    ].join("\n");
   }
 }
 

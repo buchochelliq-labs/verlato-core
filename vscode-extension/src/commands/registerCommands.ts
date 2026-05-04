@@ -12,6 +12,35 @@ interface ReleaseViewState {
 
 type DraftItemNode = { item: DraftItem };
 
+interface GitExtension {
+  getAPI(version: 1): GitAPI;
+}
+
+interface GitAPI {
+  repositories: GitRepository[];
+  getRepository(uri: vscode.Uri): GitRepository | null;
+  toGitUri(uri: vscode.Uri, ref: string): vscode.Uri;
+}
+
+interface GitRepository {
+  getCommit(ref: string): Promise<GitCommit>;
+  diffBetweenWithStats(ref1: string, ref2: string): Promise<GitDiffChange[]>;
+}
+
+interface GitCommit {
+  hash: string;
+  message: string;
+  parents: string[];
+  authorDate?: Date;
+  authorName?: string;
+  authorEmail?: string;
+}
+
+interface GitDiffChange {
+  uri: vscode.Uri;
+  originalUri?: vscode.Uri;
+}
+
 export function registerCommands(
   context: vscode.ExtensionContext,
   client: ReleasePilotClient,
@@ -74,6 +103,9 @@ export function registerCommands(
     vscode.commands.registerCommand("releasepilot.refreshItems", async () => {
       treeProvider.refresh(undefined, undefined, client.getModelSettings());
     }),
+    vscode.commands.registerCommand("releasepilot.openCommit", async (sha?: string) => {
+      await openCommit(sha);
+    }),
     vscode.commands.registerCommand("releasepilot.markItemReady", async (node?: DraftItemNode) => {
       await updateItemReviewState(client, treeProvider, previewPanel, node, { status: "ready" });
     }),
@@ -121,6 +153,86 @@ export function registerCommands(
       await changeModelSettings(client, treeProvider);
     }),
   );
+}
+
+async function openCommit(sha: string | undefined): Promise<void> {
+  if (!sha) {
+    return;
+  }
+  try {
+    await vscode.commands.executeCommand("git.showCommit", sha);
+    return;
+  } catch {
+    // Older VS Code builds do not expose a commit-detail command. Fall back to the built-in Git API.
+  }
+
+  try {
+    const git = await getWorkspaceGitRepository();
+    if (!git) {
+      await vscode.window.showWarningMessage("VS Code Git is not available for this workspace.");
+      return;
+    }
+    const { api, repository } = git;
+    const commit = await repository.getCommit(sha);
+    if (await openCommitDiff(api, repository, commit)) {
+      return;
+    }
+    await showCommitDetails(commit);
+  } catch (error) {
+    await vscode.window.showErrorMessage(`Unable to open commit ${sha}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function getWorkspaceGitRepository(): Promise<{ api: GitAPI; repository: GitRepository } | undefined> {
+  const extension = vscode.extensions.getExtension<GitExtension>("vscode.git");
+  const git = await extension?.activate();
+  const api = git?.getAPI(1);
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!api || !folder) {
+    return undefined;
+  }
+  const repository = api.getRepository(folder.uri) ?? api.repositories[0];
+  return repository ? { api, repository } : undefined;
+}
+
+async function openCommitDiff(api: GitAPI, repository: GitRepository, commit: GitCommit): Promise<boolean> {
+  const parent = commit.parents[0];
+  if (!parent) {
+    return false;
+  }
+  const changes = await repository.diffBetweenWithStats(parent, commit.hash);
+  if (!changes.length) {
+    return false;
+  }
+  await vscode.commands.executeCommand("_workbench.openMultiDiffEditor", {
+    title: commit.message.split(/\r?\n/, 1)[0] || commit.hash,
+    resources: changes.map((change) => ({
+      originalUri: api.toGitUri(change.originalUri ?? change.uri, parent),
+      modifiedUri: api.toGitUri(change.uri, commit.hash),
+    })),
+  });
+  return true;
+}
+
+async function showCommitDetails(commit: GitCommit): Promise<void> {
+  const content = [
+    `# Commit ${commit.hash}`,
+    ``,
+    commit.message,
+    ``,
+    `Author: ${formatAuthor(commit)}`,
+    `Date: ${commit.authorDate?.toLocaleString() ?? "unknown"}`,
+    `Parents: ${commit.parents.join(", ") || "none"}`,
+  ].join("\n");
+  const document = await vscode.workspace.openTextDocument({ content, language: "markdown" });
+  await vscode.window.showTextDocument(document, vscode.ViewColumn.Beside, true);
+}
+
+function formatAuthor(commit: GitCommit): string {
+  if (commit.authorName && commit.authorEmail) {
+    return `${commit.authorName} <${commit.authorEmail}>`;
+  }
+  return commit.authorName ?? commit.authorEmail ?? "unknown";
 }
 
 async function suggestItemSummary(

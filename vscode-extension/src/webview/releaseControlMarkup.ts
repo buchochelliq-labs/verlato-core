@@ -58,20 +58,31 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
       </aside>
       <div class="workspace">
         ${renderSuggestions(state.suggestions)}
-        <section class="meta">
-          <div><strong>${visibleItemCount}</strong><span>visible</span></div>
-          <div><strong>${unpublishedCount}</strong><span>unreleased</span></div>
-          <div><strong>${releasedCount}</strong><span>released</span></div>
+        <section class="meta" aria-label="Release item filters">
+          <button class="meta-card" data-action="filterItems" data-filter="visible" title="Show visible draft items">
+            <strong>${visibleItemCount}</strong><span>visible</span>
+          </button>
+          <button class="meta-card" data-action="filterItems" data-filter="unreleased" title="Show unreleased draft data">
+            <strong>${unpublishedCount}</strong><span>unreleased</span>
+          </button>
+          <button class="meta-card" data-action="filterItems" data-filter="released" title="Show released source data">
+            <strong>${releasedCount}</strong><span>released</span>
+          </button>
         </section>
-        <section class="section">
+        <section class="section changes-panel" id="changes-panel">
           <div class="section-title">CHANGES</div>
           ${sections.length ? sections.map(renderSection).join("") : `<p class="empty">Draft a release to see unreleased PRs, commits, and release-note items.</p>`}
+        </section>
+        <section class="section tree-section sources-panel" id="sources-panel">
+          <div class="section-title">SOURCES <button class="inline-action" data-action="openSources">Open View</button></div>
+          ${renderSources(state.overview)}
         </section>
       </div>
     </div>
   </main>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
+    ${scrollStateScript()}
     const base = document.getElementById('base');
     const head = document.getElementById('head');
     const version = document.getElementById('version');
@@ -84,10 +95,19 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
       if (!button) return;
       const action = button.dataset.action;
       syncRange();
+      if (action === 'filterItems') {
+        const filter = button.dataset.filter || 'all';
+        document.body.dataset.filter = filter;
+        document.querySelectorAll('.meta-card').forEach((card) => card.classList.toggle('active', card.dataset.filter === filter));
+        const target = filter === 'released' ? document.getElementById('sources-panel') : document.getElementById('changes-panel');
+        target?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        vscode.setState({ ...getStoredState(), releaseFilter: filter });
+      }
       if (action === 'scan') vscode.postMessage({ type: 'scan' });
       if (action === 'suggestAll') vscode.postMessage({ type: 'suggestAll' });
       if (action === 'preview') vscode.postMessage({ type: 'preview' });
       if (action === 'refresh') vscode.postMessage({ type: 'refresh' });
+      if (action === 'openSources') vscode.postMessage({ type: 'openSources' });
       if (action === 'cancel') vscode.postMessage({ type: 'cancel' });
       if (action === 'cancelRequest') vscode.postMessage({ type: 'cancelRequest', requestId: Number(button.dataset.request) });
       if (action === 'changeModel') vscode.postMessage({ type: 'changeModel' });
@@ -115,6 +135,11 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState): strin
       if (action === 'feedbackPositive') vscode.postMessage({ type: 'feedbackPositive', itemId: button.dataset.item });
       if (action === 'feedbackNegative') vscode.postMessage({ type: 'feedbackNegative', itemId: button.dataset.item });
     });
+    const restoredFilter = getStoredState().releaseFilter;
+    if (restoredFilter) {
+      document.body.dataset.filter = restoredFilter;
+      document.querySelectorAll('.meta-card').forEach((card) => card.classList.toggle('active', card.dataset.filter === restoredFilter));
+    }
   </script>
 </body>
 </html>`;
@@ -138,6 +163,7 @@ export function buildReleaseActivityHtml(state: ReleaseActivityRenderState): str
   </main>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
+    ${scrollStateScript()}
     document.addEventListener('click', (event) => {
       const button = event.target.closest('button');
       if (!button) return;
@@ -348,9 +374,9 @@ function renderRequest(request: CommandRequestSnapshot): string {
       ${renderRequestStatus(request.status)}
       ${request.status === "running" ? `<button class="request-stop" data-action="cancelRequest" data-request="${request.id}" title="Stop this request">Stop</button>` : ""}
     </summary>
-    <code>${escapeHtml(command)}</code>
-    ${activity.length ? renderActivity(activity) : `<small>No model activity yet.</small>`}
-    ${output ? `<details class="raw"><summary>Raw output</summary><pre>${escapeHtml(output)}</pre></details>` : ""}
+    <div class="sub-panel command-panel"><code>${escapeHtml(command)}</code></div>
+    ${activity.length ? renderActivity(request.id, activity) : `<div class="sub-panel"><small>No model activity yet.</small></div>`}
+    ${output ? `<details class="sub-panel raw"><summary>Raw output</summary><pre tabindex="0" data-scroll-key="request-${request.id}-raw">${escapeHtml(output)}</pre></details>` : ""}
   </details>`;
 }
 
@@ -359,25 +385,93 @@ function renderRequestStatus(status: CommandRequestSnapshot["status"]): string {
   return `<span class="badge request-status ${escapeHtml(status)}">${spinner}<span>${escapeHtml(status)}</span></span>`;
 }
 
-function renderActivity(activity: NonNullable<CommandRequestSnapshot["activity"]>): string {
+function renderActivity(requestId: number, activity: NonNullable<CommandRequestSnapshot["activity"]>): string {
   const latest = activity.slice(-20).reverse();
-  return `<ol class="activity">
-    <li class="activity-heading">Latest activity</li>
+  return `<section class="sub-panel activity-panel">
+    <div class="sub-panel-title">Latest activity</div>
+    <ol class="activity">
     ${latest.map((entry) => `<li class="${escapeHtml(entry.category)}">
       <time>${escapeHtml(formatActivityTime(entry.receivedAt))}</time>
       <span>
         ${escapeHtml(formatActivityMessage(entry))}
-        ${entry.payload ? renderActivityPayload(entry) : ""}
+        ${entry.payload ? renderActivityPayload(requestId, entry) : ""}
       </span>
     </li>`).join("")}
-  </ol>`;
+    </ol>
+  </section>`;
 }
 
-function renderActivityPayload(entry: NonNullable<CommandRequestSnapshot["activity"]>[number]): string {
+function renderActivityPayload(requestId: number, entry: NonNullable<CommandRequestSnapshot["activity"]>[number]): string {
   const label = formatPayloadLabel(entry);
   const open = entry.event === "stream_chunk" ? " open" : "";
   const streamClass = entry.event === "stream_chunk" ? " stream-payload" : "";
-  return `<details class="payload${streamClass}"${open}><summary>${escapeHtml(label)}<button class="copy" data-action="copyText" data-copy-label="${escapeHtml(label.toLowerCase())}">Copy</button></summary><pre>${escapeHtml(entry.payload ?? "")}</pre></details>`;
+  const scrollKey = activityPayloadScrollKey(requestId, entry);
+  const scrollClass = entry.event === "stream_chunk" ? " class=\"stream-scroll\"" : "";
+  return `<details class="payload${streamClass}"${open}><summary>${escapeHtml(label)}<button class="copy" data-action="copyText" data-copy-label="${escapeHtml(label.toLowerCase())}">Copy</button></summary><pre${scrollClass} tabindex="0" data-scroll-key="${escapeHtml(scrollKey)}">${escapeHtml(entry.payload ?? "")}</pre></details>`;
+}
+
+function activityPayloadScrollKey(requestId: number, entry: NonNullable<CommandRequestSnapshot["activity"]>[number]): string {
+  if (entry.event === "stream_chunk") {
+    const task = String(entry.attributes?.task ?? "task");
+    const kind = String(entry.attributes?.kind ?? "stream");
+    return `request-${requestId}-stream-${task}-${kind}`;
+  }
+  return `request-${requestId}-payload-${entry.id}`;
+}
+
+function scrollStateScript(): string {
+  return `
+    const SCROLL_THRESHOLD = 12;
+    let restoringScroll = false;
+    function getStoredState() {
+      return vscode.getState() || {};
+    }
+    function getScrollState() {
+      const state = getStoredState();
+      return state.scrollState || { windowY: 0, panes: {} };
+    }
+    function isPinnedToBottom(element) {
+      return element.scrollHeight - element.scrollTop - element.clientHeight <= SCROLL_THRESHOLD;
+    }
+    function saveScrollState() {
+      if (restoringScroll) return;
+      const scrollState = { windowY: window.scrollY, panes: {} };
+      document.querySelectorAll('[data-scroll-key]').forEach((element) => {
+        const key = element.dataset.scrollKey;
+        if (!key) return;
+        scrollState.panes[key] = {
+          top: element.scrollTop,
+          pinned: isPinnedToBottom(element),
+        };
+      });
+      vscode.setState({ ...getStoredState(), scrollState });
+    }
+    function restoreScrollState() {
+      restoringScroll = true;
+      const scrollState = getScrollState();
+      document.querySelectorAll('[data-scroll-key]').forEach((element) => {
+        const key = element.dataset.scrollKey;
+        const saved = key ? scrollState.panes[key] : undefined;
+        if (element.classList.contains('stream-scroll') && (!saved || saved.pinned)) {
+          element.scrollTop = element.scrollHeight;
+          return;
+        }
+        if (saved) {
+          element.scrollTop = saved.top;
+        }
+      });
+      if (typeof scrollState.windowY === 'number') {
+        window.scrollTo(0, scrollState.windowY);
+      }
+      requestAnimationFrame(() => {
+        restoringScroll = false;
+      });
+    }
+    window.addEventListener('scroll', saveScrollState, { passive: true });
+    document.addEventListener('scroll', saveScrollState, { capture: true, passive: true });
+    window.addEventListener('beforeunload', saveScrollState);
+    requestAnimationFrame(restoreScrollState);
+  `;
 }
 
 function parseActivityFromOutput(output: string): NonNullable<CommandRequestSnapshot["activity"]> {
@@ -586,7 +680,8 @@ function renderSection(section: { title: string; items: DraftItem[] }): string {
 function renderItem(item: DraftItem): string {
   const pr = item.pr_number ? `#${item.pr_number}` : item.commit_shas?.[0]?.slice(0, 7) ?? "change";
   const hiddenClass = item.hidden ? " hidden" : "";
-  return `<article class="item${hiddenClass}">
+  const visibility = item.hidden ? "hidden" : "visible";
+  return `<article class="item${hiddenClass}" data-visibility="${visibility}">
     <div class="item-head">
       <span class="name">${escapeHtml(item.title)}</span>
       <button class="icon mini" data-action="suggest" data-item="${escapeHtml(item.id)}" title="Suggest descriptions">✧</button>
@@ -654,8 +749,9 @@ function renderSourceGroup(title: string, refs: { label: string; ref: string; de
   if (!refs.length) {
     return "";
   }
+  const kind = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
   return `<details class="source-group" open>
-    <summary>${escapeHtml(title)} <span>${refs.length}</span></summary>
+    <summary data-source-kind="${escapeHtml(kind)}">${escapeHtml(title)} <span>${refs.length}</span></summary>
     ${refs.map((ref) => `<div class="source-row">
       <button class="source-main" data-action="useBase" data-ref="${escapeHtml(ref.ref)}" title="Use as base ref">
         <span>${escapeHtml(ref.label)}</span>
@@ -841,15 +937,27 @@ function styles(): string {
     .primary:hover { background: var(--vscode-button-hoverBackground); }
     .split { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
     .meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin: 0 0 10px; }
-    .meta div {
+    .meta-card {
       border-top: 2px solid color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 45%, var(--vscode-sideBarSectionHeader-border, transparent));
       padding: 6px 5px 5px;
       background: color-mix(in srgb, var(--vscode-input-background, #1f1f1f) 65%, transparent);
+      color: var(--vscode-foreground);
+      text-align: left;
+      min-height: 48px;
     }
-    .meta div:nth-child(2) { border-top-color: color-mix(in srgb, var(--vscode-charts-green, #89d185) 70%, var(--vscode-focusBorder, #3794ff)); }
-    .meta div:nth-child(3) { border-top-color: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 75%, var(--vscode-focusBorder, #3794ff)); }
+    .meta-card:hover,
+    .meta-card.active {
+      background: color-mix(in srgb, var(--vscode-list-hoverBackground, #2a2d2e) 75%, var(--vscode-focusBorder, #3794ff) 10%);
+      outline: 1px solid color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 65%, transparent);
+    }
+    .meta-card:nth-child(2) { border-top-color: color-mix(in srgb, var(--vscode-charts-green, #89d185) 70%, var(--vscode-focusBorder, #3794ff)); }
+    .meta-card:nth-child(3) { border-top-color: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 75%, var(--vscode-focusBorder, #3794ff)); }
     .meta strong { display: block; font-size: 15px; color: var(--vscode-foreground); }
     .meta span, small, .item-meta, .empty { color: var(--vscode-descriptionForeground); font-size: 11px; }
+    body[data-filter="visible"] .item[data-visibility="hidden"] { display: none; }
+    body[data-filter="released"] .changes-panel { display: none; }
+    body[data-filter="visible"] .sources-panel,
+    body[data-filter="unreleased"] .sources-panel { opacity: .72; }
     .model, .telemetry-toggle { width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 4px 6px; text-align: left; }
     .telemetry-toggle { margin-top: 4px; }
     .tone-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; margin-top: 5px; }
@@ -942,12 +1050,29 @@ function styles(): string {
     .request summary { display: flex; align-items: center; gap: 5px; text-transform: none; }
     .request-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .request-stop { min-height: 18px; padding: 0 5px; color: var(--vscode-button-foreground); background: var(--vscode-errorForeground); font-size: 10px; }
-    .request code { display: block; color: var(--vscode-descriptionForeground); white-space: pre-wrap; word-break: break-word; font-size: 10px; margin: 2px 0; }
+    .sub-panel {
+      margin: 4px 0;
+      padding: 5px;
+      border-left: 2px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.24));
+      background: color-mix(in srgb, var(--vscode-input-background, #1f1f1f) 72%, transparent);
+    }
+    .command-panel { padding-top: 3px; padding-bottom: 3px; }
+    .activity-panel {
+      border-left-color: color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 72%, var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.24)));
+    }
+    .sub-panel-title {
+      margin-bottom: 3px;
+      color: var(--vscode-descriptionForeground);
+      text-transform: uppercase;
+      font-weight: 700;
+      font-size: 10px;
+    }
+    .request code { display: block; color: var(--vscode-descriptionForeground); white-space: pre-wrap; word-break: break-word; font-size: 10px; }
     .activity {
       list-style: none;
       display: grid;
       gap: 3px;
-      margin: 5px 0 0;
+      margin: 0;
       padding: 0;
       font-size: 10px;
       line-height: 1.35;
@@ -960,21 +1085,17 @@ function styles(): string {
       border-left: 2px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.24));
       background: color-mix(in srgb, var(--vscode-input-background, #1f1f1f) 88%, var(--vscode-focusBorder, #3794ff) 12%);
     }
-    .activity-heading {
-      display: block !important;
-      color: var(--vscode-descriptionForeground);
-      background: transparent !important;
-      border-left: 0 !important;
-      padding: 0 0 2px !important;
-      text-transform: uppercase;
-      font-weight: 700;
-    }
     .activity li.model { border-left-color: var(--vscode-focusBorder); }
     .activity time { color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; }
     .activity span { min-width: 0; overflow-wrap: anywhere; }
     .payload { margin-top: 3px; }
     .payload summary { color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 400; text-transform: none; }
-    .stream-payload pre { max-height: 260px; font-size: 11px; line-height: 1.45; }
+    .request .stream-payload pre {
+      max-height: 260px;
+      font-size: 11px;
+      line-height: 1.45;
+      overscroll-behavior: contain;
+    }
     .raw { margin-top: 4px; }
     .raw summary { color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 400; text-transform: none; }
     .request pre {

@@ -25,6 +25,7 @@
     "onCommand:releasepilot.previewReleaseNotes",
     "onCommand:releasepilot.refreshRepository",
     "onCommand:releasepilot.refreshItems",
+    "onCommand:releasepilot.openCommit",
     "onCommand:releasepilot.applyToChangelog",
     "onCommand:releasepilot.applyToReleaseFile",
     "onCommand:releasepilot.markItemReady",
@@ -38,6 +39,9 @@
     "onCommand:releasepilot.acceptItem",
     "onCommand:releasepilot.unhideItem",
     "onCommand:releasepilot.resetItemSummary"
+  ],
+  "extensionDependencies": [
+    "vscode.git"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -106,6 +110,10 @@
       {
         "command": "releasepilot.refreshItems",
         "title": "ReleasePilot: Refresh"
+      },
+      {
+        "command": "releasepilot.openCommit",
+        "title": "ReleasePilot: Open Commit"
       },
       {
         "command": "releasepilot.markItemReady",

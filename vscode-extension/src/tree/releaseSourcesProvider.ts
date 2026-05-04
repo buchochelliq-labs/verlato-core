@@ -47,15 +47,30 @@ export class ReleaseSourcesProvider implements vscode.TreeDataProvider<SourceNod
     }
     if (element instanceof SourceGroupNode && element.kind === "releases") {
       return [
-        new ReleaseNode("Unpublished", this.overview.unpublishedCount),
-        ...this.overview.releases.map((release) => new ReleaseNode(release.version, release.itemCount)),
+        new ReleaseNode("Unpublished", this.overview.unpublishedCount, this.commitsForRelease(null).length),
+        ...this.overview.releases.map((release) => new ReleaseNode(
+          release.version,
+          release.itemCount,
+          this.commitsForRelease(release.version).length,
+        )),
       ];
+    }
+    if (element instanceof ReleaseNode) {
+      const commits = this.commitsForRelease(element.version === "Unpublished" ? null : element.version);
+      if (!commits.length) {
+        return [new EmptyNode("No recent commits found for this release association.")];
+      }
+      return commits.map((commit) => new CommitNode(commit, "commit"));
     }
     return [];
   }
 
   private prCommits(): RepositoryCommit[] {
     return (this.overview?.commits ?? []).filter((commit) => commit.prNumber !== null);
+  }
+
+  private commitsForRelease(version: string | null): RepositoryCommit[] {
+    return (this.overview?.commits ?? []).filter((commit) => commit.release === version);
   }
 }
 
@@ -91,15 +106,24 @@ class CommitNode extends vscode.TreeItem {
     ].filter(Boolean).join("\n");
     this.contextValue = `releasepilot.source.${kind}`;
     this.iconPath = new vscode.ThemeIcon(kind === "pull-request" ? "git-pull-request" : "git-commit");
+    this.command = {
+      command: "releasepilot.openCommit",
+      title: "Open Commit",
+      arguments: [commit.sha],
+    };
   }
 }
 
 class ReleaseNode extends vscode.TreeItem {
-  constructor(version: string, itemCount: number) {
-    super(version, vscode.TreeItemCollapsibleState.None);
+  constructor(readonly version: string, itemCount: number, commitCount: number) {
+    super(version, commitCount > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
     this.description = `${itemCount} item(s)`;
     this.contextValue = "releasepilot.source.release";
     this.iconPath = new vscode.ThemeIcon(version === "Unpublished" ? "circle-slash" : "package");
+    this.tooltip = [
+      `${version}: ${itemCount} release-note item(s)`,
+      commitCount ? `${commitCount} recent commit(s) available to open.` : "No recent commits are currently mapped here.",
+    ].join("\n");
   }
 }
 

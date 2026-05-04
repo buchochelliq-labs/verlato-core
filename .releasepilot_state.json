@@ -1,5 +1,27 @@
 {
   "area_release_lineage": {},
+  "feedback_events": [
+    {
+      "event": "suggestion_applied",
+      "item_id": "ci_bab81b5df3bf",
+      "metadata": {
+        "previous_summary_sha": "f5caa001aec7",
+        "similarity_to_current": 0.014084507042253521,
+        "source": "model-suggestion",
+        "specificity_score": 1,
+        "style_profile": {
+          "banned_phrases": [],
+          "guidance": "",
+          "project_vocabulary": [],
+          "specificity_floor": 0
+        },
+        "summary_chars": 379,
+        "summary_sha": "dbd223d9e989",
+        "tone": "release-note"
+      },
+      "recorded_at": "2026-05-04"
+    }
+  ],
   "items": [
     {
       "checksum": "5588f65e83bb5a7ec3c64916984ba08ae9856a1e9b646ef65bedc8f3c72099cc",
@@ -46,7 +68,8 @@
         "head_ref": "HEAD",
         "pr_number": 5
       },
-      "status": "hidden"
+      "status": "hidden",
+      "summary_provenance": null
     },
     {
       "checksum": "299c419b6879ed6b20c33c79929914aa4ef5c73dac3af99c4cc585ebc3d4385a",
@@ -156,7 +179,8 @@
         "head_ref": "HEAD",
         "pr_number": null
       },
-      "status": "hidden"
+      "status": "hidden",
+      "summary_provenance": null
     },
     {
       "checksum": "bf8b32cff30f8c216778f79900bf39c979d124028c1fe924d0052b9a8a9ae731",
@@ -242,7 +266,8 @@
         "head_ref": "HEAD",
         "pr_number": null
       },
-      "status": "edited"
+      "status": "edited",
+      "summary_provenance": null
     },
     {
       "checksum": "4270ed2f72cacde794485b7cbe4a484f289c128ab54dc66b834b1874a3459260",
@@ -487,7 +512,8 @@
         "head_ref": "HEAD",
         "pr_number": null
       },
-      "status": "hidden"
+      "status": "hidden",
+      "summary_provenance": null
     },
     {
       "checksum": "9f7f42a1c1295ebd4d168cfd02d4b7188a946826f015bad6cf2899ee90d6d949",
@@ -534,7 +560,8 @@
         "head_ref": "HEAD",
         "pr_number": 6
       },
-      "status": "hidden"
+      "status": "hidden",
+      "summary_provenance": null
     },
     {
       "checksum": "f56d3d77c85137de7e638a6f22f02272d77f73210e58a9e23b2de20e5c9019bc",
@@ -581,7 +608,8 @@
         "head_ref": "HEAD",
         "pr_number": 7
       },
-      "status": "hidden"
+      "status": "hidden",
+      "summary_provenance": null
     },
     {
       "checksum": "f5e876ab5698fb95ab521c74490db868a72c8c9af551a3fb6f14b05dccc1707b",
@@ -628,7 +656,8 @@
         "head_ref": "HEAD",
         "pr_number": 8
       },
-      "status": "hidden"
+      "status": "hidden",
+      "summary_provenance": null
     },
     {
       "checksum": "ab7beed6a92cf3aa5c711486191542b0928415012289b656a9c8af0a366b96b4",
@@ -675,7 +704,8 @@
         "head_ref": "HEAD",
         "pr_number": 11
       },
-      "status": "hidden"
+      "status": "hidden",
+      "summary_provenance": null
     },
     {
       "checksum": "1e374f3ddb3dfed12e5029468284dd550695ebb17261df7059a2483379a57648",
@@ -749,7 +779,8 @@
         "head_ref": "HEAD",
         "pr_number": null
       },
-      "status": "hidden"
+      "status": "hidden",
+      "summary_provenance": null
     },
     {
       "checksum": "61d8a77e9c359f24a84235d75f64af4b9c0afc4933e81fcf92a9567aaf32824d",
@@ -826,7 +857,8 @@
         "head_ref": "HEAD",
         "pr_number": null
       },
-      "status": "hidden"
+      "status": "hidden",
+      "summary_provenance": null
     },
     {
       "checksum": "964fcbf0f047b6d7b411097a8972e75587ab23dd4a971128239f98d7fed1e758",
@@ -881,7 +913,8 @@
         "head_ref": "HEAD",
         "pr_number": null
       },
-      "status": "accepted"
+      "status": "accepted",
+      "summary_provenance": null
     },
     {
       "checksum": "3d20ac9386d26cc5b1cc186cab246d00bcf547669f505c983ad4ba93121c3b9c",
@@ -1032,7 +1065,8 @@
         "head_ref": "HEAD",
         "pr_number": null
       },
-      "status": "hidden"
+      "status": "hidden",
+      "summary_provenance": null
     },
     {
       "checksum": "8e26b92a7d7217796931004000133e3d360cadb0e8233610d6d25a7f01c05939",
@@ -1079,7 +1113,8 @@
         "head_ref": "HEAD",
         "pr_number": 9
       },
-      "status": "hidden"
+      "status": "hidden",
+      "summary_provenance": null
     },
     {
       "checksum": "572d3f250648d5f2616f0991dea5497a8426c55c813a9d6d7bcade8176c7d49a",
@@ -1159,7 +1194,8 @@
         "head_ref": "HEAD",
         "pr_number": null
       },
-      "status": "hidden"
+      "status": "hidden",
+      "summary_provenance": null
     },
     {
       "checksum": "19637c7f95ad9c88d2b5296bcd39d34b8e25a0d01b4f7ddbd63838a9551e5c2f",
@@ -1206,7 +1242,8 @@
         "head_ref": "HEAD",
         "pr_number": 10
       },
-      "status": "hidden"
+      "status": "hidden",
+      "summary_provenance": null
     },
     {
       "checksum": "ebe4539e4f78cf02b757509bddeb6c4e55c079263178d87823d43fb0fac062ef",
@@ -1271,7 +1308,8 @@
         "head_ref": "HEAD",
         "pr_number": null
       },
-      "status": "hidden"
+      "status": "hidden",
+      "summary_provenance": null
     },
     {
       "checksum": "0fce3c866104bba86e0696547e0cd7bcde5f44d8c2d76ca0c51cb5609638b125",
@@ -1541,7 +1579,198 @@
         "head_ref": "HEAD",
         "pr_number": null
       },
-      "status": "edited"
+      "status": "edited",
+      "summary_provenance": null
+    },
+    {
+      "checksum": "bab81b5df3bf11737f5f074cdf45da74032136d3ed8968c9862ab47a6a9a1e9e",
+      "checksum_version": "v2",
+      "classification": {
+        "area": "general",
+        "audience": "external",
+        "kind": "added",
+        "semver": "minor"
+      },
+      "confidence": 0.85,
+      "content": {
+        "summary": "changed files: modified .vscode/settings.json, modified ARCHITECTURE.md, modified BACKLOG.md, modified README.md, modified releasepilot.sample.json, and 25 more; statuses: added:3, modified:27; areas: backend(9), docs(3), general(11), tests(7); config: releasepilot/config.py, tests/test_config_and_drafts.py, .vscode/settings.json",
+        "title": "feat: enhance suggestion generation with tone presets and model telemetry"
+      },
+      "edited_summary": "**Adds Tone Control and Advanced Generation Features:** This release introduces powerful new capabilities to the suggestion generation process. Users can now select from various tone presets to dictate the style of the AI-generated text. Furthermore, we have improved the underlying model telemetry, leading to more robust and accurate suggestions across all supported providers.",
+      "evidence": {
+        "commit_signals": [
+          "conventional:feat"
+        ],
+        "diff_summary": {
+          "api_changes": [],
+          "config_changes": [
+            "releasepilot/config.py",
+            "tests/test_config_and_drafts.py",
+            ".vscode/settings.json"
+          ],
+          "file_statuses": {
+            ".vscode/settings.json": "modified",
+            "ARCHITECTURE.md": "modified",
+            "BACKLOG.md": "modified",
+            "README.md": "modified",
+            "releasepilot.sample.json": "modified",
+            "releasepilot/cli/main.py": "modified",
+            "releasepilot/config.py": "modified",
+            "releasepilot/core/classifier.py": "modified",
+            "releasepilot/core/generator.py": "modified",
+            "releasepilot/providers/github_copilot.py": "modified",
+            "releasepilot/providers/ollama.py": "modified",
+            "releasepilot/state/store.py": "modified",
+            "tests/test_classifier_deterministic.py": "modified",
+            "tests/test_config_and_drafts.py": "modified",
+            "tests/test_github_copilot_provider.py": "modified",
+            "tests/test_markdown_golden.py": "modified",
+            "tests/test_ollama_provider.py": "modified",
+            "tests/test_state_store.py": "modified",
+            "vscode-extension/package.json": "modified",
+            "vscode-extension/releasepilot-vscode-0.0.1.vsix": "modified",
+            "vscode-extension/src/client/releasePilotClient.ts": "modified",
+            "vscode-extension/src/client/types.ts": "modified",
+            "vscode-extension/src/commands/registerCommands.ts": "modified",
+            "vscode-extension/src/extension.ts": "modified",
+            "vscode-extension/src/notifications.ts": "added",
+            "vscode-extension/src/tree/releaseSourcesProvider.ts": "added",
+            "vscode-extension/src/webview/releaseActivityView.ts": "added",
+            "vscode-extension/src/webview/releaseControlMarkup.ts": "modified",
+            "vscode-extension/src/webview/releaseControlView.ts": "modified",
+            "vscode-extension/test/releaseControlMarkup.test.js": "modified"
+          },
+          "files_by_area": {
+            "backend": [
+              "vscode-extension/src/client/releasePilotClient.ts",
+              "vscode-extension/src/client/types.ts",
+              "vscode-extension/src/commands/registerCommands.ts",
+              "vscode-extension/src/webview/releaseControlMarkup.ts",
+              "vscode-extension/src/webview/releaseControlView.ts",
+              "vscode-extension/src/extension.ts",
+              "vscode-extension/src/notifications.ts",
+              "vscode-extension/src/tree/releaseSourcesProvider.ts",
+              "vscode-extension/src/webview/releaseActivityView.ts"
+            ],
+            "docs": [
+              "ARCHITECTURE.md",
+              "BACKLOG.md",
+              "README.md"
+            ],
+            "general": [
+              "releasepilot.sample.json",
+              "releasepilot/cli/main.py",
+              "releasepilot/config.py",
+              "releasepilot/core/classifier.py",
+              "vscode-extension/package.json",
+              "vscode-extension/releasepilot-vscode-0.0.1.vsix",
+              "releasepilot/state/store.py",
+              ".vscode/settings.json",
+              "releasepilot/providers/github_copilot.py",
+              "releasepilot/providers/ollama.py",
+              "releasepilot/core/generator.py"
+            ],
+            "tests": [
+              "tests/test_classifier_deterministic.py",
+              "tests/test_config_and_drafts.py",
+              "vscode-extension/test/releaseControlMarkup.test.js",
+              "tests/test_state_store.py",
+              "tests/test_github_copilot_provider.py",
+              "tests/test_ollama_provider.py",
+              "tests/test_markdown_golden.py"
+            ]
+          },
+          "migrations": [],
+          "representative_hunks": {},
+          "summary": "changed files: modified .vscode/settings.json, modified ARCHITECTURE.md, modified BACKLOG.md, modified README.md, modified releasepilot.sample.json, and 25 more; statuses: added:3, modified:27; areas: backend(9), docs(3), general(11), tests(7); config: releasepilot/config.py, tests/test_config_and_drafts.py, .vscode/settings.json"
+        },
+        "files": [
+          "ARCHITECTURE.md",
+          "BACKLOG.md",
+          "README.md",
+          "releasepilot.sample.json",
+          "releasepilot/cli/main.py",
+          "releasepilot/config.py",
+          "releasepilot/core/classifier.py",
+          "tests/test_classifier_deterministic.py",
+          "tests/test_config_and_drafts.py",
+          "vscode-extension/package.json",
+          "vscode-extension/releasepilot-vscode-0.0.1.vsix",
+          "vscode-extension/src/client/releasePilotClient.ts",
+          "vscode-extension/src/client/types.ts",
+          "vscode-extension/src/commands/registerCommands.ts",
+          "vscode-extension/src/webview/releaseControlMarkup.ts",
+          "vscode-extension/src/webview/releaseControlView.ts",
+          "vscode-extension/test/releaseControlMarkup.test.js",
+          "releasepilot/state/store.py",
+          "tests/test_state_store.py",
+          ".vscode/settings.json",
+          "releasepilot/providers/github_copilot.py",
+          "releasepilot/providers/ollama.py",
+          "tests/test_github_copilot_provider.py",
+          "tests/test_ollama_provider.py",
+          "releasepilot/core/generator.py",
+          "tests/test_markdown_golden.py",
+          "vscode-extension/src/extension.ts",
+          "vscode-extension/src/notifications.ts",
+          "vscode-extension/src/tree/releaseSourcesProvider.ts",
+          "vscode-extension/src/webview/releaseActivityView.ts"
+        ],
+        "labels": []
+      },
+      "hidden": false,
+      "id": "ci_bab81b5df3bf",
+      "lineage_releases": [],
+      "published": false,
+      "published_in": null,
+      "reviewed_at": "2026-05-04",
+      "reviewed_by": null,
+      "source": {
+        "base_ref": "HEAD~10",
+        "commit_shas": [
+          "0ceb7f42a862f10a03b8455ba61975da13c66830",
+          "c6f410264952b026b6dfe951c31527f268ad6252",
+          "e46df7ef8836602be1dab482f01d3ee163822764",
+          "fddd519dbd3d2791a109924554e7e9e0422cace4",
+          "ee403e6be5f012ea8c343b8c496dfa8794277c07",
+          "3aa174d73e5c024b84dcaeac81c3b592e45ed33c",
+          "f4d3174fbfc2b9d8baf219f8c8946aa4d0b71387",
+          "df5f992fdb88d9f632f2484419ec446497aacb3c",
+          "d41ed95679c412f96bd84edeb3fa30e5e503fb55",
+          "66720e63d5093f5fd9c07ea762125a912d7bd1b8"
+        ],
+        "head_ref": "HEAD",
+        "pr_number": null
+      },
+      "status": "accepted",
+      "summary_provenance": {
+        "applied_at": "2026-05-04",
+        "model": "ollama:gemma4",
+        "prompt_sha": "132bb28cc895",
+        "provider": "ollama",
+        "reasoning_exposed": true,
+        "response_metadata": {
+          "done_reason": "stop",
+          "eval_count": 1018,
+          "eval_duration": 166658025900,
+          "load_duration": 17385171200,
+          "prompt_eval_count": 583,
+          "prompt_eval_duration": 37727255400,
+          "total_duration": 223035288000
+        },
+        "similarity_to_current": 0.014084507042253521,
+        "source": "model-suggestion",
+        "source_evidence_count": 10,
+        "specificity_score": 1,
+        "style_profile": {
+          "banned_phrases": [],
+          "guidance": "",
+          "project_vocabulary": [],
+          "specificity_floor": 0
+        },
+        "suggestion_index": 2,
+        "tone": "release-note"
+      }
     }
   ],
   "schema_version": "v3"

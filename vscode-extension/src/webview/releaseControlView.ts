@@ -135,6 +135,9 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     if (message.type === "refresh") {
       await this.refreshRepository(true);
     }
+    if (message.type === "openSources") {
+      await vscode.commands.executeCommand("releasepilot.sources.focus");
+    }
     if (message.type === "changeModel") {
       await vscode.commands.executeCommand("releasepilot.changeModel");
     }
