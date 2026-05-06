@@ -45,6 +45,8 @@ def test_provider_factory_passes_ollama_tuning(monkeypatch):
     monkeypatch.setenv("VERLATO_MODEL_PROVIDER", "ollama")
     provider = build_provider(
         ProviderConfig(
+            model="base-model",
+            suggest_model="suggest-model",
             keep_alive="20m",
             num_ctx=4096,
             summary_num_predict=96,
@@ -53,6 +55,8 @@ def test_provider_factory_passes_ollama_tuning(monkeypatch):
     )
 
     assert isinstance(provider, OllamaProvider)
+    assert provider.model == "base-model"
+    assert provider.suggest_model == "suggest-model"
     assert provider.keep_alive == "20m"
     assert provider.num_ctx == 4096
     assert provider.summary_num_predict == 96
@@ -63,11 +67,23 @@ def test_provider_factory_ollama_tuning_env_overrides_config(monkeypatch):
     monkeypatch.setenv("VERLATO_MODEL_PROVIDER", "ollama")
     monkeypatch.setenv("VERLATO_OLLAMA_KEEP_ALIVE", "45m")
     monkeypatch.setenv("VERLATO_OLLAMA_NUM_PREDICT", "64")
+    monkeypatch.setenv("VERLATO_OLLAMA_SUGGEST_MODEL", "env-suggest-model")
     provider = build_provider(ProviderConfig(keep_alive="20m", summary_num_predict=96))
 
     assert isinstance(provider, OllamaProvider)
     assert provider.keep_alive == "45m"
     assert provider.num_predict == 64
+    assert provider.suggest_model == "env-suggest-model"
+
+
+def test_provider_factory_cli_suggest_model_override_wins(monkeypatch):
+    monkeypatch.setenv("VERLATO_MODEL_PROVIDER", "ollama")
+    monkeypatch.setenv("VERLATO_OLLAMA_SUGGEST_MODEL", "env-suggest-model")
+
+    provider = build_provider(ProviderConfig(suggest_model="config-suggest-model"), suggest_model="cli-suggest-model")
+
+    assert isinstance(provider, OllamaProvider)
+    assert provider.suggest_model == "cli-suggest-model"
 
 
 def test_provider_factory_uses_config_default(monkeypatch):

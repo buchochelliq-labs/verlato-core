@@ -197,12 +197,19 @@ export class VerlatoClient implements vscode.Disposable {
       "doctor",
       "ollama",
       ...(settings.suggestionParallelism > 1 ? ["--parallel-probe"] : []),
+      ...suggestModelArgs(settings),
       ...(settings.suggestionAdaptiveRecommendations ? ["--adaptive-recommendations"] : []),
     ]);
   }
 
   async warmupOllama(): Promise<OllamaDoctorResult> {
-    return this.runJsonCommand<OllamaDoctorResult>(["doctor", "ollama", "--warmup"]);
+    const settings = this.getModelSettings();
+    return this.runJsonCommand<OllamaDoctorResult>([
+      "doctor",
+      "ollama",
+      "--warmup",
+      ...suggestModelArgs(settings),
+    ]);
   }
 
   async getRepositoryOverview(): Promise<RepositoryOverview> {
@@ -233,6 +240,7 @@ export class VerlatoClient implements vscode.Disposable {
     return {
       provider,
       model: config.get<string>("ollamaModel") || "gemma4:latest",
+      suggestionModel: config.get<string>("ollamaSuggestionModel") || "",
       endpoint: config.get<string>("ollamaEndpoint") || "http://127.0.0.1:11434/api/chat",
       ollamaTimeoutSeconds: config.get<number>("ollamaTimeoutSeconds") ?? 120,
       maxModelItems: config.get<number>("maxModelItems") ?? 25,
@@ -263,6 +271,9 @@ export class VerlatoClient implements vscode.Disposable {
     }
     if (settings.model !== undefined) {
       await config.update("ollamaModel", settings.model, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.suggestionModel !== undefined) {
+      await config.update("ollamaSuggestionModel", settings.suggestionModel, vscode.ConfigurationTarget.Workspace);
     }
     if (settings.endpoint !== undefined) {
       await config.update("ollamaEndpoint", settings.endpoint, vscode.ConfigurationTarget.Workspace);
@@ -750,6 +761,7 @@ export class VerlatoClient implements vscode.Disposable {
     const provider = resolveCommandModelProvider(args, settings.provider);
     const env = { ...process.env };
     env.VERLATO_OLLAMA_MODEL = settings.model;
+    env.VERLATO_OLLAMA_SUGGEST_MODEL = settings.suggestionModel;
     env.VERLATO_OLLAMA_ENDPOINT = settings.endpoint;
     env.VERLATO_OLLAMA_TIMEOUT_SECONDS = String(settings.ollamaTimeoutSeconds);
     env.VERLATO_MODEL_MAX_ITEMS = String(settings.maxModelItems);
@@ -969,6 +981,9 @@ function mapPrByCommit(items: StateItem[]): Map<string, number> {
 
 function formatModelSettings(settings: ModelSettings): string {
   const model = settings.provider === "ollama" ? `/${settings.model}` : "";
+  const suggestionModel = settings.provider === "ollama" && settings.suggestionModel.trim()
+    ? `; suggestion model: ${settings.suggestionModel.trim()}`
+    : "";
   const payloads = settings.includePromptPayloads ? "; payloads on" : "";
   const reasoning = settings.includeReasoningPayloads ? "; reasoning on" : "";
   const redaction = settings.redactPayloads ? "; redaction on" : "; redaction off";
@@ -980,7 +995,13 @@ function formatModelSettings(settings: ModelSettings): string {
   const timeout = settings.provider === "ollama" ? `; timeout: ${settings.ollamaTimeoutSeconds}s` : "";
   const warm = settings.provider === "ollama" ? `; cache warm: ${settings.suggestionAutoWarmCache ? "on" : "off"}` : "";
   const adaptive = settings.suggestionAdaptiveRecommendations ? "; adaptive advice on" : "";
-  return `${settings.provider}${model}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; parallelism: ${settings.suggestionParallelism}; batch size: ${settings.suggestionBatchSize}; prompt profile: ${settings.suggestionPromptProfile}; tone: ${settings.suggestionTone}${warm}${adaptive}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
+  return `${settings.provider}${model}${suggestionModel}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; parallelism: ${settings.suggestionParallelism}; batch size: ${settings.suggestionBatchSize}; prompt profile: ${settings.suggestionPromptProfile}; tone: ${settings.suggestionTone}${warm}${adaptive}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
+}
+
+function suggestModelArgs(settings: ModelSettings): string[] {
+  return settings.provider === "ollama" && settings.suggestionModel.trim()
+    ? ["--suggest-model", settings.suggestionModel.trim()]
+    : [];
 }
 
 function draftSuggestionPreviewArgs(request: DraftRangeRequest, settings: ModelSettings): string[] {
@@ -1000,6 +1021,7 @@ function draftSuggestionPreviewArgs(request: DraftRangeRequest, settings: ModelS
     String(settings.suggestionBatchSize),
     "--prompt-profile",
     settings.suggestionPromptProfile,
+    ...suggestModelArgs(settings),
     "--tone",
     settings.suggestionTone,
     ...(settings.suggestionAdaptiveRecommendations ? ["--adaptive-recommendations"] : []),
@@ -1021,6 +1043,9 @@ function createSuggestionPartialState(
       base_ref: request.base,
       head_ref: request.head ?? "HEAD",
       provider: settings.provider,
+      model: settings.model,
+      suggest_model: settings.suggestionModel || null,
+      effective_suggest_model: settings.suggestionModel || settings.model,
       count: settings.suggestionCount,
       tone: settings.suggestionTone,
       prompt_profile: settings.suggestionPromptProfile,
@@ -1091,6 +1116,13 @@ function coerceSuggestionPreview(
     base_ref: typeof value.base_ref === "string" ? value.base_ref : fallback.base_ref,
     head_ref: typeof value.head_ref === "string" ? value.head_ref : fallback.head_ref,
     provider: typeof value.provider === "string" ? value.provider : fallback.provider,
+    model: typeof value.model === "string" ? value.model : fallback.model,
+    suggest_model: typeof value.suggest_model === "string" || value.suggest_model === null
+      ? value.suggest_model
+      : fallback.suggest_model,
+    effective_suggest_model: typeof value.effective_suggest_model === "string"
+      ? value.effective_suggest_model
+      : fallback.effective_suggest_model,
     count: typeof value.count === "number" ? value.count : fallback.count,
     prompt_profile: typeof value.prompt_profile === "string" ? value.prompt_profile : fallback.prompt_profile,
     tone: typeof value.tone === "string" ? value.tone : fallback.tone,

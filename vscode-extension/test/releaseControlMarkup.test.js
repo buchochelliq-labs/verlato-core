@@ -7,6 +7,7 @@ const manifest = require("../package.json");
 const modelSettings = {
   provider: "mock",
   model: "mock-model",
+  suggestionModel: "",
   endpoint: "http://127.0.0.1:11434/api/chat",
   ollamaTimeoutSeconds: 120,
   maxModelItems: 25,
@@ -1181,6 +1182,7 @@ test("contributes focused Verlato views and optional walkthrough", () => {
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionBatchSize"].default, 2);
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionBatchSize"].maximum, 2);
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionAutoWarmCache"].default, true);
+  assert.equal(manifest.contributes.configuration.properties["verlato.ollamaSuggestionModel"].default, "");
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionPromptProfile"].default, "conservative");
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionAdaptiveRecommendations"].default, false);
   assert.equal(manifest.contributes.walkthroughs[0].title, "Get started with Verlato");

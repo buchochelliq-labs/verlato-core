@@ -1135,12 +1135,14 @@ function modelBadgeLabel(settings: ModelSettings): string {
 }
 
 function modelDetail(settings: ModelSettings): string {
+  const suggestionModel = settings.suggestionModel.trim() || "same as main";
   const providerDetail = settings.provider === "ollama"
     ? `${settings.model} at ${settings.endpoint}`
     : `fanout guard ${settings.maxModelItems}`;
   return [
     `Provider: ${settings.provider}`,
     `Model: ${providerDetail}`,
+    `Suggestion model: ${suggestionModel}`,
     `Tone: ${settings.suggestionTone}`,
     `Suggestions: ${settings.suggestionCount}`,
     `Parallelism: ${settings.suggestionParallelism}`,
@@ -1172,8 +1174,10 @@ function renderOllamaDoctor(result: OllamaDoctorResult | undefined): string {
   const settings = renderDoctorRecommendedSettings(result.summary.recommended_settings);
   const diagnostics = result.summary.diagnostics.slice(0, 2);
   const runtime = renderOllamaRuntime(result.runtime);
+  const modelLine = renderOllamaDoctorModels(result.config);
   return `<div class="doctor-result ${escapeHtml(result.summary.status)}">
     <div><strong>Ollama health</strong><span>${escapeHtml(result.summary.status)} | ${escapeHtml(result.summary.bottleneck.replace("_", " "))}${result.summary.warmed_up ? " | warmed" : ""}</span></div>
+    ${modelLine ? `<small>${escapeHtml(modelLine)}</small>` : ""}
     ${timingParts ? `<small>${escapeHtml(timingParts)}</small>` : ""}
     ${runtime ? `<small>${escapeHtml(runtime)}</small>` : ""}
     ${diagnostics.map((diagnostic) => `<small>${escapeHtml(diagnostic)}</small>`).join("")}
@@ -1181,6 +1185,15 @@ function renderOllamaDoctor(result: OllamaDoctorResult | undefined): string {
     ${renderAdaptiveRecommendations(result.adaptive_recommendations)}
     ${recommendations.length ? `<ul>${recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
   </div>`;
+}
+
+function renderOllamaDoctorModels(config: OllamaDoctorResult["config"]): string {
+  const model = config.model || "configured model";
+  const effective = config.effective_suggest_model || config.suggest_model || model;
+  if (effective === model) {
+    return `Model: ${model}`;
+  }
+  return `Model: ${model} | suggestion ${effective}`;
 }
 
 function renderOllamaRuntime(runtime: OllamaDoctorResult["runtime"]): string {
@@ -1221,6 +1234,7 @@ function renderDoctorRecommendedSettings(settings: OllamaDoctorResult["summary"]
   const parts = [
     typeof settings.suggestion_parallelism === "number" ? `try parallelism ${settings.suggestion_parallelism}` : "",
     typeof settings.suggest_num_predict === "number" ? `try suggest cap ${settings.suggest_num_predict}` : "",
+    typeof settings.suggest_model === "string" ? `try suggestion model ${settings.suggest_model}` : "",
   ].filter(Boolean);
   return parts.length ? `Recommendation: ${parts.join(", ")}` : "";
 }

@@ -10,7 +10,12 @@ from verlato.providers.ollama import OllamaProvider
 from verlato.providers.stub import StubProvider
 
 
-def build_provider(config: ProviderConfig | None = None, *, mode: str | None = None) -> VerlatoProvider:
+def build_provider(
+    config: ProviderConfig | None = None,
+    *,
+    mode: str | None = None,
+    suggest_model: str | None = None,
+) -> VerlatoProvider:
     config = config or ProviderConfig()
     selected_mode = (mode or os.getenv("VERLATO_MODEL_PROVIDER") or config.name or "stub").lower()
     if selected_mode == "mock":
@@ -18,6 +23,11 @@ def build_provider(config: ProviderConfig | None = None, *, mode: str | None = N
     if selected_mode in {"ollama", "local"}:
         return OllamaProvider(
             model=os.getenv("VERLATO_OLLAMA_MODEL", config.model or ""),
+            suggest_model=(
+                _normalize_optional_string(suggest_model)
+                if suggest_model is not None
+                else _resolve_optional_string_env("VERLATO_OLLAMA_SUGGEST_MODEL", config.suggest_model)
+            ),
             endpoint=os.getenv("VERLATO_OLLAMA_ENDPOINT", config.endpoint or ""),
             stream=os.getenv("VERLATO_OLLAMA_STREAM", "").strip().lower() in {"1", "true", "yes", "on"},
             timeout_seconds=_resolve_float_env("VERLATO_OLLAMA_TIMEOUT_SECONDS", config.timeout_seconds),
@@ -49,6 +59,20 @@ def _resolve_string_env(name: str, fallback: str | None) -> str | None:
     if raw is None:
         return fallback
     return raw
+
+
+def _resolve_optional_string_env(name: str, fallback: str | None) -> str | None:
+    raw = os.getenv(name)
+    if raw is None:
+        return _normalize_optional_string(fallback)
+    return _normalize_optional_string(raw)
+
+
+def _normalize_optional_string(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
 
 
 def _resolve_int_env(name: str, fallback: int | None) -> int | None:

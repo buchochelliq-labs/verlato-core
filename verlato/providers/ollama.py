@@ -34,6 +34,7 @@ class OllamaProvider(VerlatoProvider):
         *,
         endpoint: str | None = None,
         model: str | None = None,
+        suggest_model: str | None = None,
         timeout_seconds: float = DEFAULT_OLLAMA_TIMEOUT_SECONDS,
         stream: bool | None = None,
         keep_alive: str | None = DEFAULT_OLLAMA_KEEP_ALIVE,
@@ -47,6 +48,7 @@ class OllamaProvider(VerlatoProvider):
     ) -> None:
         self.endpoint: str = endpoint or os.getenv("VERLATO_OLLAMA_ENDPOINT") or DEFAULT_OLLAMA_ENDPOINT
         self.model: str = model or os.getenv("VERLATO_OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL
+        self.suggest_model = _resolve_suggest_model(suggest_model)
         self.timeout_seconds = _resolve_timeout_seconds(timeout_seconds)
         self.stream = _env_flag("VERLATO_OLLAMA_STREAM") if stream is None else stream
         self.keep_alive = _resolve_keep_alive(keep_alive)
@@ -66,19 +68,23 @@ class OllamaProvider(VerlatoProvider):
         return self._invoke(task="classify", request_data=request_data)
 
     def _invoke(self, *, task: str, request_data: ProviderRequest) -> ProviderResponse:
+        model = self.model_for_task(task)
         system_prompt = (
             "You are Verlato. Write a useful release note with enough context for downstream consumers. "
             "Use paragraphs or bullet points when they make the change clearer, but stay focused and avoid padding."
             if task in {"summarize", "suggest"}
             else "You are Verlato. Return one line: kind/area/audience/semver."
         )
+        model_detail = f"model={model}"
+        if model != self.model:
+            model_detail = f"model={model} base_model={self.model}"
         self._trace(
-            f"provider=ollama task={task} model={self.model} endpoint={self.endpoint} "
+            f"provider=ollama task={task} {model_detail} endpoint={self.endpoint} "
             f"prompt_chars={len(request_data.prompt)} evidence_keys={len(request_data.evidence)} "
             f"timeout_seconds={self.timeout_seconds:g} stream={self.stream} keep_alive={self.keep_alive or 'default'}"
         )
         body: dict[str, object] = {
-            "model": self.model,
+            "model": model,
             "stream": self.stream,
             "options": self._options_for_task(task, request_data=request_data),
             "messages": [
@@ -101,29 +107,38 @@ class OllamaProvider(VerlatoProvider):
                 f"fallback provider=ollama task={task} from=chat to=generate reason=remote-disconnected"
             )
             try:
-                data = self._invoke_generate(task=task, system_prompt=system_prompt, request_data=request_data)
+                data = self._invoke_generate(
+                    task=task,
+                    system_prompt=system_prompt,
+                    request_data=request_data,
+                    model=model,
+                )
             except (client.RemoteDisconnected, error.URLError, TimeoutError, json.JSONDecodeError) as exc:
                 self._trace(
                     f"error provider=ollama task={task} stage=generate reason={type(exc).__name__}",
                     error=True,
                 )
-                return self._unavailable_response(exc)
+                return self._unavailable_response(exc, model=model)
         except error.HTTPError as exc:
             self._trace(f"error provider=ollama task={task} stage=chat http_status={exc.code}", error=True)
             return ProviderResponse(
                 content=f"[ollama-error] local model request failed ({exc.code}): {exc.reason}",
                 confidence=0.0,
-                model=f"ollama:{self.model}",
+                model=f"ollama:{model}",
             )
         except (error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             self._trace(f"error provider=ollama task={task} stage=chat reason={type(exc).__name__}", error=True)
-            return self._unavailable_response(exc)
+            return self._unavailable_response(exc, model=model)
 
         raw_message = data.get("message")
         message = raw_message if isinstance(raw_message, dict) else {}
         content = str(message.get("content") or data.get("response") or "").strip()
         reasoning = self._response_reasoning(data)
         metadata = self._response_metadata(data)
+        if model != self.model:
+            metadata["base_model"] = self.model
+            metadata["suggest_model"] = self.suggest_model
+            metadata["effective_model"] = model
         metadata_text = " ".join(f"{key}={value}" for key, value in sorted(metadata.items()))
         metadata_suffix = f" {metadata_text}" if metadata_text else ""
         self._trace(
@@ -134,21 +149,28 @@ class OllamaProvider(VerlatoProvider):
             return ProviderResponse(
                 content="[ollama-empty] no content",
                 confidence=0.0,
-                model=f"ollama:{self.model}",
+                model=f"ollama:{model}",
                 metadata=metadata,
                 reasoning=reasoning,
             )
         return ProviderResponse(
             content=content,
             confidence=0.75,
-            model=f"ollama:{self.model}",
+            model=f"ollama:{model}",
             metadata=metadata,
             reasoning=reasoning,
         )
 
-    def _invoke_generate(self, *, task: str, system_prompt: str, request_data: ProviderRequest) -> dict[str, object]:
+    def _invoke_generate(
+        self,
+        *,
+        task: str,
+        system_prompt: str,
+        request_data: ProviderRequest,
+        model: str,
+    ) -> dict[str, object]:
         body: dict[str, object] = {
-            "model": self.model,
+            "model": model,
             "stream": self.stream,
             "options": self._options_for_task(task, request_data=request_data),
             "system": system_prompt,
@@ -166,6 +188,13 @@ class OllamaProvider(VerlatoProvider):
             if self.stream
             else self._post_json(self._generate_endpoint(), body)
         )
+
+    def model_for_task(self, task: str) -> str:
+        return self.suggest_model if task == "suggest" and self.suggest_model else self.model
+
+    @property
+    def effective_suggest_model(self) -> str:
+        return self.model_for_task("suggest")
 
     def _post_json(self, endpoint: str, body: dict[str, object]) -> dict[str, object]:
         payload = json.dumps(body).encode("utf-8")
@@ -286,11 +315,12 @@ class OllamaProvider(VerlatoProvider):
         ]
         return "".join(str(candidate) for candidate in candidates)
 
-    def _unavailable_response(self, exc: BaseException) -> ProviderResponse:
+    def _unavailable_response(self, exc: BaseException, *, model: str | None = None) -> ProviderResponse:
+        response_model = model or self.model
         return ProviderResponse(
             content=f"[ollama-unavailable] unable to reach local Ollama at {self.endpoint}: {exc}",
             confidence=0.0,
-            model=f"ollama:{self.model}",
+            model=f"ollama:{response_model}",
         )
 
     def _trace(self, message: str, *, error: bool = False) -> None:
@@ -355,6 +385,17 @@ def _resolve_keep_alive(configured: str | None) -> str | None:
     if configured is None:
         return None
     normalized = configured.strip()
+    return normalized or None
+
+
+def _resolve_suggest_model(configured: str | None) -> str | None:
+    if configured is not None:
+        normalized = str(configured).strip()
+        return normalized or None
+    raw = os.getenv("VERLATO_OLLAMA_SUGGEST_MODEL")
+    if raw is None:
+        return None
+    normalized = raw.strip()
     return normalized or None
 
 

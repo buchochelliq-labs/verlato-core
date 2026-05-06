@@ -5,6 +5,7 @@ const test = require("node:test");
 const modelSettings = {
   provider: "mock",
   model: "mock-model",
+  suggestionModel: "",
   endpoint: "http://127.0.0.1:11434/api/chat",
   ollamaTimeoutSeconds: 120,
   maxModelItems: 25,

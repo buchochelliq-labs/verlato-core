@@ -194,6 +194,11 @@
           "default": "gemma4:latest",
           "description": "Ollama model used when Verlato runs with the Ollama provider. Defaults to Google's latest Gemma family."
         },
+        "verlato.ollamaSuggestionModel": {
+          "type": "string",
+          "default": "",
+          "description": "Optional smaller/faster Ollama model used only for AI suggestion generation. Empty means use the main Ollama model."
+        },
         "verlato.ollamaEndpoint": {
           "type": "string",
           "default": "http://127.0.0.1:11434/api/chat",

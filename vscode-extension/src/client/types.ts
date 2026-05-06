@@ -159,6 +159,7 @@ export interface RepositoryOverview {
 export interface ModelSettings {
   provider: string;
   model: string;
+  suggestionModel: string;
   endpoint: string;
   ollamaTimeoutSeconds: number;
   maxModelItems: number;
@@ -284,6 +285,9 @@ export interface DraftSuggestionPreview {
   base_ref: string;
   head_ref: string;
   provider: string;
+  model?: string;
+  suggest_model?: string | null;
+  effective_suggest_model?: string;
   count: number;
   prompt_profile?: string;
   tone?: string;
@@ -340,6 +344,8 @@ export interface OllamaDoctorResult {
 export interface OllamaDoctorConfig {
   endpoint?: string;
   model?: string;
+  suggest_model?: string | null;
+  effective_suggest_model?: string | null;
   timeout_seconds?: number;
   stream?: boolean;
   keep_alive?: string | null;
@@ -359,6 +365,8 @@ export interface OllamaDoctorProbe {
   elapsed_ms: number;
   prompt_chars: number;
   model?: string;
+  suggest_model?: string | null;
+  effective_suggest_model?: string | null;
   content_chars?: number;
   timings?: DraftSuggestionTimings;
   metadata?: Record<string, unknown>;
@@ -404,6 +412,7 @@ export interface OllamaDoctorSummary {
   recommended_settings?: {
     suggestion_parallelism?: number;
     suggest_num_predict?: number;
+    suggest_model?: string;
   };
 }
 

@@ -9,6 +9,7 @@ from verlato.cli.main import (
     _build_suggestion_adaptive_recommendations,
     _normalized_provider_timings,
     _ollama_api_ps_url,
+    _provider_cache_model_id,
     _resolve_suggestion_batch_size,
     _resolve_suggestion_cache_backend,
     _resolve_suggestion_cache_ttl_days,
@@ -32,6 +33,7 @@ from verlato.core.models import (
     SourceRef,
 )
 from verlato.providers.base import ProviderRequest, ProviderResponse
+from verlato.providers.ollama import OllamaProvider
 from verlato.providers.stub import StubProvider
 from verlato.state.store import StateData, StateStore
 from verlato.state.suggestion_cache import (
@@ -186,6 +188,7 @@ def test_load_config_reads_ollama_tuning(monkeypatch, tmp_path: Path):
             {
                 "provider": {
                     "keep_alive": "20m",
+                    "suggest_model": "gemma3:1b",
                     "num_ctx": 4096,
                     "summary_num_predict": 96,
                     "classify_num_predict": 12,
@@ -200,6 +203,7 @@ def test_load_config_reads_ollama_tuning(monkeypatch, tmp_path: Path):
     config = load_config()
 
     assert config.provider.keep_alive == "20m"
+    assert config.provider.suggest_model == "gemma3:1b"
     assert config.provider.num_ctx == 4096
     assert config.provider.summary_num_predict == 96
     assert config.provider.classify_num_predict == 12
@@ -336,6 +340,15 @@ def test_resolve_suggestion_prompt_profile_cli_env_and_config(monkeypatch):
 
     monkeypatch.delenv("VERLATO_SUGGESTION_PROMPT_PROFILE")
     assert _resolve_suggestion_prompt_profile("lean") == "lean"
+
+
+def test_ollama_suggestion_cache_model_id_uses_effective_suggest_model(monkeypatch):
+    monkeypatch.delenv("VERLATO_OLLAMA_SUGGEST_MODEL", raising=False)
+    base_provider = OllamaProvider(model="base-model")
+    suggest_provider = OllamaProvider(model="base-model", suggest_model="fast-model")
+
+    assert _provider_cache_model_id(base_provider, "ollama") == "ollama:base-model"
+    assert _provider_cache_model_id(suggest_provider, "ollama") == "ollama:fast-model"
 
 
 def test_normalized_provider_timings_converts_ollama_metadata():
@@ -536,6 +549,54 @@ def test_ollama_doctor_adaptive_recommendations_are_opt_in(monkeypatch, tmp_path
     assert result["adaptive_recommendations"]["schema_version"] == "verlato.suggestion_adaptive.v1"
     assert result["adaptive_recommendations"]["current"]["prompt_profile"] == "conservative"
     assert result["adaptive_recommendations"]["recommendations"]
+
+
+def test_ollama_doctor_uses_effective_suggest_model_for_runtime(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("verlato.cli.main.shutil.which", lambda name: None)
+
+    class SuggestDoctorProvider:
+        endpoint = "http://127.0.0.1:11434/api/chat"
+        model = "base-model"
+        suggest_model = "fast-model"
+        timeout_seconds = 15.0
+        stream = False
+        keep_alive = "10m"
+        num_ctx = None
+        num_predict = None
+        suggest_num_predict = None
+        suggest_think = False
+
+        def model_for_task(self, task: str) -> str:
+            return self.suggest_model if task == "suggest" else self.model
+
+        def _options_for_task(self, task: str, *, request_data: ProviderRequest):
+            return {"num_predict": 96}
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(
+                content="Adds model health suggestions.",
+                confidence=0.9,
+                model="ollama:fast-model",
+                metadata={"total_duration": 80_000_000, "eval_duration": 40_000_000},
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:base-model")
+
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None, suggest_model=None: SuggestDoctorProvider())
+    monkeypatch.setattr(
+        "verlato.cli.main._get_json",
+        lambda *args, **kwargs: {"models": [{"name": "fast-model", "model": "fast-model"}]},
+    )
+
+    result = _run_ollama_doctor(suggest_model="fast-model")
+
+    assert result["config"]["model"] == "base-model"
+    assert result["config"]["suggest_model"] == "fast-model"
+    assert result["config"]["effective_suggest_model"] == "fast-model"
+    assert result["runtime"]["selected_model"]["model"] == "fast-model"
+    assert result["runtime"]["selected_model"]["loaded"] is True
 
 
 def test_ollama_doctor_runtime_resolves_api_ps_urls():
@@ -1563,6 +1624,64 @@ def test_draft_suggest_prompt_profile_and_adaptive_recommendations_are_opt_in(mo
         for recommendation in preview["adaptive_recommendations"]["recommendations"]
     )
     assert prompts
+
+
+def test_draft_suggest_preview_uses_cli_suggest_model_context(monkeypatch, tmp_path: Path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
+    group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
+    target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
+    build_calls: list[dict[str, object]] = []
+
+    class SuggestModelProvider:
+        model = "base-model"
+        suggest_model = "fast-model"
+
+        def model_for_task(self, task: str) -> str:
+            return self.suggest_model if task == "suggest" else self.model
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(
+                content="Clarifies login recovery guidance for reviewers",
+                confidence=0.9,
+                model="ollama:fast-model",
+                metadata={"effective_model": "fast-model", "base_model": "base-model", "suggest_model": "fast-model"},
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:base-model")
+
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+
+    def fake_build_provider(config, mode=None, suggest_model=None):
+        build_calls.append({"mode": mode, "suggest_model": suggest_model})
+        return SuggestModelProvider()
+
+    monkeypatch.setattr("verlato.cli.main.build_provider", fake_build_provider)
+
+    rc = main(
+        [
+            "draft",
+            "suggest",
+            "--base",
+            "v1.0.0",
+            "--id",
+            target_item.id,
+            "--preview",
+            "--model-provider",
+            "ollama",
+            "--suggest-model",
+            "fast-model",
+        ]
+    )
+    preview = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert build_calls[0]["suggest_model"] == "fast-model"
+    assert preview["model"] == "base-model"
+    assert preview["suggest_model"] == "fast-model"
+    assert preview["effective_suggest_model"] == "fast-model"
+    assert preview["items"][0]["provider"] == "ollama:fast-model"
 
 
 def test_draft_suggest_applies_style_controls_to_prompt_and_rejections(monkeypatch, tmp_path: Path, capsys):

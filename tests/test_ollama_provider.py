@@ -6,9 +6,9 @@ from verlato.providers.base import ProviderRequest
 from verlato.providers.model_logging import ModelLogRecord, ModelLogSink, redact_model_payload
 from verlato.providers.ollama import (
     DEFAULT_OLLAMA_ENDPOINT,
-    DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_MAX_SUGGEST_NUM_PREDICT,
     DEFAULT_OLLAMA_MIN_SUGGEST_NUM_PREDICT,
+    DEFAULT_OLLAMA_MODEL,
     OllamaProvider,
 )
 
@@ -22,6 +22,7 @@ def _clear_ollama_tuning_env(monkeypatch):
         "VERLATO_OLLAMA_CLASSIFY_NUM_PREDICT",
         "VERLATO_OLLAMA_SUGGEST_NUM_PREDICT",
         "VERLATO_OLLAMA_SUGGEST_THINK",
+        "VERLATO_OLLAMA_SUGGEST_MODEL",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -40,6 +41,8 @@ def test_ollama_provider_uses_local_defaults(monkeypatch):
     assert provider.keep_alive == "10m"
     assert provider.summary_num_predict == 180
     assert provider.classify_num_predict == 24
+    assert provider.suggest_model is None
+    assert provider.effective_suggest_model == DEFAULT_OLLAMA_MODEL
     assert provider.suggest_num_predict is None
     assert provider.suggest_think is False
 
@@ -146,6 +149,41 @@ def test_ollama_provider_sends_suggest_request_with_thinking_disabled_and_adapti
     ]
     assert all(body["think"] is False for body in captured_bodies)
     assert all("enough context for downstream consumers" in body["messages"][0]["content"] for body in captured_bodies)
+
+
+def test_ollama_provider_routes_only_suggestions_to_suggest_model(monkeypatch):
+    _clear_ollama_tuning_env(monkeypatch)
+    captured_bodies: list[dict[str, object]] = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        @staticmethod
+        def read():
+            return json.dumps({"message": {"content": "Local response"}}).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        captured_bodies.append(json.loads(req.data.decode("utf-8")))
+        return FakeResponse()
+
+    monkeypatch.setattr("verlato.providers.ollama.request.urlopen", fake_urlopen)
+
+    provider = OllamaProvider(model="base-model", suggest_model="fast-model")
+    summary = provider.summarize(ProviderRequest(task="summarize", prompt="Summarize this change"))
+    suggestion = provider.summarize(ProviderRequest(task="suggest", prompt="Suggest wording"))
+    classification = provider.classify(ProviderRequest(task="classify", prompt="Classify"))
+
+    assert [body["model"] for body in captured_bodies] == ["base-model", "fast-model", "base-model"]
+    assert summary.model == "ollama:base-model"
+    assert suggestion.model == "ollama:fast-model"
+    assert suggestion.metadata["base_model"] == "base-model"
+    assert suggestion.metadata["suggest_model"] == "fast-model"
+    assert suggestion.metadata["effective_model"] == "fast-model"
+    assert classification.model == "ollama:base-model"
 
 
 def test_ollama_provider_allows_suggest_thinking_and_cap_overrides(monkeypatch):

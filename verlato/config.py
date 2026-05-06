@@ -21,6 +21,7 @@ class OutputTargetConfig:
 class ProviderConfig:
     name: str = "ollama"
     model: str | None = "gemma4:latest"
+    suggest_model: str | None = None
     endpoint: str | None = None
     max_items_per_scan: int = 25
     timeout_seconds: float | None = None
@@ -113,6 +114,7 @@ def load_config(cwd: str | None = None) -> VerlatoConfig:
     if isinstance(provider, dict):
         name = str(provider.get("name") or config.provider.name).strip() or "stub"
         model = provider.get("model")
+        suggest_model = provider.get("suggest_model", config.provider.suggest_model)
         endpoint = provider.get("endpoint")
         max_items_per_scan = provider.get("max_items_per_scan", config.provider.max_items_per_scan)
         timeout_seconds = provider.get("timeout_seconds", config.provider.timeout_seconds)
@@ -126,6 +128,7 @@ def load_config(cwd: str | None = None) -> VerlatoConfig:
         config.provider = ProviderConfig(
             name=name,
             model=str(model).strip() if model else None,
+            suggest_model=str(suggest_model).strip() if suggest_model else None,
             endpoint=str(endpoint).strip() if endpoint else None,
             max_items_per_scan=int(max_items_per_scan),
             timeout_seconds=float(timeout_seconds) if timeout_seconds is not None else None,

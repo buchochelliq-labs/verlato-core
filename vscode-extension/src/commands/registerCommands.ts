@@ -379,6 +379,7 @@ async function changeModelSettings(
   }
 
   let model = current.model;
+  let suggestionModel = current.suggestionModel;
   let endpoint = current.endpoint;
   let ollamaTimeoutSeconds = current.ollamaTimeoutSeconds;
   if (provider === "ollama") {
@@ -391,6 +392,15 @@ async function changeModelSettings(
       return;
     }
     model = nextModel;
+    const nextSuggestionModel = await vscode.window.showInputBox({
+      prompt: "Ollama suggestion model (empty uses the main model)",
+      value: current.suggestionModel,
+      placeHolder: nextModel,
+    });
+    if (nextSuggestionModel === undefined) {
+      return;
+    }
+    suggestionModel = nextSuggestionModel.trim();
     const nextEndpoint = await vscode.window.showInputBox({
       prompt: "Ollama chat endpoint",
       value: current.endpoint || "http://127.0.0.1:11434/api/chat",
@@ -489,6 +499,7 @@ async function changeModelSettings(
   await client.updateModelSettings({
     provider,
     model,
+    suggestionModel,
     endpoint,
     ollamaTimeoutSeconds,
     maxModelItems: Number(maxRaw),

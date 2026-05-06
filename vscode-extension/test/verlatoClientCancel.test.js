@@ -188,6 +188,7 @@ test("preview suggestions passes configured parallelism and batch size to the CL
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_BATCH_SIZE, "2");
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_PROMPT_PROFILE, "conservative");
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS, "0");
+  assert.equal(spawnCalls[0].options.env.VERLATO_OLLAMA_SUGGEST_MODEL, "");
 });
 
 test("preview suggestions can refresh the persistent suggestion cache", async () => {
@@ -243,6 +244,35 @@ test("preview suggestions passes prompt profile and adaptive recommendation sett
   assert.ok(spawnCalls[0].args.includes("--adaptive-recommendations"));
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_PROMPT_PROFILE, "lean");
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS, "1");
+});
+
+test("preview suggestions passes optional Ollama suggestion model", async () => {
+  const spawnCalls = [];
+  const child = makeChild(563);
+  const client = makeClient((command, args, options) => {
+    spawnCalls.push({ command, args, options });
+    return child;
+  }, { modelProvider: "ollama", ollamaSuggestionModel: "gemma3:1b" });
+
+  const pending = client.previewDraftSuggestions({ base: "v1.0.0", head: "HEAD" });
+  await waitForSpawn(spawnCalls);
+  child.stdout.emit("data", JSON.stringify({
+    base_ref: "v1.0.0",
+    head_ref: "HEAD",
+    provider: "ollama",
+    model: "gemma4:latest",
+    suggest_model: "gemma3:1b",
+    effective_suggest_model: "gemma3:1b",
+    count: 1,
+    items: [],
+  }));
+  child.emit("close", 0);
+  const result = await pending;
+
+  assert.ok(spawnCalls[0].args.includes("--suggest-model"));
+  assert.equal(spawnCalls[0].args[spawnCalls[0].args.indexOf("--suggest-model") + 1], "gemma3:1b");
+  assert.equal(spawnCalls[0].options.env.VERLATO_OLLAMA_SUGGEST_MODEL, "gemma3:1b");
+  assert.equal(result.effective_suggest_model, "gemma3:1b");
 });
 
 test("warm suggestion cache invokes all-visible preview without changing visible state", async () => {
@@ -314,7 +344,7 @@ test("diagnose Ollama invokes doctor command with parallel probe when configured
   const client = makeClient((command, args, options) => {
     spawnCalls.push({ command, args, options });
     return child;
-  }, { suggestionParallelism: 3 });
+  }, { suggestionParallelism: 3, ollamaSuggestionModel: "gemma3:1b" });
 
   const pending = client.diagnoseOllama();
   await waitForSpawn(spawnCalls);
@@ -333,8 +363,9 @@ test("diagnose Ollama invokes doctor command with parallel probe when configured
   child.emit("close", 0);
   const result = await pending;
 
-  assert.deepEqual(spawnCalls[0].args, ["doctor", "ollama", "--parallel-probe"]);
+  assert.deepEqual(spawnCalls[0].args, ["doctor", "ollama", "--parallel-probe", "--suggest-model", "gemma3:1b"]);
   assert.equal(spawnCalls[0].options.env.VERLATO_MODEL_PROVIDER, "ollama");
+  assert.equal(spawnCalls[0].options.env.VERLATO_OLLAMA_SUGGEST_MODEL, "gemma3:1b");
   assert.equal(result.schema, "ollama_doctor.v1");
 });
 

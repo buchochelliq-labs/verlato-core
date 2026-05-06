@@ -188,6 +188,7 @@ class ModelNode extends vscode.TreeItem {
     this.tooltip = [
       `Provider: ${settings.provider}`,
       `Model: ${settings.model}`,
+      `Suggestion model: ${settings.suggestionModel || "same as main"}`,
       `Endpoint: ${settings.endpoint}`,
       `Timeout: ${settings.ollamaTimeoutSeconds}s`,
       `Fanout guard: ${settings.maxModelItems}`,

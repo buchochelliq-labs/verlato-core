@@ -27,6 +27,7 @@
   "provider": {
     "name": "ollama",
     "model": "gemma4:latest",
+    "suggest_model": null,
     "endpoint": "http://127.0.0.1:11434/api/chat",
     "timeout_seconds": 15,
     "keep_alive": "10m",

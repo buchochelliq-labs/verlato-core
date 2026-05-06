@@ -16,7 +16,7 @@ from time import perf_counter
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
-from verlato.config import VerlatoConfig, load_config
+from verlato.config import ProviderConfig, VerlatoConfig, load_config
 from verlato.core.adapters import NullPullRequestAdapter, PullRequestAdapter, StandardGitAdapter
 from verlato.core.classifier import Classifier
 from verlato.core.collector import Collector
@@ -170,6 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
     draft_suggest.add_argument("--batch-size", type=int)
     draft_suggest.add_argument("--prompt-profile", choices=SUGGESTION_PROMPT_PROFILE_CHOICES)
     draft_suggest.add_argument("--adaptive-recommendations", action="store_true")
+    draft_suggest.add_argument("--suggest-model")
     draft_suggest.add_argument("--no-cache", action="store_true")
     draft_suggest.add_argument("--refresh-cache", action="store_true")
     draft_suggest.add_argument("--tone", choices=SUGGESTION_TONE_CHOICES)
@@ -218,6 +219,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--adaptive-recommendations",
         action="store_true",
         help="Include opt-in adaptive suggestion tuning recommendations in the JSON output.",
+    )
+    doctor_ollama.add_argument(
+        "--suggest-model",
+        help="Use a specific Ollama model for the suggestion-style health probe.",
     )
 
     model_logs = sub.add_parser("model-logs")
@@ -493,6 +498,60 @@ def _suggestion_batching_allowed_for_provider(provider_mode: str | None) -> bool
     return (provider_mode or "").strip().lower() in {"ollama", "local"}
 
 
+def _build_provider_for_suggestion(config: ProviderConfig, *, mode: str | None, suggest_model: str | None):
+    if suggest_model is not None:
+        return build_provider(config, mode=mode, suggest_model=suggest_model)
+    return build_provider(config, mode=mode)
+
+
+def _normalized_suggest_model(value: object) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _provider_effective_model(provider: object, task: str) -> str:
+    model_for_task = getattr(provider, "model_for_task", None)
+    if callable(model_for_task):
+        try:
+            model = model_for_task(task)
+        except TypeError:
+            model = None
+        if model:
+            return str(model)
+    raw_model = getattr(provider, "model", None)
+    return str(raw_model).strip() if raw_model is not None else ""
+
+
+def _provider_model_context(provider: object, provider_mode: str | None) -> dict[str, object]:
+    normalized_mode = (provider_mode or "").strip().lower()
+    if normalized_mode not in {"ollama", "local"}:
+        return {}
+    model = str(getattr(provider, "model", "") or "")
+    suggest_model = _normalized_suggest_model(getattr(provider, "suggest_model", None))
+    effective_suggest_model = _provider_effective_model(provider, "suggest") or model
+    return {
+        "model": model,
+        "suggest_model": suggest_model,
+        "effective_suggest_model": effective_suggest_model,
+    }
+
+
+def _configured_ollama_model_context(config: ProviderConfig, *, suggest_model: str | None) -> dict[str, object]:
+    model = os.getenv("VERLATO_OLLAMA_MODEL") or config.model or "gemma4:latest"
+    resolved_suggest_model = _normalized_suggest_model(
+        suggest_model
+        if suggest_model is not None
+        else os.getenv("VERLATO_OLLAMA_SUGGEST_MODEL", config.suggest_model or "")
+    )
+    return {
+        "model": model,
+        "suggest_model": resolved_suggest_model,
+        "effective_suggest_model": resolved_suggest_model or model,
+    }
+
+
 def build_draft_document(
     *,
     base: str,
@@ -701,6 +760,7 @@ def _run_ollama_doctor(
     parallel_probe: bool = False,
     warmup: bool = False,
     adaptive_recommendations: bool = False,
+    suggest_model: str | None = None,
 ) -> dict[str, object]:
     config = _load_config()
     suggestion_parallelism = _resolve_suggestion_parallelism(config.suggestion_parallelism)
@@ -709,7 +769,7 @@ def _run_ollama_doctor(
         config.suggestion_adaptive_recommendations,
         requested=adaptive_recommendations,
     )
-    provider = build_provider(config.provider, mode="ollama")
+    provider = _build_provider_for_suggestion(config.provider, mode="ollama", suggest_model=suggest_model)
     prompt = _ollama_doctor_prompt()
     request = ProviderRequest(
         task="suggest",
@@ -772,9 +832,14 @@ def _ollama_doctor_config(provider: object, request: ProviderRequest, suggestion
             options = option_builder("suggest", request_data=request)
         except TypeError:
             options = {}
+    model = getattr(provider, "model", None)
+    suggest_model = _normalized_suggest_model(getattr(provider, "suggest_model", None))
+    effective_suggest_model = _provider_effective_model(provider, "suggest") or str(model or "")
     return {
         "endpoint": getattr(provider, "endpoint", None),
-        "model": getattr(provider, "model", None),
+        "model": model,
+        "suggest_model": suggest_model,
+        "effective_suggest_model": effective_suggest_model,
         "timeout_seconds": getattr(provider, "timeout_seconds", None),
         "stream": getattr(provider, "stream", None),
         "keep_alive": getattr(provider, "keep_alive", None),
@@ -791,7 +856,7 @@ def _collect_ollama_runtime(provider: object, config_snapshot: dict[str, object]
     api_ps = _collect_ollama_api_ps(provider)
     cli_ps = _collect_ollama_cli_ps()
     selected_model = _select_ollama_runtime_model(
-        configured_model=str(config_snapshot.get("model") or ""),
+        configured_model=str(config_snapshot.get("effective_suggest_model") or config_snapshot.get("model") or ""),
         api_ps=api_ps,
         cli_ps=cli_ps,
     )
@@ -1128,9 +1193,12 @@ def _ollama_doctor_recommendations(
             "Consider a later multi-item batching pass if prompt eval remains the main cost.",
         ]
     if bottleneck == "generation":
+        recommendation = "Try a smaller/faster local model with provider.suggest_model or VERLATO_OLLAMA_SUGGEST_MODEL."
+        if config_snapshot.get("suggest_model"):
+            recommendation = "Try a smaller/faster local suggestion model if generation remains slow."
         return [
             "Lower VERLATO_OLLAMA_SUGGEST_NUM_PREDICT or provider.suggest_num_predict.",
-            "Try a smaller/faster local model for suggestion generation.",
+            recommendation,
         ]
     if bottleneck == "unavailable":
         return [
@@ -1151,6 +1219,8 @@ def _ollama_doctor_recommended_settings(
     suggest_cap = config_snapshot.get("suggest_num_predict_effective")
     if bottleneck == "generation" and isinstance(suggest_cap, int) and suggest_cap > 96:
         settings["suggest_num_predict"] = 96
+    if bottleneck == "generation" and not config_snapshot.get("suggest_model"):
+        settings["suggest_model"] = "smaller-local-model"
     return settings
 
 
@@ -1752,6 +1822,7 @@ def _preview_draft_model_suggestions(
     parallelism: int | None = None,
     batch_size: int | None = None,
     prompt_profile: str | None = None,
+    suggest_model: str | None = None,
     model_provider: str | None = None,
     tone: str | None = None,
     no_cache: bool = False,
@@ -1785,6 +1856,11 @@ def _preview_draft_model_suggestions(
         "cli" if count is not None else "env" if os.getenv("VERLATO_SUGGESTION_COUNT") else "config"
     )
     effective_model_provider = _resolve_suggest_model_provider(model_provider)
+    model_context = (
+        _configured_ollama_model_context(config.provider, suggest_model=suggest_model)
+        if _suggestion_batching_allowed_for_provider(effective_model_provider or config.provider.name)
+        else {}
+    )
     effective_suggestion_batch_size = (
         requested_suggestion_batch_size
         if _suggestion_batching_allowed_for_provider(effective_model_provider or config.provider.name)
@@ -1903,6 +1979,7 @@ def _preview_draft_model_suggestions(
             "base_ref": base,
             "head_ref": head,
             "provider": effective_model_provider or "configured",
+            **model_context,
             "count": suggestion_count,
             "prompt_profile": suggestion_prompt_profile,
             "tone": suggestion_tone,
@@ -1942,6 +2019,7 @@ def _preview_draft_model_suggestions(
             "base_ref": base,
             "head_ref": head,
             "provider": effective_model_provider or "configured",
+            **model_context,
             "count": suggestion_count,
             "prompt_profile": suggestion_prompt_profile,
             "tone": suggestion_tone,
@@ -1985,7 +2063,8 @@ def _preview_draft_model_suggestions(
             )
         return result
 
-    provider = build_provider(config.provider, mode=effective_model_provider)
+    provider = _build_provider_for_suggestion(config.provider, mode=effective_model_provider, suggest_model=suggest_model)
+    model_context = _provider_model_context(provider, effective_model_provider or config.provider.name)
     cache_provider_mode = effective_model_provider or "configured"
     cache_model_id = _provider_cache_model_id(provider, cache_provider_mode)
     provider_classifier = Classifier(
@@ -2285,6 +2364,7 @@ def _preview_draft_model_suggestions(
         "base_ref": base,
         "head_ref": head,
         "provider": effective_model_provider or "configured",
+        **model_context,
         "count": suggestion_count,
         "prompt_profile": suggestion_prompt_profile,
         "tone": suggestion_tone,
@@ -2335,7 +2415,7 @@ def _preview_draft_model_suggestions(
 
 def _provider_cache_model_id(provider: object, provider_mode: str) -> str:
     normalized_mode = (provider_mode or "configured").strip().lower()
-    raw_model = getattr(provider, "model", None)
+    raw_model = _provider_effective_model(provider, "suggest") if normalized_mode in {"ollama", "local"} else getattr(provider, "model", None)
     model = str(raw_model).strip() if raw_model is not None else ""
     if normalized_mode in {"ollama", "local"}:
         return f"ollama:{model or 'default'}"
@@ -4001,6 +4081,7 @@ def main(argv: list[str] | None = None) -> int:
                     parallel_probe=args.parallel_probe,
                     warmup=args.warmup,
                     adaptive_recommendations=args.adaptive_recommendations,
+                    suggest_model=args.suggest_model,
                 ),
                 indent=2,
             )
@@ -4050,6 +4131,7 @@ def main(argv: list[str] | None = None) -> int:
                     parallelism=args.parallelism,
                     batch_size=args.batch_size,
                     prompt_profile=args.prompt_profile,
+                    suggest_model=args.suggest_model,
                     model_provider=args.model_provider,
                     tone=args.tone,
                     no_cache=args.no_cache,
