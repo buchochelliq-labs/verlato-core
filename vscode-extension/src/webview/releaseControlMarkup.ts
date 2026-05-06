@@ -1167,13 +1167,46 @@ function renderOllamaDoctor(result: OllamaDoctorResult | undefined): string {
   const recommendations = result.summary.recommendations.slice(0, 2);
   const settings = renderDoctorRecommendedSettings(result.summary.recommended_settings);
   const diagnostics = result.summary.diagnostics.slice(0, 2);
+  const runtime = renderOllamaRuntime(result.runtime);
   return `<div class="doctor-result ${escapeHtml(result.summary.status)}">
     <div><strong>Ollama health</strong><span>${escapeHtml(result.summary.status)} | ${escapeHtml(result.summary.bottleneck.replace("_", " "))}${result.summary.warmed_up ? " | warmed" : ""}</span></div>
     ${timingParts ? `<small>${escapeHtml(timingParts)}</small>` : ""}
+    ${runtime ? `<small>${escapeHtml(runtime)}</small>` : ""}
     ${diagnostics.map((diagnostic) => `<small>${escapeHtml(diagnostic)}</small>`).join("")}
     ${settings ? `<small>${escapeHtml(settings)}</small>` : ""}
     ${recommendations.length ? `<ul>${recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
   </div>`;
+}
+
+function renderOllamaRuntime(runtime: OllamaDoctorResult["runtime"]): string {
+  const selected = runtime?.selected_model;
+  if (!selected) {
+    return "";
+  }
+  const model = selected.model || selected.name || "configured model";
+  if (selected.loaded === false) {
+    return `Runtime: ${model} not loaded`;
+  }
+  if (selected.loaded !== true) {
+    return runtime?.api_ps?.ok === false ? "Runtime: /api/ps unavailable" : "";
+  }
+  const parts = [`Runtime: ${model} loaded`];
+  if (typeof selected.context_length === "number") {
+    parts.push(`ctx ${selected.context_length}`);
+  }
+  if (typeof selected.size_vram === "number" && selected.size_vram > 0) {
+    parts.push(`vram ${formatBytes(selected.size_vram)}`);
+  } else if (typeof selected.size === "number" && selected.size > 0) {
+    parts.push(`size ${formatBytes(selected.size)}`);
+  }
+  if (selected.processor) {
+    parts.push(String(selected.processor));
+  }
+  const expiry = formatRuntimeExpiry(selected.expires_at);
+  if (expiry) {
+    parts.push(`expires ${expiry}`);
+  }
+  return parts.join(" | ");
 }
 
 function renderDoctorRecommendedSettings(settings: OllamaDoctorResult["summary"]["recommended_settings"]): string {
@@ -1185,6 +1218,33 @@ function renderDoctorRecommendedSettings(settings: OllamaDoctorResult["summary"]
     typeof settings.suggest_num_predict === "number" ? `try suggest cap ${settings.suggest_num_predict}` : "",
   ].filter(Boolean);
   return parts.length ? `Recommendation: ${parts.join(", ")}` : "";
+}
+
+function formatBytes(value: number): string {
+  const safeValue = Math.max(0, value);
+  if (safeValue < 1024) {
+    return `${Math.round(safeValue)}B`;
+  }
+  const units = ["KB", "MB", "GB", "TB"];
+  let amount = safeValue / 1024;
+  let unit = units[0];
+  for (let index = 1; index < units.length && amount >= 1024; index += 1) {
+    amount /= 1024;
+    unit = units[index];
+  }
+  return `${amount >= 10 ? amount.toFixed(0) : amount.toFixed(1)}${unit}`;
+}
+
+function formatRuntimeExpiry(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) {
+    return "";
+  }
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    return value;
+  }
+  const seconds = Math.round((timestamp - Date.now()) / 1000);
+  return seconds <= 0 ? "expired" : `in ${formatCacheAge(seconds)}`;
 }
 
 function renderSuggestions(preview: DraftSuggestionPreview | undefined, modelBusy = false): string {

@@ -303,6 +303,7 @@ export interface OllamaDoctorResult {
   schema: "ollama_doctor.v1";
   provider: "ollama";
   config: OllamaDoctorConfig;
+  runtime?: OllamaDoctorRuntime;
   probes: OllamaDoctorProbe[];
   summary: OllamaDoctorSummary;
 }
@@ -332,6 +333,37 @@ export interface OllamaDoctorProbe {
   content_chars?: number;
   timings?: DraftSuggestionTimings;
   metadata?: Record<string, unknown>;
+}
+
+export interface OllamaDoctorRuntime {
+  api_ps?: {
+    ok?: boolean;
+    url?: string | null;
+    models?: Record<string, unknown>[];
+    response?: Record<string, unknown>;
+    error?: string;
+  };
+  cli_ps?: {
+    ok?: boolean;
+    available?: boolean;
+    returncode?: number;
+    rows?: Record<string, string>[];
+    raw?: string;
+    stderr?: string;
+    error?: string;
+  };
+  selected_model?: {
+    loaded?: boolean | null;
+    name?: string;
+    model?: string;
+    size?: number;
+    size_vram?: number;
+    context_length?: number;
+    expires_at?: string;
+    processor?: string;
+    details?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
 }
 
 export interface OllamaDoctorSummary {

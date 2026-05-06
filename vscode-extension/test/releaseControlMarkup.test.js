@@ -773,6 +773,19 @@ test("renders Ollama doctor health recommendations", () => {
       schema: "ollama_doctor.v1",
       provider: "ollama",
       config: { model: "gemma4:latest" },
+      runtime: {
+        api_ps: { ok: true, url: "http://127.0.0.1:11434/api/ps" },
+        cli_ps: { ok: true, available: true, rows: [{ name: "gemma4:latest", processor: "100% GPU" }] },
+        selected_model: {
+          loaded: true,
+          name: "gemma4:latest",
+          model: "gemma4:latest",
+          size_vram: 4 * 1024 * 1024 * 1024,
+          context_length: 8192,
+          processor: "100% GPU",
+          expires_at: "2099-01-01T00:00:00Z",
+        },
+      },
       probes: [
         {
           name: "single",
@@ -801,6 +814,7 @@ test("renders Ollama doctor health recommendations", () => {
   assert.match(html, /Warm model/);
   assert.match(html, /warning \| queue \| warmed/);
   assert.match(html, /queue 700ms/);
+  assert.match(html, /Runtime: gemma4:latest loaded \| ctx 8192 \| vram 4\.0GB \| 100% GPU \| expires in/);
   assert.match(html, /try parallelism 1/);
   assert.match(html, /OLLAMA_NUM_PARALLEL/);
 });

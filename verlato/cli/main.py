@@ -5,12 +5,15 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
 from dataclasses import asdict, dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from time import perf_counter
+from urllib import error as urlerror, request as urlrequest
 
 from verlato.config import VerlatoConfig, load_config
 from verlato.core.adapters import NullPullRequestAdapter, PullRequestAdapter, StandardGitAdapter
@@ -630,12 +633,14 @@ def _run_ollama_doctor(*, parallel_probe: bool = False, warmup: bool = False) ->
             probes.extend(future.result() for future in as_completed(futures))
         parallel_start = 2 if warmup else 1
         probes[parallel_start:] = sorted(probes[parallel_start:], key=lambda probe: str(probe.get("name") or ""))
+    runtime = _collect_ollama_runtime(provider, config_snapshot)
     return {
         "schema": "ollama_doctor.v1",
         "provider": "ollama",
         "config": config_snapshot,
+        "runtime": runtime,
         "probes": probes,
-        "summary": _summarize_ollama_doctor(probes, config_snapshot, warmup_requested=warmup),
+        "summary": _summarize_ollama_doctor(probes, config_snapshot, runtime=runtime, warmup_requested=warmup),
     }
 
 
@@ -660,6 +665,177 @@ def _ollama_doctor_config(provider: object, request: ProviderRequest, suggestion
         "suggest_think": getattr(provider, "suggest_think", None),
         "suggestion_parallelism": suggestion_parallelism,
     }
+
+
+def _collect_ollama_runtime(provider: object, config_snapshot: dict[str, object]) -> dict[str, object]:
+    api_ps = _collect_ollama_api_ps(provider)
+    cli_ps = _collect_ollama_cli_ps()
+    selected_model = _select_ollama_runtime_model(
+        configured_model=str(config_snapshot.get("model") or ""),
+        api_ps=api_ps,
+        cli_ps=cli_ps,
+    )
+    return {
+        "api_ps": api_ps,
+        "cli_ps": cli_ps,
+        "selected_model": selected_model,
+    }
+
+
+def _collect_ollama_api_ps(provider: object) -> dict[str, object]:
+    endpoint = getattr(provider, "endpoint", None)
+    url = _ollama_api_ps_url(endpoint)
+    if not url:
+        return {"ok": False, "url": None, "models": [], "error": "No Ollama endpoint configured."}
+    timeout = _optional_float(getattr(provider, "timeout_seconds", None)) or 15.0
+    try:
+        data = _get_json(url, timeout_seconds=timeout)
+    except (urlerror.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+        return {"ok": False, "url": url, "models": [], "error": str(exc)}
+    models = data.get("models") if isinstance(data, dict) else []
+    return {
+        "ok": isinstance(models, list),
+        "url": url,
+        "models": models if isinstance(models, list) else [],
+        "response": data,
+    }
+
+
+def _collect_ollama_cli_ps() -> dict[str, object]:
+    executable = shutil.which("ollama")
+    if not executable:
+        return {"ok": False, "available": False, "rows": []}
+    try:
+        result = subprocess.run(
+            [executable, "ps"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"ok": False, "available": True, "rows": [], "error": str(exc)}
+    stdout = result.stdout.strip()
+    stderr = result.stderr.strip()
+    payload: dict[str, object] = {
+        "ok": result.returncode == 0,
+        "available": True,
+        "returncode": result.returncode,
+        "rows": _parse_ollama_ps_rows(stdout) if result.returncode == 0 else [],
+        "raw": stdout,
+    }
+    if stderr:
+        payload["stderr"] = stderr
+    if result.returncode != 0 and stderr:
+        payload["error"] = stderr
+    return payload
+
+
+def _ollama_api_ps_url(endpoint: object) -> str | None:
+    base = _ollama_base_url(endpoint)
+    return f"{base}/api/ps" if base else None
+
+
+def _ollama_base_url(endpoint: object) -> str | None:
+    if not isinstance(endpoint, str) or not endpoint.strip():
+        return None
+    normalized = endpoint.strip().rstrip("/")
+    for suffix in ("/api/chat", "/api/generate"):
+        if normalized.endswith(suffix):
+            return normalized[: -len(suffix)].rstrip("/")
+    if normalized.endswith("/api"):
+        return normalized[: -len("/api")].rstrip("/")
+    return normalized
+
+
+def _get_json(url: str, *, timeout_seconds: float) -> dict[str, object]:
+    req = urlrequest.Request(url, headers={"Accept": "application/json"}, method="GET")
+    with urlrequest.urlopen(req, timeout=timeout_seconds) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    if not isinstance(data, dict):
+        raise json.JSONDecodeError("expected JSON object", str(data), 0)
+    return data
+
+
+def _parse_ollama_ps_rows(raw: str) -> list[dict[str, str]]:
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return []
+    headers = [_normalize_ollama_ps_header(part) for part in re.split(r"\s{2,}", lines[0]) if part.strip()]
+    rows: list[dict[str, str]] = []
+    for line in lines[1:]:
+        cells = [part.strip() for part in re.split(r"\s{2,}", line) if part.strip()]
+        if not cells or not headers:
+            continue
+        if len(cells) > len(headers):
+            cells = cells[: len(headers) - 1] + [" ".join(cells[len(headers) - 1 :])]
+        row = {header: cells[index] for index, header in enumerate(headers[: len(cells)])}
+        rows.append(row)
+    return rows
+
+
+def _normalize_ollama_ps_header(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+
+
+def _select_ollama_runtime_model(
+    *,
+    configured_model: str,
+    api_ps: dict[str, object],
+    cli_ps: dict[str, object],
+) -> dict[str, object]:
+    models = api_ps.get("models") if api_ps.get("ok") is True else []
+    if isinstance(models, list):
+        for model in models:
+            if isinstance(model, dict) and _ollama_model_matches(configured_model, model):
+                selected = dict(model)
+                selected["loaded"] = True
+                processor = _ollama_cli_processor_for_model(configured_model, cli_ps)
+                if processor:
+                    selected["processor"] = processor
+                return selected
+    return {"name": configured_model, "model": configured_model, "loaded": False if api_ps.get("ok") is True else None}
+
+
+def _ollama_model_matches(configured_model: str, candidate: dict[str, object]) -> bool:
+    aliases = _ollama_model_aliases(configured_model)
+    candidate_names = [
+        str(candidate.get("name") or ""),
+        str(candidate.get("model") or ""),
+    ]
+    return any(alias in {_normalize_model_name(name) for name in candidate_names if name} for alias in aliases)
+
+
+def _ollama_model_aliases(model: str) -> set[str]:
+    normalized = _normalize_model_name(model)
+    aliases = {normalized} if normalized else set()
+    if normalized and ":" not in normalized:
+        aliases.add(f"{normalized}:latest")
+    if normalized.endswith(":latest"):
+        aliases.add(normalized.removesuffix(":latest"))
+    return aliases
+
+
+def _normalize_model_name(model: str) -> str:
+    return model.strip().lower()
+
+
+def _ollama_cli_processor_for_model(configured_model: str, cli_ps: dict[str, object]) -> str | None:
+    rows = cli_ps.get("rows")
+    if not isinstance(rows, list):
+        return None
+    aliases = _ollama_model_aliases(configured_model)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row_names = [
+            str(row.get("name") or ""),
+            str(row.get("model") or ""),
+        ]
+        if any(_normalize_model_name(name) in aliases for name in row_names if name):
+            processor = row.get("processor")
+            return str(processor) if processor else None
+    return None
 
 
 def _run_ollama_doctor_probe(
@@ -721,20 +897,28 @@ def _summarize_ollama_doctor(
     probes: list[dict[str, object]],
     config_snapshot: dict[str, object],
     *,
+    runtime: dict[str, object] | None = None,
     warmup_requested: bool = False,
 ) -> dict[str, object]:
+    runtime = runtime or {}
+    runtime_diagnostics = _ollama_runtime_diagnostics(runtime, config_snapshot)
+    runtime_recommendations = _ollama_runtime_recommendations(runtime, config_snapshot)
     ok_probes = [probe for probe in probes if probe.get("ok") is True]
     if not ok_probes:
         diagnostics = [str(probe.get("error") or "Ollama probe failed") for probe in probes]
+        diagnostics.extend(runtime_diagnostics)
         return {
             "status": "error",
             "bottleneck": "unavailable",
             "warmed_up": False,
             "diagnostics": diagnostics,
-            "recommendations": [
-                "Check that Ollama is running and reachable at the configured endpoint.",
-                "Confirm the configured model is pulled and the endpoint matches Ollama's /api/chat route.",
-            ],
+            "recommendations": _unique_strings(
+                [
+                    "Check that Ollama is running and reachable at the configured endpoint.",
+                    "Confirm the configured model is pulled and the endpoint matches Ollama's /api/chat route.",
+                    *runtime_recommendations,
+                ]
+            ),
             "recommended_settings": {},
         }
     warmup_probe = next((probe for probe in probes if probe.get("purpose") == "warmup"), None)
@@ -751,10 +935,16 @@ def _summarize_ollama_doctor(
     context_diagnostic = _ollama_context_diagnostic(config_snapshot)
     if context_diagnostic:
         diagnostics.append(context_diagnostic)
-    recommendations = _ollama_doctor_recommendations(
-        bottleneck,
-        config_snapshot,
-        warmup_requested=warmup_requested,
+    diagnostics.extend(runtime_diagnostics)
+    recommendations = _unique_strings(
+        [
+            *_ollama_doctor_recommendations(
+                bottleneck,
+                config_snapshot,
+                warmup_requested=warmup_requested,
+            ),
+            *runtime_recommendations,
+        ]
     )
     status = "ok" if bottleneck == "healthy" else "warning"
     return {
@@ -875,6 +1065,91 @@ def _ollama_context_recommendation(config_snapshot: dict[str, object]) -> str:
     if isinstance(num_ctx, int) and num_ctx >= 8192:
         return f"Configured num_ctx is {num_ctx}; lower it if suggestion prompts do not need that much context."
     return "Avoid oversized OLLAMA_CONTEXT_LENGTH or VERLATO_OLLAMA_NUM_CTX values until prompt eval is healthy."
+
+
+def _ollama_runtime_diagnostics(runtime: dict[str, object], config_snapshot: dict[str, object]) -> list[str]:
+    diagnostics: list[str] = []
+    api_ps = runtime.get("api_ps") if isinstance(runtime.get("api_ps"), dict) else {}
+    selected = runtime.get("selected_model") if isinstance(runtime.get("selected_model"), dict) else {}
+    if api_ps.get("ok") is not True:
+        diagnostics.append(f"Ollama runtime state unavailable from /api/ps: {api_ps.get('error') or 'unknown error'}.")
+        return diagnostics
+
+    model_name = str(config_snapshot.get("model") or selected.get("model") or selected.get("name") or "configured model")
+    if selected.get("loaded") is False:
+        diagnostics.append(f"Configured model {model_name} was not reported by Ollama /api/ps.")
+        return diagnostics
+
+    expires_seconds = _seconds_until(selected.get("expires_at"))
+    if expires_seconds is not None and expires_seconds <= 120:
+        diagnostics.append(f"Loaded model expires in {max(0, expires_seconds)}s; short keep-alive can cause reloads.")
+
+    context_length = _optional_int(selected.get("context_length"))
+    parallelism = config_snapshot.get("suggestion_parallelism")
+    if context_length is not None and context_length >= 8192 and isinstance(parallelism, int) and parallelism > 1:
+        diagnostics.append(
+            f"Loaded model context length is {context_length}; with suggestion parallelism {parallelism}, memory pressure can multiply."
+        )
+
+    size_vram = _optional_int(selected.get("size_vram"))
+    processor = str(selected.get("processor") or "").strip()
+    if size_vram is None or size_vram <= 0:
+        diagnostics.append("Loaded model did not report GPU VRAM residency; check ollama ps processor placement.")
+    if processor and ("cpu" in processor.lower()) and ("gpu" not in processor.lower()):
+        diagnostics.append(f"Ollama processor placement is {processor}; CPU-only inference can slow suggestions.")
+    return diagnostics
+
+
+def _ollama_runtime_recommendations(runtime: dict[str, object], config_snapshot: dict[str, object]) -> list[str]:
+    recommendations: list[str] = []
+    api_ps = runtime.get("api_ps") if isinstance(runtime.get("api_ps"), dict) else {}
+    selected = runtime.get("selected_model") if isinstance(runtime.get("selected_model"), dict) else {}
+    if api_ps.get("ok") is not True:
+        return ["Check Ollama /api/ps or ollama ps when timing telemetry is inconclusive."]
+    if selected.get("loaded") is False:
+        recommendations.append("Use Warm model or raise keep_alive so the configured model is loaded before all-visible suggestions.")
+
+    expires_seconds = _seconds_until(selected.get("expires_at"))
+    if expires_seconds is not None and expires_seconds <= 120:
+        recommendations.append("Raise VERLATO_OLLAMA_KEEP_ALIVE or provider.keep_alive if suggestions often reload the model.")
+
+    context_length = _optional_int(selected.get("context_length"))
+    parallelism = config_snapshot.get("suggestion_parallelism")
+    if context_length is not None and context_length >= 8192 and isinstance(parallelism, int) and parallelism > 1:
+        recommendations.append(
+            "Lower suggestionParallelism to 1 or reduce OLLAMA_CONTEXT_LENGTH/VERLATO_OLLAMA_NUM_CTX before enabling server-side parallelism."
+        )
+
+    size_vram = _optional_int(selected.get("size_vram"))
+    processor = str(selected.get("processor") or "").strip()
+    if size_vram is None or size_vram <= 0 or ("cpu" in processor.lower() and "gpu" not in processor.lower()):
+        recommendations.append("Check ollama ps processor placement and consider a smaller/faster model if generation remains slow.")
+    return recommendations
+
+
+def _seconds_until(value: object) -> int | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    try:
+        expires = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    now = datetime.now(expires.tzinfo)
+    return int(round((expires - now).total_seconds()))
+
+
+def _unique_strings(values: list[str]) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value or value in seen:
+            continue
+        unique.append(value)
+        seen.add(value)
+    return unique
 
 
 def _max_probe_timing(probes: list[dict[str, object]], key: str) -> int:

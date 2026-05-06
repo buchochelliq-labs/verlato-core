@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from verlato.cli.main import (
+    _ollama_api_ps_url,
     _normalized_provider_timings,
     _run_ollama_doctor,
     _resolve_suggestion_cache_backend,
@@ -350,6 +351,232 @@ def test_ollama_doctor_command_emits_json(monkeypatch, tmp_path: Path, capsys):
     assert result["config"]["suggest_num_predict_effective"] == 96
     assert result["probes"][0]["ok"] is True
     assert result["summary"]["bottleneck"] == "healthy"
+
+
+def test_ollama_doctor_runtime_resolves_api_ps_urls():
+    assert _ollama_api_ps_url("http://127.0.0.1:11434/api/chat") == "http://127.0.0.1:11434/api/ps"
+    assert _ollama_api_ps_url("http://127.0.0.1:11434/api/generate") == "http://127.0.0.1:11434/api/ps"
+    assert _ollama_api_ps_url("http://127.0.0.1:11434") == "http://127.0.0.1:11434/api/ps"
+
+
+def test_ollama_doctor_includes_api_ps_runtime_state(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("verlato.cli.main.shutil.which", lambda name: None)
+
+    class RuntimeProvider:
+        endpoint = "http://127.0.0.1:11434/api/chat"
+        model = "doctor-model"
+        timeout_seconds = 15.0
+        stream = False
+        keep_alive = "10m"
+        num_ctx = None
+        num_predict = None
+        suggest_num_predict = None
+        suggest_think = False
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(
+                content="Adds a model health check for suggestion performance.",
+                confidence=0.9,
+                model="ollama:doctor-model",
+                metadata={"total_duration": 80_000_000, "eval_duration": 40_000_000},
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:doctor-model")
+
+    def fake_get_json(url: str, *, timeout_seconds: float):
+        assert url == "http://127.0.0.1:11434/api/ps"
+        return {
+            "models": [
+                {
+                    "name": "doctor-model",
+                    "model": "doctor-model",
+                    "size": 5_000_000_000,
+                    "size_vram": 4_000_000_000,
+                    "context_length": 4096,
+                    "expires_at": "2099-01-01T00:00:00Z",
+                    "details": {"parameter_size": "4B"},
+                }
+            ]
+        }
+
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: RuntimeProvider())
+    monkeypatch.setattr("verlato.cli.main._get_json", fake_get_json)
+
+    result = _run_ollama_doctor()
+
+    assert result["runtime"]["api_ps"]["ok"] is True
+    assert result["runtime"]["api_ps"]["url"] == "http://127.0.0.1:11434/api/ps"
+    assert result["runtime"]["selected_model"]["loaded"] is True
+    assert result["runtime"]["selected_model"]["size_vram"] == 4_000_000_000
+    assert result["runtime"]["selected_model"]["context_length"] == 4096
+
+
+def test_ollama_doctor_runtime_api_ps_failure_is_diagnostic(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("verlato.cli.main.shutil.which", lambda name: None)
+
+    class RuntimeProvider:
+        endpoint = "http://127.0.0.1:11434/api/chat"
+        model = "doctor-model"
+        timeout_seconds = 15.0
+        stream = False
+        keep_alive = "10m"
+        num_ctx = None
+        num_predict = None
+        suggest_num_predict = None
+        suggest_think = False
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(
+                content="Adds a model health check for suggestion performance.",
+                confidence=0.9,
+                model="ollama:doctor-model",
+                metadata={"total_duration": 80_000_000, "eval_duration": 40_000_000},
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:doctor-model")
+
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: RuntimeProvider())
+    monkeypatch.setattr("verlato.cli.main._get_json", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("api down")))
+
+    result = _run_ollama_doctor()
+
+    assert result["probes"][0]["ok"] is True
+    assert result["summary"]["bottleneck"] == "healthy"
+    assert result["runtime"]["api_ps"]["ok"] is False
+    assert any("/api/ps" in diagnostic and "api down" in diagnostic for diagnostic in result["summary"]["diagnostics"])
+
+
+def test_ollama_doctor_runtime_uses_optional_cli_ps_processor(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+
+    class RuntimeProvider:
+        endpoint = "http://127.0.0.1:11434/api/chat"
+        model = "doctor-model"
+        timeout_seconds = 15.0
+        stream = False
+        keep_alive = "10m"
+        num_ctx = None
+        num_predict = None
+        suggest_num_predict = None
+        suggest_think = False
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(
+                content="Adds a model health check for suggestion performance.",
+                confidence=0.9,
+                model="ollama:doctor-model",
+                metadata={"total_duration": 80_000_000, "eval_duration": 40_000_000},
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:doctor-model")
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = "NAME    ID    SIZE    PROCESSOR    UNTIL\ndoctor-model    abc123    5 GB    100% GPU    4 minutes from now\n"
+        stderr = ""
+
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: RuntimeProvider())
+    monkeypatch.setattr(
+        "verlato.cli.main._get_json",
+        lambda *args, **kwargs: {"models": [{"name": "doctor-model", "model": "doctor-model", "size_vram": 4_000_000_000}]},
+    )
+    monkeypatch.setattr("verlato.cli.main.shutil.which", lambda name: "ollama")
+    monkeypatch.setattr("verlato.cli.main.subprocess.run", lambda *args, **kwargs: FakeCompleted())
+
+    result = _run_ollama_doctor()
+
+    assert result["runtime"]["cli_ps"]["ok"] is True
+    assert result["runtime"]["cli_ps"]["rows"][0]["processor"] == "100% GPU"
+    assert result["runtime"]["selected_model"]["processor"] == "100% GPU"
+
+
+def test_ollama_doctor_runtime_recommends_warmup_when_model_not_loaded(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("verlato.cli.main.shutil.which", lambda name: None)
+
+    class RuntimeProvider:
+        endpoint = "http://127.0.0.1:11434/api/chat"
+        model = "doctor-model"
+        timeout_seconds = 15.0
+        stream = False
+        keep_alive = "10m"
+        num_ctx = None
+        num_predict = None
+        suggest_num_predict = None
+        suggest_think = False
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(
+                content="Adds a model health check for suggestion performance.",
+                confidence=0.9,
+                model="ollama:doctor-model",
+                metadata={"total_duration": 80_000_000, "eval_duration": 40_000_000},
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:doctor-model")
+
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: RuntimeProvider())
+    monkeypatch.setattr("verlato.cli.main._get_json", lambda *args, **kwargs: {"models": []})
+
+    result = _run_ollama_doctor()
+
+    assert result["runtime"]["selected_model"]["loaded"] is False
+    assert any("not reported" in diagnostic for diagnostic in result["summary"]["diagnostics"])
+    assert any("Warm model" in item for item in result["summary"]["recommendations"])
+
+
+def test_ollama_doctor_runtime_warns_about_large_loaded_context(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERLATO_SUGGESTION_PARALLELISM", "3")
+    monkeypatch.setattr("verlato.cli.main.shutil.which", lambda name: None)
+
+    class RuntimeProvider:
+        endpoint = "http://127.0.0.1:11434/api/chat"
+        model = "doctor-model"
+        timeout_seconds = 15.0
+        stream = False
+        keep_alive = "10m"
+        num_ctx = None
+        num_predict = None
+        suggest_num_predict = None
+        suggest_think = False
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(
+                content="Adds a model health check for suggestion performance.",
+                confidence=0.9,
+                model="ollama:doctor-model",
+                metadata={"total_duration": 80_000_000, "eval_duration": 40_000_000},
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:doctor-model")
+
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: RuntimeProvider())
+    monkeypatch.setattr(
+        "verlato.cli.main._get_json",
+        lambda *args, **kwargs: {
+            "models": [
+                {
+                    "name": "doctor-model",
+                    "model": "doctor-model",
+                    "size_vram": 4_000_000_000,
+                    "context_length": 32768,
+                }
+            ]
+        },
+    )
+
+    result = _run_ollama_doctor()
+
+    assert any("context length is 32768" in diagnostic for diagnostic in result["summary"]["diagnostics"])
+    assert any("Lower suggestionParallelism" in item for item in result["summary"]["recommendations"])
 
 
 def test_ollama_doctor_warmup_runs_before_measured_probe(monkeypatch, tmp_path: Path, capsys):
