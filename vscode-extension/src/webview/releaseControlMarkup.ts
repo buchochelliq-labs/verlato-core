@@ -41,6 +41,10 @@ interface ActiveOperationProgress {
   kind: "scan" | "suggest" | "apply" | "refresh" | "command";
   label: string;
   detail: string;
+  subheading?: string;
+  progressText?: string;
+  progressValue?: number;
+  progressMax?: number;
   requestId?: number;
   isModelWork: boolean;
 }
@@ -532,6 +536,7 @@ function activeOperationProgress(state: ReleaseControlRenderState): ActiveOperat
   const isDraftJson = commandKey === "draft json";
   const isApply = commandKey === "draft apply";
   const isRefresh = commandKey.startsWith("state") || running?.command === "git";
+  const liveProgress = running ? activeRequestProgress(running) : {};
   if (isSuggest) {
     const scope = itemId ? `item ${itemId}` : "all rendered release-note items";
     return {
@@ -540,6 +545,7 @@ function activeOperationProgress(state: ReleaseControlRenderState): ActiveOperat
       detail: `Inferring intent from ${scope} with ${modelBadgeLabel(state.modelSettings)} | ${state.range.base}..${state.range.head ?? "HEAD"}`,
       requestId: running?.id,
       isModelWork: true,
+      ...liveProgress,
     };
   }
   if (isApply) {
@@ -549,6 +555,7 @@ function activeOperationProgress(state: ReleaseControlRenderState): ActiveOperat
       detail: `${state.range.version ?? "Unreleased"} | ${state.range.base}..${state.range.head ?? "HEAD"}`,
       requestId: running?.id,
       isModelWork: false,
+      ...liveProgress,
     };
   }
   if (isPreview || isDraftJson) {
@@ -558,6 +565,7 @@ function activeOperationProgress(state: ReleaseControlRenderState): ActiveOperat
       detail: `${state.range.base}..${state.range.head ?? "HEAD"}`,
       requestId: running?.id,
       isModelWork: false,
+      ...liveProgress,
     };
   }
   return {
@@ -566,21 +574,106 @@ function activeOperationProgress(state: ReleaseControlRenderState): ActiveOperat
     detail: running?.label || `${state.range.base}..${state.range.head ?? "HEAD"}`,
     requestId: running?.id,
     isModelWork: false,
+    ...liveProgress,
   };
+}
+
+function activeRequestProgress(request: CommandRequestSnapshot): Partial<ActiveOperationProgress> {
+  const output = request.stderr || request.stdout || request.error || "";
+  const activity = request.activity?.length ? request.activity : parseActivityFromOutput(output);
+  const progressIndex = latestActivityIndex(activity, (entry) => entry.category === "progress");
+  const modelStreamIndex = latestActivityIndex(
+    activity,
+    (entry) => entry.category === "model" && entry.event === "stream_chunk",
+  );
+  const modelSubheading = modelStreamIndex >= 0 ? formatActivityMessage(activity[modelStreamIndex]) : undefined;
+
+  if (progressIndex < 0) {
+    return modelSubheading ? { subheading: modelSubheading } : {};
+  }
+
+  const progressEntry = activity[progressIndex];
+  const progressRange = progressValue(progressEntry);
+  return {
+    subheading: modelStreamIndex > progressIndex && modelSubheading
+      ? modelSubheading
+      : formatProgressSubheading(progressEntry),
+    progressText: formatProgressText(progressEntry),
+    progressValue: progressRange?.value,
+    progressMax: progressRange?.max,
+  };
+}
+
+function latestActivityIndex(
+  activity: NonNullable<CommandRequestSnapshot["activity"]>,
+  predicate: (entry: NonNullable<CommandRequestSnapshot["activity"]>[number]) => boolean,
+): number {
+  for (let index = activity.length - 1; index >= 0; index -= 1) {
+    if (predicate(activity[index])) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function formatProgressSubheading(entry: NonNullable<CommandRequestSnapshot["activity"]>[number]): string {
+  const attrs = entry.attributes ?? {};
+  const label = stringAttr(attrs, "label") ?? formatActivityMessage(entry);
+  const detail = stringAttr(attrs, "detail");
+  if (!detail || label.includes(detail)) {
+    return label;
+  }
+  return `${label} - ${detail}`;
+}
+
+function formatProgressText(entry: NonNullable<CommandRequestSnapshot["activity"]>[number]): string | undefined {
+  const attrs = entry.attributes ?? {};
+  const current = optionalNumberAttr(attrs, "current");
+  const total = optionalNumberAttr(attrs, "total");
+  const unit = stringAttr(attrs, "unit") ?? "step";
+  const batch = optionalNumberAttr(attrs, "batch");
+  const batchTotal = optionalNumberAttr(attrs, "batch_total");
+  const parts: string[] = [];
+  if (current !== undefined && total !== undefined) {
+    parts.push(`${unit} ${current}/${total}`);
+  }
+  if (unit !== "batch" && batch !== undefined && batchTotal !== undefined) {
+    parts.push(`batch ${batch}/${batchTotal}`);
+  }
+  return parts.length ? parts.join(" | ") : undefined;
+}
+
+function progressValue(entry: NonNullable<CommandRequestSnapshot["activity"]>[number]): { value: number; max: number } | undefined {
+  const attrs = entry.attributes ?? {};
+  const current = optionalNumberAttr(attrs, "current");
+  const total = optionalNumberAttr(attrs, "total");
+  if (current === undefined || total === undefined || total <= 0) {
+    return undefined;
+  }
+  return { value: Math.min(Math.max(current, 0), total), max: total };
 }
 
 function renderProgressStrip(progress: ActiveOperationProgress | undefined): string {
   if (!progress) {
     return "";
   }
+  const progressBar = progress.progressValue !== undefined && progress.progressMax !== undefined
+    ? `<vscode-progress-bar value="${progress.progressValue}" max="${progress.progressMax}"></vscode-progress-bar>`
+    : `<vscode-progress-bar long-running-threshold="1000"></vscode-progress-bar>`;
+  const subheading = progress.subheading
+    ? `<small class="progress-subheading">${escapeHtml(progress.subheading)}</small>`
+    : "";
+  const meta = progress.progressText || (!progress.subheading ? progress.detail : "");
+  const metaLine = meta ? `<small class="progress-meta">${escapeHtml(meta)}</small>` : "";
   const stopAction = progress.requestId === undefined
     ? `<button class="progress-stop" data-action="cancel" title="Stop current request">${renderIcon("stop")}<span>Stop</span></button>`
     : `<button class="progress-stop" data-action="cancelRequest" data-request="${progress.requestId}" title="Stop this request">${renderIcon("stop")}<span>Stop</span></button>`;
   return `<section class="progress-strip ${escapeHtml(progress.kind)}${progress.isModelWork ? " model-work" : ""}" aria-live="polite">
-    <vscode-progress-bar long-running-threshold="1000"></vscode-progress-bar>
+    ${progressBar}
     <div class="progress-copy">
       <strong>${escapeHtml(progress.label)}</strong>
-      <small>${escapeHtml(progress.detail)}</small>
+      ${subheading}
+      ${metaLine}
     </div>
     ${stopAction}
   </section>`;
@@ -1123,18 +1216,42 @@ function renderChangesetCommits(item: DraftItem, commitsBySha: Map<string, Repos
   if (!shas.length) {
     return `<div class="changeset-commits empty">No commits mapped to this changeset.</div>`;
   }
-  const visibleShas = shas.slice(0, 24);
+  const visibleShas = shas.slice(0, 50);
   const hiddenCount = shas.length - visibleShas.length;
+  const reason = changesetGroupingReason(item);
   return `<details class="changeset-commits"${shas.length > 1 ? " open" : ""}>
     <summary>Changeset commits <span>${shas.length}</span></summary>
+    <div class="changeset-reason">${escapeHtml(reason)}</div>
     <ol>
       ${visibleShas.map((sha) => {
         const commit = commitForSha(commitsBySha, sha);
-        return `<li><code>${escapeHtml(sha.slice(0, 12))}</code>${commit ? `<span>${escapeHtml(commit.subject)}</span>` : ""}</li>`;
+        const subject = commit?.subject ?? "Commit message not loaded in repository overview.";
+        const prLabel = commit?.prNumber ? `PR #${commit.prNumber}` : "No PR";
+        return `<li>
+          <button class="commit-ref" data-action="useBase" data-ref="${escapeHtml(commit?.sha ?? sha)}" title="Use ${escapeHtml(sha.slice(0, 12))} as base ref">
+            <code>${escapeHtml(sha.slice(0, 12))}</code>
+          </button>
+          <span class="commit-message" title="${escapeHtml(subject)}">${escapeHtml(subject)}</span>
+          <small>${escapeHtml(prLabel)}</small>
+          <button class="commit-head" data-action="useHead" data-ref="${escapeHtml(commit?.sha ?? sha)}" title="Use as head ref">HEAD</button>
+        </li>`;
       }).join("")}
     </ol>
     ${hiddenCount > 0 ? `<small>${hiddenCount} more commit(s) in this changeset.</small>` : ""}
   </details>`;
+}
+
+function changesetGroupingReason(item: DraftItem): string {
+  if (item.grouping_reason?.trim()) {
+    return item.grouping_reason.trim();
+  }
+  if (item.pr_number) {
+    return `Grouped by PR #${item.pr_number}.`;
+  }
+  if ((item.commit_shas?.length ?? 0) > 1) {
+    return "Grouped because the commits share an explicit non-PR conventional commit scope.";
+  }
+  return "Single-commit changeset.";
 }
 
 function renderPublishedReleaseNotes(items: { id: string; title: string; summary: string; status?: string; source?: string }[]): string {
@@ -1351,11 +1468,11 @@ function parseActivityFromOutput(output: string): NonNullable<CommandRequestSnap
   output.split(/\r?\n/).forEach((line, index) => {
     const trimmed = line.trim();
     if (trimmed) {
-      const parsed = parseModelActivityLine(trimmed);
+      const parsed = parseActivityLine(trimmed);
       entries.push({
         id: index,
         stream: "stderr",
-        category: trimmed.startsWith("[verlato:model]") ? "model" : "process",
+        category: activityCategory(trimmed),
         ...parsed,
         receivedAt: "",
       });
@@ -1365,6 +1482,14 @@ function parseActivityFromOutput(output: string): NonNullable<CommandRequestSnap
 }
 
 function formatActivityMessage(entry: NonNullable<CommandRequestSnapshot["activity"]>[number]): string {
+  if (entry.category === "progress") {
+    const attrs = entry.attributes ?? {};
+    const label = stringAttr(attrs, "label") ?? entry.message;
+    const detail = stringAttr(attrs, "detail");
+    const text = detail && !label.includes(detail) ? `${label} - ${detail}` : label;
+    const counts = formatProgressText(entry);
+    return counts ? `${text} (${counts})` : text;
+  }
   if (entry.event === "prompt_budget") {
     return formatPromptBudget(entry);
   }
@@ -1394,6 +1519,14 @@ function numberAttr(attrs: Record<string, unknown>, key: string): number {
   return typeof attrs[key] === "number" ? attrs[key] : 0;
 }
 
+function optionalNumberAttr(attrs: Record<string, unknown>, key: string): number | undefined {
+  return typeof attrs[key] === "number" && Number.isFinite(attrs[key]) ? attrs[key] : undefined;
+}
+
+function stringAttr(attrs: Record<string, unknown>, key: string): string | undefined {
+  return typeof attrs[key] === "string" ? attrs[key] : undefined;
+}
+
 function formatPayloadLabel(entry: NonNullable<CommandRequestSnapshot["activity"]>[number]): string {
   if (entry.event === "stream_chunk") {
     const kind = streamKindLabel(String(entry.attributes?.kind ?? "stream"));
@@ -1404,12 +1537,26 @@ function formatPayloadLabel(entry: NonNullable<CommandRequestSnapshot["activity"
   return `Payload${chars}${entry.attributes?.redacted ? " redacted" : ""}`;
 }
 
-function parseModelActivityLine(line: string): {
+function activityCategory(line: string): "model" | "progress" | "process" {
+  if (line.startsWith("[verlato:model]")) {
+    return "model";
+  }
+  if (line.startsWith("[verlato:progress]")) {
+    return "progress";
+  }
+  return "process";
+}
+
+function parseActivityLine(line: string): {
   message: string;
   event?: string;
   attributes?: Record<string, unknown>;
   payload?: string;
 } {
+  const progress = parseProgressActivityLine(line);
+  if (progress) {
+    return progress;
+  }
   const jsonPrefix = "[verlato:model] json ";
   if (!line.startsWith(jsonPrefix)) {
     const streamChunk = parseStreamChunkLine(line);
@@ -1433,6 +1580,33 @@ function parseModelActivityLine(line: string): {
     };
   } catch {
     return { message: line };
+  }
+}
+
+function parseProgressActivityLine(line: string): {
+  message: string;
+  event: string;
+  attributes: Record<string, unknown>;
+} | undefined {
+  const jsonPrefix = "[verlato:progress] json ";
+  if (!line.startsWith(jsonPrefix)) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(line.slice(jsonPrefix.length)) as Record<string, unknown>;
+    const label = typeof parsed.label === "string" ? parsed.label : "Progress update";
+    const detail = typeof parsed.detail === "string" ? parsed.detail : "";
+    return {
+      message: detail ? `${label} - ${detail}` : label,
+      event: typeof parsed.event === "string" ? parsed.event : "progress",
+      attributes: parsed,
+    };
+  } catch {
+    return {
+      message: line,
+      event: "progress",
+      attributes: {},
+    };
   }
 }
 
@@ -1930,6 +2104,12 @@ function styles(): string {
     }
     .progress-copy strong {
       font-size: 12px;
+    }
+    .progress-subheading {
+      color: var(--vscode-sideBarTitle-foreground);
+    }
+    .progress-meta {
+      color: var(--vscode-descriptionForeground);
     }
     .progress-stop {
       min-height: 22px;
@@ -2506,20 +2686,52 @@ function styles(): string {
       font-size: 10px;
       text-transform: none;
     }
-    .changeset-commits ol {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));
-      gap: 2px 8px;
-      margin: 4px 0 0;
-      padding-left: 16px;
-    }
-    .changeset-commits li { min-width: 0; }
-    .changeset-commits li span {
-      display: block;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+    .changeset-reason {
+      margin-top: 4px;
       color: var(--vscode-descriptionForeground);
+      line-height: 1.35;
+    }
+    .changeset-commits ol {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      margin: 5px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+    .changeset-commits li {
+      display: grid;
+      grid-template-columns: minmax(82px, auto) minmax(0, 1fr) auto auto;
+      align-items: start;
+      gap: 6px;
+      min-width: 0;
+      padding: 2px 0;
+      border-top: 1px solid color-mix(in srgb, var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.18)) 70%, transparent);
+    }
+    .changeset-commits li:first-child { border-top: 0; }
+    .changeset-commits .commit-message {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      color: var(--vscode-descriptionForeground);
+    }
+    .changeset-commits li small {
+      color: var(--vscode-descriptionForeground);
+      white-space: nowrap;
+    }
+    .changeset-commits button {
+      min-height: 18px;
+      padding: 0 5px;
+      border-radius: 3px;
+      font-size: 10px;
+    }
+    .commit-ref {
+      justify-self: start;
+      color: var(--vscode-textLink-foreground);
+      background: color-mix(in srgb, var(--vscode-button-secondaryBackground, #2a2d2e) 70%, transparent);
+    }
+    .commit-head {
+      color: var(--vscode-button-secondaryForeground);
+      background: var(--vscode-button-secondaryBackground);
     }
     .changeset-commits code { font-size: 10px; color: var(--vscode-editor-foreground); }
     .release-commit .source-main {
@@ -2580,6 +2792,7 @@ function styles(): string {
       background: color-mix(in srgb, var(--vscode-input-background, #1f1f1f) 88%, var(--vscode-focusBorder, #3794ff) 12%);
     }
     .activity li.model { border-left-color: var(--verlato-purple); }
+    .activity li.progress { border-left-color: var(--verlato-green); }
     .activity li.process { border-left-color: var(--verlato-blue); }
     .activity time { color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; }
     .activity span { min-width: 0; overflow-wrap: anywhere; }

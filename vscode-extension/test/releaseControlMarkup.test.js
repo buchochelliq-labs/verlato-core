@@ -85,6 +85,123 @@ test("renders model suggestion progress without generic scan copy", () => {
   assert.match(html, /body\[data-model-busy="true"\] button\[data-action="suggestAll"\]/);
 });
 
+test("renders running substatus and determinate progress when progress telemetry is available", () => {
+  const html = buildReleaseControlHtml({
+    modelSettings,
+    range,
+    busy: true,
+    requests: [
+      {
+        id: 12,
+        command: "verlato",
+        args: ["draft", "suggest", "--preview", "--all-visible"],
+        label: "draft suggest",
+        status: "running",
+        startedAt: "2026-05-03T12:00:00.000Z",
+        stdout: "",
+        stderr: "",
+        activity: [
+          {
+            id: 1,
+            stream: "stderr",
+            category: "progress",
+            message: "Prompting model for ci_1",
+            event: "progress",
+            attributes: {
+              label: "Prompting model for ci_1",
+              current: 2,
+              total: 6,
+              unit: "item",
+              batch: 1,
+              batch_total: 3,
+            },
+            receivedAt: "2026-05-03T12:00:01.000Z",
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.match(html, /Prompting model for ci_1/);
+  assert.match(html, /item 2\/6 \| batch 1\/3/);
+  assert.match(html, /<vscode-progress-bar value="2" max="6"><\/vscode-progress-bar>/);
+  assert.doesNotMatch(html, /long-running-threshold="1000"/);
+});
+
+test("keeps unknown running commands indeterminate", () => {
+  const html = buildReleaseControlHtml({
+    modelSettings,
+    range,
+    busy: true,
+    requests: [
+      {
+        id: 13,
+        command: "verlato",
+        args: ["unknown"],
+        label: "unknown",
+        status: "running",
+        startedAt: "2026-05-03T12:00:00.000Z",
+        stdout: "",
+        stderr: "",
+      },
+    ],
+  });
+
+  assert.match(html, /Running Verlato/);
+  assert.match(html, /<vscode-progress-bar long-running-threshold="1000"><\/vscode-progress-bar>/);
+  assert.doesNotMatch(html, /value="\d+"/);
+});
+
+test("uses model streaming as compact substatus without exposing payloads", () => {
+  const html = buildReleaseControlHtml({
+    modelSettings,
+    range,
+    busy: true,
+    requests: [
+      {
+        id: 14,
+        command: "verlato",
+        args: ["draft", "suggest", "--preview", "--id", "ci_1"],
+        label: "draft suggest",
+        status: "running",
+        startedAt: "2026-05-03T12:00:00.000Z",
+        stdout: "",
+        stderr: "",
+        activity: [
+          {
+            id: 1,
+            stream: "stderr",
+            category: "progress",
+            message: "Prompting model for ci_1",
+            event: "progress",
+            attributes: {
+              label: "Prompting model for ci_1",
+              current: 1,
+              total: 2,
+              unit: "item",
+            },
+            receivedAt: "2026-05-03T12:00:01.000Z",
+          },
+          {
+            id: 2,
+            stream: "stderr",
+            category: "model",
+            message: "[verlato:model] stream content chunks=2 chars=18",
+            event: "stream_chunk",
+            attributes: { kind: "content", chunks: 2, chars: 18 },
+            payload: "Do not show this payload",
+            receivedAt: "2026-05-03T12:00:02.000Z",
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.match(html, /Response streaming\.\.\. 2 chunks/);
+  assert.match(html, /item 1\/2/);
+  assert.doesNotMatch(html, /Do not show this payload/);
+});
+
 test("renders prompt payload telemetry toggle in the model panel", () => {
   const disabledHtml = buildReleaseControlHtml({
     modelSettings,
@@ -307,7 +424,12 @@ test("renders releases as a dedicated sub-panel with notes, commits, and suggest
       sections: [{
         kind: "changed",
         title: "Changed",
-        items: [draftItem({ id: "ci_1", title: "Improve API", commit_shas: ["abc123456789", "def567890123"] })],
+        items: [draftItem({
+          id: "ci_1",
+          title: "Improve API",
+          commit_shas: ["abc123456789", "def567890123"],
+          grouping_reason: "Grouped by PR #12.",
+        })],
       }],
     },
     overview: {
@@ -374,8 +496,12 @@ test("renders releases as a dedicated sub-panel with notes, commits, and suggest
   assert.match(html, /Improve API/);
   assert.match(html, /2 commit\(s\) in changeset/);
   assert.match(html, /Changeset commits <span>2<\/span>/);
+  assert.match(html, /Grouped by PR #12\./);
   assert.match(html, /abc123456789/);
   assert.match(html, /def567890123/);
+  assert.match(html, /class="commit-message" title="Improve API review">Improve API review<\/span>/);
+  assert.match(html, /data-action="useBase" data-ref="abc1234"/);
+  assert.match(html, /data-action="useHead" data-ref="abc1234"/);
   assert.match(html, /INTENT INFERENCE/);
   assert.match(html, /Improve API review for release notes/);
   assert.match(html, /Unreleased commits/);

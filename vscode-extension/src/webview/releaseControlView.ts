@@ -292,9 +292,12 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
         this.suggestions = suggestions;
         this.onDidRefresh?.(this.document, this.overview, this.modelSettings, this.suggestions);
         const generatedCount = suggestions.items[0]?.suggestions.length ?? 0;
+        const batchCount = suggestions.batch_count ?? 1;
         this.statusMessage = itemId
           ? generatedCount === 1 ? "Generated one suggested description." : `Generated ${generatedCount} suggestions.`
-          : `Generated suggestions for ${suggestions.items.length} item(s).`;
+          : batchCount > 1
+            ? `Generated suggestions for ${suggestions.items.length} item(s) in ${batchCount} batch(es).`
+            : `Generated suggestions for ${suggestions.items.length} item(s).`;
         await handleNotificationAction(
           await showSuccessNotification(this.statusMessage, "Review Suggestions", "View Activity"),
         );

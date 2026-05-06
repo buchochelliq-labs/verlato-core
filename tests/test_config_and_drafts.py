@@ -62,6 +62,15 @@ def _mk_group(
     )
 
 
+def _progress_events(stderr: str) -> list[dict]:
+    prefix = "[verlato:progress] json "
+    return [
+        json.loads(line.removeprefix(prefix))
+        for line in stderr.splitlines()
+        if line.startswith(prefix)
+    ]
+
+
 def test_load_config_defaults_without_file(monkeypatch, tmp_path: Path):
     monkeypatch.chdir(tmp_path)
 
@@ -243,6 +252,48 @@ def test_draft_json_command_outputs_sections_and_targets(monkeypatch, tmp_path: 
     assert item["summary_source"] == "Deterministic summary generated from changed-file evidence"
     assert item["classification_source"] == "Deterministic classification from changed-file evidence"
     assert item["evidence_summary"] == "Changed files: src/auth.py"
+
+
+def test_progress_telemetry_is_silent_by_default(monkeypatch, tmp_path: Path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "verlato.cli.main._detect_change_items_with_provider",
+        lambda base, head, model_provider: [_mk_item("ci_1", base_ref=base, head_ref=head)],
+    )
+
+    rc = main(["draft", "json", "--base", "v1.0.0"])
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    assert json.loads(captured.out)["item_count"] == 1
+    assert "[verlato:progress]" not in captured.err
+
+
+def test_progress_telemetry_emits_when_enabled(monkeypatch, tmp_path: Path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERLATO_TRACE_PROGRESS", "1")
+    monkeypatch.setattr(
+        "verlato.cli.main._detect_change_items_with_provider",
+        lambda base, head, model_provider: [_mk_item("ci_1", base_ref=base, head_ref=head)],
+    )
+
+    rc = main(["draft", "json", "--base", "v1.0.0"])
+    captured = capsys.readouterr()
+    events = _progress_events(captured.err)
+
+    assert rc == 0
+    assert "[verlato:progress]" not in captured.out
+    assert json.loads(captured.out)["item_count"] == 1
+    assert {event["stage"] for event in events} >= {
+        "draft_detecting_changes",
+        "draft_rendering",
+        "draft_ready",
+        "draft_json_serializing",
+    }
+    assert any(
+        event.get("current") == 1 and event.get("total") == 1 and event.get("unit") == "item"
+        for event in events
+    )
 
 
 def test_draft_preview_command_renders_github_release(monkeypatch, tmp_path: Path, capsys):
@@ -1158,7 +1209,23 @@ def test_scan_disables_provider_when_change_fanout_exceeds_limit(monkeypatch, tm
     assert all("provider-summary" not in signal for item in items for signal in item.evidence.commit_signals)
 
 
-def test_draft_suggest_all_visible_refuses_large_model_fanout(monkeypatch, tmp_path: Path):
+def test_draft_suggest_all_visible_batches_large_model_fanout(monkeypatch, tmp_path: Path, capsys):
+    class CountingProvider:
+        def __init__(self):
+            self.summarize_calls = 0
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            self.summarize_calls += 1
+            return ProviderResponse(
+                content="Adds a focused model-written suggestion for this release note.",
+                confidence=0.9,
+                model="mock-local",
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="mock-local")
+
+    provider = CountingProvider()
     groups = [
         _mk_group(number=1, title="First change", commit_sha="a1", commit_message="first"),
         _mk_group(number=2, title="Second change", commit_sha="b2", commit_message="second"),
@@ -1166,17 +1233,81 @@ def test_draft_suggest_all_visible_refuses_large_model_fanout(monkeypatch, tmp_p
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("VERLATO_MODEL_MAX_ITEMS", "1")
     monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
-    monkeypatch.setattr(
-        "verlato.cli.main.build_provider",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fanout guard should stop provider setup")),
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
+
+    rc = main(["draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preview", "--model-provider", "mock"])
+    preview = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert provider.summarize_calls == 2
+    assert preview["visible_item_count"] == 2
+    assert preview["fanout_guard"] == 1
+    assert preview["batch_size"] == 1
+    assert preview["batch_count"] == 2
+    assert len(preview["items"]) == 2
+
+
+def test_draft_suggest_progress_reports_item_and_batch_counts(monkeypatch, tmp_path: Path, capsys):
+    class CountingProvider:
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(
+                content="Adds a focused model-written suggestion for this release note.",
+                confidence=0.9,
+                model="mock-local",
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="mock-local")
+
+    groups = [
+        _mk_group(number=1, title="First change", commit_sha="a1", commit_message="first"),
+        _mk_group(number=2, title="Second change", commit_sha="b2", commit_message="second"),
+    ]
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERLATO_TRACE_PROGRESS", "1")
+    monkeypatch.setenv("VERLATO_MODEL_MAX_ITEMS", "1")
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: CountingProvider())
+
+    rc = main(["draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preview", "--model-provider", "mock"])
+    captured = capsys.readouterr()
+    events = _progress_events(captured.err)
+
+    assert rc == 0
+    assert "[verlato:progress]" not in captured.out
+    assert json.loads(captured.out)["batch_count"] == 2
+    assert any(
+        event["stage"] == "suggestion_model_request"
+        and event["current"] == 2
+        and event["total"] == 2
+        and event["unit"] == "item"
+        and event["batch"] == 2
+        and event["batch_total"] == 2
+        for event in events
     )
 
-    try:
-        main(["draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preview", "--model-provider", "mock"])
-    except SystemExit as exc:
-        assert "Refusing to request model suggestions for 2 visible item(s)" in str(exc)
-    else:
-        raise AssertionError("Expected all-visible suggestion fanout to be refused")
+
+def test_draft_suggest_all_visible_zero_fanout_returns_no_suggestions(monkeypatch, tmp_path: Path, capsys):
+    groups = [
+        _mk_group(number=1, title="First change", commit_sha="a1", commit_message="first"),
+    ]
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERLATO_MODEL_MAX_ITEMS", "0")
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr(
+        "verlato.cli.main.build_provider",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("zero fanout should not build provider")),
+    )
+
+    rc = main(["draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preview", "--model-provider", "mock"])
+    preview = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert preview["visible_item_count"] == 1
+    assert preview["fanout_guard"] == 0
+    assert preview["batch_size"] == 0
+    assert preview["batch_count"] == 0
+    assert preview["items"] == []
 
 
 def test_draft_prompt_outputs_prompt_without_calling_provider(monkeypatch, tmp_path: Path, capsys):

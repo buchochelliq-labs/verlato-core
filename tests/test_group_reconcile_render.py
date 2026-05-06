@@ -40,6 +40,45 @@ def test_grouper_splits_pr_with_unrelated_user_facing_areas():
     assert titles == ["Cross-cutting refactor [api]", "Cross-cutting refactor [frontend]"]
 
 
+def test_grouper_splits_integration_pr_by_explicit_commit_scope():
+    commits = [
+        Commit(sha="a1", message="feat(ui): add toolbar", files=[ChangedFile(path="frontend/src/toolbar.ts")]),
+        Commit(sha="b2", message="feat(api): add users endpoint", files=[ChangedFile(path="api/users.py")]),
+        Commit(sha="c3", message="fix(api): validate users endpoint", files=[ChangedFile(path="api/users.py")]),
+    ]
+    pr = PullRequest(number=77, title="Integrate feature branches", files=[
+        ChangedFile(path="frontend/src/toolbar.ts"),
+        ChangedFile(path="api/users.py"),
+    ])
+
+    groups = Grouper().group(commits, {"a1": pr, "b2": pr, "c3": pr})
+
+    assert len(groups) == 2
+    assert [[commit.sha for commit in group.commits] for group in groups] == [["a1"], ["b2", "c3"]]
+    assert [group.pr.title for group in groups if group.pr] == [
+        "Integrate feature branches [ui]",
+        "Integrate feature branches [api]",
+    ]
+    assert groups[0].grouping_reason == (
+        "Grouped by PR #77, then split because the PR contains multiple explicit conventional scopes; "
+        "this changeset uses scope `ui`."
+    )
+
+
+def test_grouper_keeps_same_scope_pr_as_one_changeset():
+    commits = [
+        Commit(sha="a1", message="feat(ui): add toolbar"),
+        Commit(sha="b2", message="fix(ui): patch toolbar focus"),
+    ]
+    pr = PullRequest(number=78, title="Improve toolbar", files=[ChangedFile(path="frontend/src/toolbar.ts")])
+
+    groups = Grouper().group(commits, {"a1": pr, "b2": pr})
+
+    assert len(groups) == 1
+    assert [commit.sha for commit in groups[0].commits] == ["a1", "b2"]
+    assert groups[0].grouping_reason == "Grouped by PR #78."
+
+
 def test_pr_group_without_pr_files_keeps_commit_file_evidence():
     commits = [
         Commit(

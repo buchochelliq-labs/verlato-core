@@ -47,39 +47,59 @@ class Grouper:
                 bucket = [commit]
                 bucket_key = key
                 continue
-            if bucket_key == key and key[1] != "misc":
+            if bucket_key == key and key[0] != "single":
                 bucket.append(commit)
                 continue
-            groups.append(ChangeGroup(pr=None, commits=bucket, files=self._commit_files(bucket)))
+            groups.append(
+                ChangeGroup(
+                    pr=None,
+                    commits=bucket,
+                    files=self._commit_files(bucket),
+                    grouping_reason=self._non_pr_group_reason(bucket_key),
+                )
+            )
             bucket = [commit]
             bucket_key = key
 
         if bucket:
-            groups.append(ChangeGroup(pr=None, commits=bucket, files=self._commit_files(bucket)))
+            groups.append(
+                ChangeGroup(
+                    pr=None,
+                    commits=bucket,
+                    files=self._commit_files(bucket),
+                    grouping_reason=self._non_pr_group_reason(bucket_key),
+                )
+            )
         return groups
 
     def _non_pr_group_key(self, commit: Commit) -> tuple[str, ...]:
         parsed = parse_conventional_commit(commit.message)
         if parsed:
-            scope = parsed.scope or "*"
-            return ("conventional", parsed.type.lower(), scope.lower(), commit.author.lower())
+            if parsed.scope:
+                return ("conventional-scope", parsed.type.lower(), parsed.scope.lower())
+            return ("single", commit.sha)
 
-        subject = commit.message.strip().splitlines()[0].lower() if commit.message.strip() else ""
-        category = "misc"
-        for prefix in ("docs", "test", "chore", "refactor", "ci", "build", "fix", "feat"):
-            if subject.startswith(prefix):
-                category = prefix
-                break
-        return ("heuristic", category, commit.author.lower())
+        return ("single", commit.sha)
+
+    def _non_pr_group_reason(self, key: tuple[str, ...] | None) -> str:
+        if not key:
+            return "Grouped as an individual non-PR commit."
+        if key[0] == "conventional-scope":
+            return f"Grouped because these non-PR commits share conventional type `{key[1]}` and scope `{key[2]}`."
+        return "Kept separate because no PR or explicit conventional scope was found."
 
     def _split_pr_group(self, pr: PullRequest, commits: list[Commit]) -> list[ChangeGroup]:
+        scoped_groups = self._split_pr_group_by_scope(pr, commits)
+        if scoped_groups:
+            return scoped_groups
+
         if not pr.files:
-            return [ChangeGroup(pr=pr, commits=commits, files=self._commit_files(commits))]
+            return [ChangeGroup(pr=pr, commits=commits, files=self._commit_files(commits), grouping_reason=f"Grouped by PR #{pr.number}.")]
 
         diff = self.diff_builder.build(pr.files)
         user_facing_areas = [a for a in diff.files_by_area if a in self.USER_FACING_AREAS]
         if len(user_facing_areas) <= 1:
-            return [ChangeGroup(pr=pr, commits=commits)]
+            return [ChangeGroup(pr=pr, commits=commits, grouping_reason=f"Grouped by PR #{pr.number}.")]
 
         split_groups: list[ChangeGroup] = []
         for area in sorted(user_facing_areas):
@@ -87,9 +107,50 @@ class Grouper:
             if not files:
                 continue
             area_pr = replace(pr, title=f"{pr.title} [{area}]", files=[ChangedFile(**f.__dict__) for f in files])
-            split_groups.append(ChangeGroup(pr=area_pr, commits=commits))
+            split_groups.append(
+                ChangeGroup(
+                    pr=area_pr,
+                    commits=commits,
+                    grouping_reason=f"Grouped by PR #{pr.number}, then split by changed area `{area}`.",
+                )
+            )
 
-        return split_groups or [ChangeGroup(pr=pr, commits=commits)]
+        return split_groups or [ChangeGroup(pr=pr, commits=commits, grouping_reason=f"Grouped by PR #{pr.number}.")]
+
+    def _split_pr_group_by_scope(self, pr: PullRequest, commits: list[Commit]) -> list[ChangeGroup]:
+        if len(commits) < 2:
+            return []
+
+        buckets: dict[str, list[Commit]] = defaultdict(list)
+        for commit in commits:
+            parsed = parse_conventional_commit(commit.message)
+            if not parsed or not parsed.scope:
+                return []
+            buckets[parsed.scope.lower()].append(commit)
+
+        if len(buckets) <= 1:
+            return []
+
+        groups: list[ChangeGroup] = []
+        for scope, scope_commits in buckets.items():
+            files = self._commit_files(scope_commits)
+            scope_pr = replace(
+                pr,
+                title=f"{pr.title} [{scope}]",
+                files=[ChangedFile(**f.__dict__) for f in files],
+            )
+            groups.append(
+                ChangeGroup(
+                    pr=scope_pr,
+                    commits=scope_commits,
+                    files=files,
+                    grouping_reason=(
+                        f"Grouped by PR #{pr.number}, then split because the PR contains "
+                        f"multiple explicit conventional scopes; this changeset uses scope `{scope}`."
+                    ),
+                )
+            )
+        return groups
 
     @staticmethod
     def _commit_files(commits: list[Commit]) -> list[ChangedFile]:

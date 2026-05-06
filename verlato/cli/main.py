@@ -157,6 +157,71 @@ def _build_adapter() -> PullRequestAdapter:
     return StandardGitAdapter()
 
 
+def _trace_progress_enabled() -> bool:
+    return os.getenv("VERLATO_TRACE_PROGRESS") == "1"
+
+
+def _trace_progress(
+    stage: str,
+    label: str,
+    *,
+    detail: str | None = None,
+    current: int | None = None,
+    total: int | None = None,
+    unit: str | None = None,
+    **attributes: object,
+) -> None:
+    if not _trace_progress_enabled():
+        return
+    event: dict[str, object] = {
+        "event": "progress",
+        "stage": stage,
+        "label": label,
+    }
+    if detail:
+        event["detail"] = detail
+    if current is not None:
+        event["current"] = current
+    if total is not None:
+        event["total"] = total
+    if unit:
+        event["unit"] = unit
+    event.update({key: value for key, value in attributes.items() if value is not None})
+    print("[verlato:progress] json " + json.dumps(event, sort_keys=True), file=sys.stderr, flush=True)
+
+
+def _group_progress_detail(group: ChangeGroup) -> str:
+    if group.pr:
+        return f"PR #{group.pr.number}"
+    if group.commits:
+        return group.commits[0].sha[:12]
+    return "changeset"
+
+
+def _classify_groups(
+    groups: list[ChangeGroup],
+    classifier: Classifier,
+    base: str,
+    head: str,
+    *,
+    stage: str = "classifying_changes",
+    label: str = "Classifying changesets",
+) -> list[ChangeItem]:
+    total = len(groups)
+    if total == 0:
+        _trace_progress(stage, label, current=0, total=0, unit="changeset")
+        return []
+    items: list[ChangeItem] = []
+    for index, group in enumerate(groups):
+        detail = _group_progress_detail(group)
+        _trace_progress(stage, label, detail=detail, current=index, total=total, unit="changeset")
+        classified = classifier.classify(group, base, head)
+        items.extend(classified)
+        item_id = classified[0].id if classified else detail
+        _trace_progress(stage, "Classified changeset", detail=item_id, current=index + 1, total=total, unit="changeset")
+    return items
+
+
 def run_scan(base: str, head: str, persist: bool, model_provider: str | None = None) -> list[dict]:
     return [asdict(i) for i in scan_change_items(base, head, persist, model_provider=model_provider)]
 
@@ -176,15 +241,39 @@ def detect_change_items(base: str, head: str, model_provider: str | None = None)
         project_vocabulary=list(style["project_vocabulary"]),
         banned_phrases=list(style["banned_phrases"]),
     )
-    return [item for group in groups for item in classifier.classify(group, base, head)]
+    return _classify_groups(groups, classifier, base, head)
 
 
 def _collect_groups(base: str, head: str):
     collector = Collector(pr_adapter=_build_adapter())
     grouper = Grouper()
+    _trace_progress("collecting_commits", "Collecting commits", detail=f"{base}..{head}")
     commits = collector.collect_commits(base, head)
+    _trace_progress(
+        "mapping_pull_requests",
+        "Mapping commits to PRs",
+        current=len(commits),
+        total=len(commits),
+        unit="commit",
+    )
     prs_by_commit = collector.map_commits_to_prs(commits)
-    return grouper.group(commits, prs_by_commit)
+    _trace_progress(
+        "grouping_changesets",
+        "Grouping changesets",
+        detail=f"{len(commits)} commit(s)",
+        current=0,
+        total=len(commits),
+        unit="commit",
+    )
+    groups = grouper.group(commits, prs_by_commit)
+    _trace_progress(
+        "grouping_changesets",
+        "Grouped changesets",
+        current=len(groups),
+        total=len(groups),
+        unit="changeset",
+    )
+    return groups
 
 
 def _find_group_for_item_id(base: str, head: str, item_id: str) -> ChangeGroup:
@@ -202,9 +291,31 @@ def scan_change_items(base: str, head: str, persist: bool, model_provider: str |
     reconciler = Reconciler()
 
     detected = detect_change_items(base, head, model_provider=model_provider)
+    _trace_progress(
+        "reconciling_unpublished",
+        "Reconciling unpublished changes",
+        current=0,
+        total=len(detected),
+        unit="item",
+    )
     existing = store.load().items
     unpublished = reconciler.unpublished(existing, detected)
+    _trace_progress(
+        "reconciling_unpublished",
+        "Reconciled unpublished changes",
+        current=len(detected),
+        total=len(detected),
+        unit="item",
+        unpublished=len(unpublished),
+    )
     if persist and unpublished:
+        _trace_progress(
+            "persisting_working_state",
+            "Persisting working state",
+            current=len(unpublished),
+            total=len(unpublished),
+            unit="item",
+        )
         store.append_new(unpublished)
     return unpublished
 
@@ -220,7 +331,14 @@ def _detect_review_candidates(base: str, head: str, model_provider: str | None) 
         return detect_change_items(base, head, model_provider=model_provider)
     groups = _collect_groups(base, head)
     classifier = Classifier()
-    return [item for group in groups for item in classifier.classify(group, base, head)]
+    return _classify_groups(
+        groups,
+        classifier,
+        base,
+        head,
+        stage="detecting_review_candidates",
+        label="Detecting review candidates",
+    )
 
 
 def _run_scan_with_provider(base: str, head: str, persist: bool, model_provider: str | None) -> list[dict]:
@@ -249,8 +367,16 @@ def build_draft_document(
     model_provider: str | None = None,
 ) -> DraftDocument:
     config = _load_config()
+    _trace_progress("draft_detecting_changes", "Detecting draft changes", detail=f"{base}..{head}")
     items = _merge_review_state(_detect_change_items_with_provider(base, head, model_provider))
-    return DraftService(config=config).build_document(
+    _trace_progress(
+        "draft_rendering",
+        "Rendering release notes",
+        current=0,
+        total=len(items),
+        unit="item",
+    )
+    document = DraftService(config=config).build_document(
         items=items,
         base_ref=base,
         head_ref=head,
@@ -258,6 +384,14 @@ def build_draft_document(
         include_confidence=include_confidence,
         include_provenance=include_provenance,
     )
+    _trace_progress(
+        "draft_ready",
+        "Release notes ready",
+        current=document.item_count,
+        total=document.item_count,
+        unit="item",
+    )
+    return document
 
 
 def _latest_published_version() -> str | None:
@@ -331,10 +465,30 @@ def _merge_review_state(items: list[ChangeItem]) -> list[ChangeItem]:
     by_checksum = {(item.checksum_version, item.checksum): item for item in existing}
     by_id = {item.id: item for item in existing}
     merged: list[ChangeItem] = []
-    for item in items:
+    total = len(items)
+    if total == 0:
+        _trace_progress("merging_review_state", "Merging review state", current=0, total=0, unit="item")
+        return merged
+    for index, item in enumerate(items):
+        _trace_progress(
+            "merging_review_state",
+            "Merging review state",
+            detail=item.id,
+            current=index,
+            total=total,
+            unit="item",
+        )
         persisted = by_checksum.get((item.checksum_version, item.checksum)) or by_id.get(item.id)
         if persisted:
             if persisted.published:
+                _trace_progress(
+                    "merging_review_state",
+                    "Skipped published item",
+                    detail=item.id,
+                    current=index + 1,
+                    total=total,
+                    unit="item",
+                )
                 continue
             item.status = persisted.status
             item.reviewed_by = persisted.reviewed_by
@@ -346,6 +500,14 @@ def _merge_review_state(items: list[ChangeItem]) -> list[ChangeItem]:
                 if signal.startswith("provider-summary:") and signal not in item.evidence.commit_signals:
                     item.evidence.commit_signals.append(signal)
         merged.append(item)
+        _trace_progress(
+            "merging_review_state",
+            "Merged review state",
+            detail=item.id,
+            current=index + 1,
+            total=total,
+            unit="item",
+        )
     return merged
 
 
@@ -494,13 +656,45 @@ def _preview_draft_model_suggestions(
         "target-selection",
         f"base={base} head={head} groups={len(groups)} item_id={item_id or 'none'}",
     )
+    _trace_progress(
+        "selecting_suggestion_targets",
+        "Selecting suggestion targets",
+        current=0,
+        total=len(groups),
+        unit="changeset",
+    )
 
     targets = []
-    for group in groups:
+    for index, group in enumerate(groups):
+        _trace_progress(
+            "selecting_suggestion_targets",
+            "Selecting suggestion targets",
+            detail=_group_progress_detail(group),
+            current=index,
+            total=len(groups),
+            unit="changeset",
+        )
         baseline_item = baseline_classifier.classify(group, base, head)[0]
         if item_id and baseline_item.id != item_id:
+            _trace_progress(
+                "selecting_suggestion_targets",
+                "Checked suggestion target",
+                detail=baseline_item.id,
+                current=index + 1,
+                total=len(groups),
+                unit="changeset",
+            )
             continue
         targets.append((group, baseline_item))
+        _trace_progress(
+            "selecting_suggestion_targets",
+            "Selected suggestion target",
+            detail=baseline_item.id,
+            current=index + 1,
+            total=len(groups),
+            unit="changeset",
+            item_id=baseline_item.id,
+        )
 
     if item_id and not targets:
         raise SystemExit(f"Could not find draft item {item_id} for range {base}..{head}")
@@ -510,15 +704,47 @@ def _preview_draft_model_suggestions(
     if all_visible:
         visible_ids = {item.id for item in merged if not item.hidden}
         targets = [(group, merged_by_id.get(item.id, item)) for group, item in targets if item.id in visible_ids]
+        _trace_progress(
+            "filtering_visible_suggestions",
+            "Filtering visible items",
+            current=len(targets),
+            total=len(merged),
+            unit="item",
+        )
     else:
         targets = [(group, merged_by_id.get(item.id, item)) for group, item in targets]
 
     max_model_items = _resolve_max_model_items(config.provider.max_items_per_scan)
-    if all_visible and max_model_items >= 0 and len(targets) > max_model_items:
-        raise SystemExit(
-            f"Refusing to request model suggestions for {len(targets)} visible item(s); "
-            f"fanout guard is {max_model_items}. Suggest one item at a time or raise VERLATO_MODEL_MAX_ITEMS."
+    visible_target_count = len(targets)
+    if all_visible and max_model_items == 0:
+        batch_size = 0
+        target_batches = []
+    else:
+        batch_size = max_model_items if all_visible and max_model_items > 0 else len(targets) or 1
+        target_batches = [
+            targets[index : index + batch_size]
+            for index in range(0, len(targets), batch_size)
+        ] or [[]]
+    if all_visible and max_model_items >= 0 and len(target_batches) > 1:
+        _trace_model_suggest_stage(
+            "fanout-batches",
+            (
+                f"visible_items={len(targets)} fanout_guard={max_model_items} "
+                f"batch_size={batch_size} batches={len(target_batches)}"
+            ),
         )
+    total_targets = sum(len(batch) for batch in target_batches)
+    _trace_progress(
+        "planning_suggestions",
+        "Planning model suggestions",
+        detail=f"{len(target_batches)} batch(es)",
+        current=0,
+        total=total_targets,
+        unit="item",
+        batch_size=batch_size,
+        batch_total=len(target_batches),
+        fanout_guard=max_model_items,
+    )
     _trace_model_suggest_plan(
         base=base,
         head=head,
@@ -528,6 +754,22 @@ def _preview_draft_model_suggestions(
         provider=effective_model_provider or "configured",
         all_visible=all_visible,
     )
+
+    if not any(target_batches):
+        _trace_progress("suggestions_ready", "No model suggestions requested", current=0, total=0, unit="item")
+        return {
+            "base_ref": base,
+            "head_ref": head,
+            "provider": effective_model_provider or "configured",
+            "count": suggestion_count,
+            "tone": suggestion_tone,
+            "style_profile": suggestion_style,
+            "visible_item_count": visible_target_count,
+            "fanout_guard": max_model_items,
+            "batch_size": batch_size,
+            "batch_count": len(target_batches),
+            "items": [],
+        }
 
     provider = build_provider(config.provider, mode=effective_model_provider)
     provider_classifier = Classifier(
@@ -539,101 +781,169 @@ def _preview_draft_model_suggestions(
     )
 
     items = []
-    for group, baseline_item in targets:
-        diff = provider_classifier.diff_builder.build(group.pr.files if group.pr else group.files)
-        hunk_count = sum(len(hunks) for hunks in diff.representative_hunks.values())
-        file_count = len(diff.file_statuses)
-        _trace_model_suggest_stage(
-            "evidence-built",
-            f"item_id={baseline_item.id} files={file_count} hunks={hunk_count}",
+    for batch_index, batch in enumerate(target_batches, start=1):
+        _trace_progress(
+            "suggestion_batch",
+            "Preparing suggestion batch",
+            detail=f"batch {batch_index}/{len(target_batches)}",
+            current=batch_index,
+            total=len(target_batches),
+            unit="batch",
+            batch=batch_index,
+            batch_total=len(target_batches),
         )
-        prompt_result = provider_classifier._build_summary_prompt_with_budget(
-            title=baseline_item.content.title,
-            labels=[label.lower() for label in (group.pr.labels if group.pr else [])],
-            pr_body=group.pr.body if group.pr else "",
-            diff=diff,
-            commits=group.commits,
-            suggestion_count=suggestion_count,
-            kind=baseline_item.classification.kind,
-            audience=baseline_item.classification.audience,
-            tone=suggestion_tone,
-            style_guidance=str(suggestion_style["guidance"]),
-            project_vocabulary=list(suggestion_style["project_vocabulary"]),
-            banned_phrases=list(suggestion_style["banned_phrases"]),
-        )
-        prompt = prompt_result.prompt
-        evidence = {
-            "title": baseline_item.content.title,
-            "item_id": baseline_item.id,
-            "suggestion_count": suggestion_count,
-            "tone": suggestion_tone,
-            "style_profile": suggestion_style,
-            "diff_summary": diff.summary,
-            "representative_hunks": diff.representative_hunks,
-            "file_count": file_count,
-            "hunk_count": hunk_count,
-        }
-        source_evidence = _build_suggestion_source_evidence(diff, group)
-        prompt_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12]
-        _trace_model_suggest_stage(
-            "evidence-detail",
-            f"item_id={baseline_item.id} files={','.join(list(diff.file_statuses)[:8]) or 'none'} "
-            f"source_entries={len(source_evidence)}",
-        )
-        _trace_model_suggest_stage(
-            "prompt-built",
-            f"item_id={baseline_item.id} prompt_chars={len(prompt)} prompt_sha={prompt_sha}",
-        )
-        _trace_model_prompt_budget(prompt_result.budget)
-        _trace_model_payload("prompt-preview", prompt)
-        _trace_model_call_start("suggest", baseline_item.content.title, effective_model_provider or "configured")
-        response = provider.summarize(ProviderRequest(task="suggest", prompt=prompt, evidence=evidence))
-        _trace_model_call_result("suggest", baseline_item.content.title, response.model, response.confidence)
-        _trace_model_response_detail(response.model, response.content, response.metadata, response.reasoning)
-        provider_reasoning = response.reasoning if _trace_model_reasoning_payloads_enabled() else ""
-        if provider_classifier._is_provider_error(response.content):
-            raise SystemExit(
-                f"No model suggestions were produced for draft item {baseline_item.id}: {response.content}"
+        if len(target_batches) > 1:
+            _trace_model_suggest_stage(
+                "batch-start",
+                f"batch={batch_index}/{len(target_batches)} targets={len(batch)} fanout_guard={max_model_items}",
             )
-        suggestion_details, rejected_candidates = _parse_suggestion_variants(
-            response.content,
-            suggestion_count,
-            baseline_item,
-            group,
-            trace_title=baseline_item.content.title,
-            trace_model=response.model,
-            banned_phrases=list(suggestion_style["banned_phrases"]),
-            specificity_floor=float(suggestion_style["specificity_floor"]),
-        )
-        _trace_model_suggestion_decision(
-            title=baseline_item.content.title,
-            model=response.model,
-            parsed_count=len(suggestion_details),
-            requested_count=suggestion_count,
-            accepted=_suggestions_preview(suggestion_details),
-            rejected_count=len(rejected_candidates),
-        )
-        if not suggestion_details:
-            raise SystemExit(f"No model suggestions were produced for draft item {baseline_item.id}.")
-        suggestions = [detail["summary"] for detail in suggestion_details]
-        items.append(
-            {
-                "item_id": baseline_item.id,
+        for group, baseline_item in batch:
+            item_number = len(items) + 1
+            _trace_progress(
+                "suggestion_evidence",
+                f"Building suggestion evidence for {baseline_item.id}",
+                current=item_number,
+                total=total_targets,
+                unit="item",
+                item_id=baseline_item.id,
+                batch=batch_index,
+                batch_total=len(target_batches),
+            )
+            diff = provider_classifier.diff_builder.build(group.pr.files if group.pr else group.files)
+            hunk_count = sum(len(hunks) for hunks in diff.representative_hunks.values())
+            file_count = len(diff.file_statuses)
+            _trace_model_suggest_stage(
+                "evidence-built",
+                f"item_id={baseline_item.id} files={file_count} hunks={hunk_count}",
+            )
+            _trace_progress(
+                "suggestion_prompt",
+                f"Building model prompt for {baseline_item.id}",
+                current=item_number,
+                total=total_targets,
+                unit="item",
+                item_id=baseline_item.id,
+                batch=batch_index,
+                batch_total=len(target_batches),
+            )
+            prompt_result = provider_classifier._build_summary_prompt_with_budget(
+                title=baseline_item.content.title,
+                labels=[label.lower() for label in (group.pr.labels if group.pr else [])],
+                pr_body=group.pr.body if group.pr else "",
+                diff=diff,
+                commits=group.commits,
+                suggestion_count=suggestion_count,
+                kind=baseline_item.classification.kind,
+                audience=baseline_item.classification.audience,
+                tone=suggestion_tone,
+                style_guidance=str(suggestion_style["guidance"]),
+                project_vocabulary=list(suggestion_style["project_vocabulary"]),
+                banned_phrases=list(suggestion_style["banned_phrases"]),
+            )
+            prompt = prompt_result.prompt
+            evidence = {
                 "title": baseline_item.content.title,
-                "current_summary": baseline_item.edited_summary or baseline_item.content.summary,
-                "provider": response.model,
-                "prompt_sha": prompt_sha,
+                "item_id": baseline_item.id,
+                "suggestion_count": suggestion_count,
                 "tone": suggestion_tone,
                 "style_profile": suggestion_style,
-                "provider_metadata": response.metadata,
-                "provider_reasoning": provider_reasoning,
-                "source_evidence": source_evidence,
-                "suggestion_details": suggestion_details,
-                "rejected_candidates": rejected_candidates,
-                "suggestions": suggestions,
+                "diff_summary": diff.summary,
+                "representative_hunks": diff.representative_hunks,
+                "file_count": file_count,
+                "hunk_count": hunk_count,
             }
-        )
+            source_evidence = _build_suggestion_source_evidence(diff, group)
+            prompt_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12]
+            _trace_model_suggest_stage(
+                "evidence-detail",
+                f"item_id={baseline_item.id} files={','.join(list(diff.file_statuses)[:8]) or 'none'} "
+                f"source_entries={len(source_evidence)}",
+            )
+            _trace_model_suggest_stage(
+                "prompt-built",
+                f"item_id={baseline_item.id} prompt_chars={len(prompt)} prompt_sha={prompt_sha}",
+            )
+            _trace_model_prompt_budget(prompt_result.budget)
+            _trace_model_payload("prompt-preview", prompt)
+            _trace_model_call_start("suggest", baseline_item.content.title, effective_model_provider or "configured")
+            _trace_progress(
+                "suggestion_model_request",
+                f"Prompting model for {baseline_item.id}",
+                current=item_number,
+                total=total_targets,
+                unit="item",
+                item_id=baseline_item.id,
+                batch=batch_index,
+                batch_total=len(target_batches),
+            )
+            response = provider.summarize(ProviderRequest(task="suggest", prompt=prompt, evidence=evidence))
+            _trace_model_call_result("suggest", baseline_item.content.title, response.model, response.confidence)
+            _trace_model_response_detail(response.model, response.content, response.metadata, response.reasoning)
+            _trace_progress(
+                "suggestion_model_response",
+                f"Reading model response for {baseline_item.id}",
+                current=item_number,
+                total=total_targets,
+                unit="item",
+                item_id=baseline_item.id,
+                batch=batch_index,
+                batch_total=len(target_batches),
+            )
+            provider_reasoning = response.reasoning if _trace_model_reasoning_payloads_enabled() else ""
+            if provider_classifier._is_provider_error(response.content):
+                raise SystemExit(
+                    f"No model suggestions were produced for draft item {baseline_item.id}: {response.content}"
+                )
+            suggestion_details, rejected_candidates = _parse_suggestion_variants(
+                response.content,
+                suggestion_count,
+                baseline_item,
+                group,
+                trace_title=baseline_item.content.title,
+                trace_model=response.model,
+                banned_phrases=list(suggestion_style["banned_phrases"]),
+                specificity_floor=float(suggestion_style["specificity_floor"]),
+            )
+            _trace_model_suggestion_decision(
+                title=baseline_item.content.title,
+                model=response.model,
+                parsed_count=len(suggestion_details),
+                requested_count=suggestion_count,
+                accepted=_suggestions_preview(suggestion_details),
+                rejected_count=len(rejected_candidates),
+            )
+            if not suggestion_details:
+                raise SystemExit(f"No model suggestions were produced for draft item {baseline_item.id}.")
+            suggestions = [detail["summary"] for detail in suggestion_details]
+            items.append(
+                {
+                    "item_id": baseline_item.id,
+                    "title": baseline_item.content.title,
+                    "current_summary": baseline_item.edited_summary or baseline_item.content.summary,
+                    "provider": response.model,
+                    "prompt_sha": prompt_sha,
+                    "tone": suggestion_tone,
+                    "style_profile": suggestion_style,
+                    "provider_metadata": response.metadata,
+                    "provider_reasoning": provider_reasoning,
+                    "source_evidence": source_evidence,
+                    "suggestion_details": suggestion_details,
+                    "rejected_candidates": rejected_candidates,
+                    "suggestions": suggestions,
+                }
+            )
+            _trace_progress(
+                "suggestion_item_done",
+                f"Generated suggestion for {baseline_item.id}",
+                current=len(items),
+                total=total_targets,
+                unit="item",
+                item_id=baseline_item.id,
+                batch=batch_index,
+                batch_total=len(target_batches),
+            )
 
+    _trace_progress("suggestions_ready", "Generated suggestions", current=len(items), total=total_targets, unit="item")
     return {
         "base_ref": base,
         "head_ref": head,
@@ -641,6 +951,10 @@ def _preview_draft_model_suggestions(
         "count": suggestion_count,
         "tone": suggestion_tone,
         "style_profile": suggestion_style,
+        "visible_item_count": visible_target_count,
+        "fanout_guard": max_model_items,
+        "batch_size": batch_size,
+        "batch_count": len(target_batches),
         "items": items,
     }
 
@@ -1825,16 +2139,46 @@ def main(argv: list[str] | None = None) -> int:
             model_provider=args.model_provider,
         )
         if args.draft_command == "preview":
+            _trace_progress(
+                "draft_preview_rendering",
+                "Rendering GitHub release notes",
+                current=document.item_count,
+                total=document.item_count,
+                unit="item",
+            )
             print(document.rendered["github-release"])
             return 0
         if args.draft_command == "json":
+            _trace_progress(
+                "draft_json_serializing",
+                "Serializing draft document",
+                current=document.item_count,
+                total=document.item_count,
+                unit="item",
+            )
             print(json.dumps(document.to_dict(), indent=2))
             return 0
         if args.draft_command == "apply":
+            _trace_progress(
+                "draft_apply_writing",
+                "Writing release notes",
+                detail=args.target,
+                current=0,
+                total=1,
+                unit="target",
+            )
             result = DraftService(config=_load_config()).apply_document(
                 document=document,
                 target_name=args.target,
                 target_path=args.file,
+            )
+            _trace_progress(
+                "draft_apply_writing",
+                "Wrote release notes",
+                detail=result.target,
+                current=1,
+                total=1,
+                unit="target",
             )
             print(json.dumps(result.to_dict(), indent=2))
             return 0

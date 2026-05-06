@@ -38,6 +38,7 @@ class DraftItem:
     head_ref: str
     files: list[str]
     commit_signals: list[str]
+    grouping_reason: str
     status: str
     reviewed_by: str | None
     reviewed_at: str | None
@@ -180,6 +181,7 @@ class DraftService:
                     head_ref=item.source.head_ref,
                     files=item.evidence.files,
                     commit_signals=item.evidence.commit_signals,
+                    grouping_reason=str(item.evidence.diff_summary.get("grouping_reason") or ""),
                     status="hidden" if item.hidden else item.status,
                     reviewed_by=item.reviewed_by,
                     reviewed_at=item.reviewed_at,

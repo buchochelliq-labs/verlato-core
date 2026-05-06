@@ -23,6 +23,7 @@ export interface DraftItem {
   head_ref: string;
   files: string[];
   commit_signals: string[];
+  grouping_reason?: string;
   status: string;
   reviewed_by: string | null;
   reviewed_at: string | null;
@@ -223,6 +224,10 @@ export interface DraftSuggestionPreview {
   count: number;
   tone?: string;
   style_profile?: SuggestionStyleProfile;
+  visible_item_count?: number;
+  fanout_guard?: number;
+  batch_size?: number;
+  batch_count?: number;
   items: DraftSuggestionItem[];
 }
 
@@ -254,7 +259,7 @@ export interface CommandRequestSnapshot {
 export interface CommandLogEntry {
   id: number;
   stream: "stdout" | "stderr";
-  category: "model" | "process";
+  category: "model" | "progress" | "process";
   message: string;
   receivedAt: string;
   event?: string;

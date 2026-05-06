@@ -185,6 +185,7 @@ class Classifier:
                 "migrations": diff.migration_changes,
                 "config_changes": diff.config_changes,
                 "representative_hunks": diff.representative_hunks,
+                "grouping_reason": group.grouping_reason,
             },
         )
 

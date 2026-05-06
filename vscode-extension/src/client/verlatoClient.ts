@@ -661,6 +661,7 @@ export class VerlatoClient implements vscode.Disposable {
     env.VERLATO_SPECIFICITY_FLOOR = String(settings.specificityFloor);
     env.VERLATO_FEEDBACK_INCLUDE_TEXT = settings.feedbackIncludeText ? "1" : "0";
     env.VERLATO_TRACE_MODEL_CALLS = "1";
+    env.VERLATO_TRACE_PROGRESS = "1";
     env.VERLATO_OLLAMA_STREAM = settings.ollamaStreamResponses ? "1" : "0";
     if (settings.includePromptPayloads) {
       env.VERLATO_TRACE_MODEL_PAYLOADS = "1";
@@ -693,8 +694,8 @@ export class VerlatoClient implements vscode.Disposable {
       .map((line) => ({
         id: this.nextActivityId++,
         stream,
-        category: line.startsWith("[verlato:model]") ? "model" as const : "process" as const,
-        ...parseModelActivityLine(line),
+        category: activityCategory(line),
+        ...parseActivityLine(line),
         receivedAt: new Date().toISOString(),
       }));
   }
@@ -876,12 +877,26 @@ function formatModelSettings(settings: ModelSettings): string {
   return `${settings.provider}${model}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; tone: ${settings.suggestionTone}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
 }
 
-function parseModelActivityLine(line: string): {
+function activityCategory(line: string): "model" | "progress" | "process" {
+  if (line.startsWith("[verlato:model]")) {
+    return "model";
+  }
+  if (line.startsWith("[verlato:progress]")) {
+    return "progress";
+  }
+  return "process";
+}
+
+function parseActivityLine(line: string): {
   message: string;
   event?: string;
   attributes?: Record<string, unknown>;
   payload?: string;
 } {
+  const progress = parseProgressActivityLine(line);
+  if (progress) {
+    return progress;
+  }
   const jsonPrefix = "[verlato:model] json ";
   if (!line.startsWith(jsonPrefix)) {
     const streamChunk = parseStreamChunkLine(line);
@@ -905,6 +920,33 @@ function parseModelActivityLine(line: string): {
     };
   } catch {
     return { message: line };
+  }
+}
+
+function parseProgressActivityLine(line: string): {
+  message: string;
+  event: string;
+  attributes: Record<string, unknown>;
+} | undefined {
+  const jsonPrefix = "[verlato:progress] json ";
+  if (!line.startsWith(jsonPrefix)) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(line.slice(jsonPrefix.length)) as Record<string, unknown>;
+    const label = typeof parsed.label === "string" ? parsed.label : "Progress update";
+    const detail = typeof parsed.detail === "string" ? parsed.detail : "";
+    return {
+      message: detail ? `${label} - ${detail}` : label,
+      event: typeof parsed.event === "string" ? parsed.event : "progress",
+      attributes: parsed,
+    };
+  } catch {
+    return {
+      message: line,
+      event: "progress",
+      attributes: {},
+    };
   }
 }
 

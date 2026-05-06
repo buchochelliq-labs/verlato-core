@@ -135,3 +135,4 @@ class ChangeGroup:
     pr: PullRequest | None
     commits: list[Commit]
     files: list[ChangedFile] = field(default_factory=list)
+    grouping_reason: str = ""
