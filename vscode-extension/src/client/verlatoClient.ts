@@ -19,6 +19,7 @@ import {
   DraftSuggestionItem,
   DraftSuggestionPreview,
   ModelSettings,
+  OllamaDoctorResult,
   RepositoryCommit,
   RepositoryOverview,
   RepositoryPullRequest,
@@ -192,6 +193,15 @@ export class VerlatoClient implements vscode.Disposable {
 
   async clearSuggestionCache(): Promise<ClearSuggestionCacheResult> {
     return this.runJsonCommand<ClearSuggestionCacheResult>(["state", "clear-suggestion-cache"]);
+  }
+
+  async diagnoseOllama(): Promise<OllamaDoctorResult> {
+    const settings = this.getModelSettings();
+    return this.runJsonCommand<OllamaDoctorResult>([
+      "doctor",
+      "ollama",
+      ...(settings.suggestionParallelism > 1 ? ["--parallel-probe"] : []),
+    ]);
   }
 
   async getRepositoryOverview(): Promise<RepositoryOverview> {

@@ -6,6 +6,7 @@ import type {
   DraftSuggestionItem,
   DraftSuggestionPreview,
   ModelSettings,
+  OllamaDoctorResult,
   RepositoryCommit,
   RepositoryOverview,
   RepositoryPullRequest,
@@ -18,6 +19,7 @@ export interface ReleaseControlRenderState {
   range: DraftRangeRequest;
   busy: boolean;
   suggestions?: DraftSuggestionPreview;
+  ollamaDoctor?: OllamaDoctorResult;
   requests?: CommandRequestSnapshot[];
   statusMessage?: string;
   errorMessage?: string;
@@ -217,6 +219,7 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets
       if (action === 'cancel') vscode.postMessage({ type: 'cancel' });
       if (action === 'cancelRequest') vscode.postMessage({ type: 'cancelRequest', requestId: Number(button.dataset.request) });
       if (action === 'changeModel') vscode.postMessage({ type: 'changeModel' });
+      if (action === 'diagnoseOllama') vscode.postMessage({ type: 'diagnoseOllama' });
       if (action === 'setTone') vscode.postMessage({ type: 'setTone', tone: button.dataset.tone });
       if (action === 'togglePromptPayloads') vscode.postMessage({ type: 'togglePromptPayloads' });
       if (action === 'toggleReasoningPayloads') vscode.postMessage({ type: 'toggleReasoningPayloads' });
@@ -1105,6 +1108,11 @@ function renderModelPanel(state: ReleaseControlRenderState): string {
       <span>Suggestion cache</span>
       <small>Clear</small>
     </button>
+    <button class="telemetry-toggle" data-action="diagnoseOllama">
+      <span>Model health</span>
+      <small>Run</small>
+    </button>
+    ${renderOllamaDoctor(state.ollamaDoctor)}
   </details>`;
 }
 
@@ -1136,6 +1144,28 @@ function modelDetail(settings: ModelSettings): string {
     `Reasoning payloads: ${settings.includeReasoningPayloads ? "on" : "off"}`,
     `Redaction: ${settings.redactPayloads ? "on" : "off"}`,
   ].join("\n");
+}
+
+function renderOllamaDoctor(result: OllamaDoctorResult | undefined): string {
+  if (!result) {
+    return "";
+  }
+  const firstProbe = result.probes.find((probe) => probe.ok) ?? result.probes[0];
+  const timings = firstProbe?.timings;
+  const timingParts = [
+    typeof timings?.model_ms === "number" ? `model ${formatDurationMs(timings.model_ms)}` : "",
+    typeof timings?.queue_ms === "number" && timings.queue_ms > 0 ? `queue ${formatDurationMs(timings.queue_ms)}` : "",
+    typeof timings?.load_ms === "number" && timings.load_ms > 0 ? `load ${formatDurationMs(timings.load_ms)}` : "",
+    typeof timings?.prompt_eval_ms === "number" && timings.prompt_eval_ms > 0 ? `prompt ${formatDurationMs(timings.prompt_eval_ms)}` : "",
+    typeof timings?.eval_ms === "number" && timings.eval_ms > 0 ? `gen ${formatDurationMs(timings.eval_ms)}` : "",
+  ].filter(Boolean).join(" | ");
+  const recommendations = result.summary.recommendations.slice(0, 2);
+  return `<div class="doctor-result ${escapeHtml(result.summary.status)}">
+    <div><strong>Ollama health</strong><span>${escapeHtml(result.summary.status)} | ${escapeHtml(result.summary.bottleneck.replace("_", " "))}</span></div>
+    ${timingParts ? `<small>${escapeHtml(timingParts)}</small>` : ""}
+    ${result.summary.diagnostics[0] ? `<small>${escapeHtml(result.summary.diagnostics[0])}</small>` : ""}
+    ${recommendations.length ? `<ul>${recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
+  </div>`;
 }
 
 function renderSuggestions(preview: DraftSuggestionPreview | undefined, modelBusy = false): string {
@@ -3071,6 +3101,21 @@ function styles(): string {
       line-height: 1.35;
     }
     .model-diagnostic .verlato-icon { width: 13px; height: 13px; flex: 0 0 auto; }
+    .doctor-result {
+      margin-top: 5px;
+      padding: 5px;
+      color: var(--vscode-descriptionForeground);
+      background: color-mix(in srgb, var(--verlato-purple) 10%, transparent);
+      border-left: 2px solid var(--verlato-purple);
+      font-size: 10px;
+      line-height: 1.35;
+    }
+    .doctor-result.error { border-left-color: var(--verlato-red); }
+    .doctor-result.ok { border-left-color: var(--verlato-green); }
+    .doctor-result div { display: flex; justify-content: space-between; gap: 6px; }
+    .doctor-result strong { color: var(--vscode-foreground); }
+    .doctor-result small { display: block; margin-top: 3px; }
+    .doctor-result ul { margin: 4px 0 0 14px; padding: 0; }
     .suggestion-diagnostics {
       display: block;
       margin-top: 3px;

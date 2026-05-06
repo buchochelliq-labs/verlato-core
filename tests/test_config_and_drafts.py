@@ -7,6 +7,7 @@ from pathlib import Path
 
 from verlato.cli.main import (
     _normalized_provider_timings,
+    _run_ollama_doctor,
     _resolve_suggestion_cache_backend,
     _resolve_suggestion_cache_ttl_days,
     _resolve_suggestion_parallelism,
@@ -303,6 +304,203 @@ def test_normalized_provider_timings_converts_ollama_metadata():
         "queue_ms": 500,
         "tokens_per_second": 50.0,
     }
+
+
+def test_ollama_doctor_command_emits_json(monkeypatch, tmp_path: Path, capsys):
+    monkeypatch.chdir(tmp_path)
+
+    class DoctorProvider:
+        endpoint = "http://127.0.0.1:11434/api/chat"
+        model = "doctor-model"
+        timeout_seconds = 15.0
+        stream = False
+        keep_alive = "10m"
+        num_ctx = 4096
+        num_predict = None
+        suggest_num_predict = 96
+        suggest_think = False
+
+        def _options_for_task(self, task: str, *, request_data: ProviderRequest):
+            return {"num_ctx": self.num_ctx, "num_predict": self.suggest_num_predict}
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            assert request.task == "suggest"
+            return ProviderResponse(
+                content="Adds a model health check for suggestion performance.",
+                confidence=0.9,
+                model="ollama:doctor-model",
+                metadata={
+                    "total_duration": 100_000_000,
+                    "eval_duration": 50_000_000,
+                    "eval_count": 10,
+                },
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:doctor-model")
+
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: DoctorProvider())
+
+    rc = main(["doctor", "ollama"])
+    result = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert result["schema"] == "ollama_doctor.v1"
+    assert result["config"]["model"] == "doctor-model"
+    assert result["config"]["suggest_num_predict_effective"] == 96
+    assert result["probes"][0]["ok"] is True
+    assert result["summary"]["bottleneck"] == "healthy"
+
+
+def test_ollama_doctor_classifies_common_bottlenecks(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+
+    class DoctorProvider:
+        endpoint = "http://127.0.0.1:11434/api/chat"
+        model = "doctor-model"
+        timeout_seconds = 15.0
+        stream = False
+        keep_alive = "10m"
+        num_ctx = None
+        num_predict = None
+        suggest_num_predict = None
+        suggest_think = False
+
+        def __init__(self, metadata: dict[str, object], model_ms_padding: float = 0.0) -> None:
+            self.metadata = metadata
+            self.model_ms_padding = model_ms_padding
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            if self.model_ms_padding:
+                time.sleep(self.model_ms_padding)
+            return ProviderResponse(
+                content="Adds a model health check for suggestion performance.",
+                confidence=0.9,
+                model="ollama:doctor-model",
+                metadata=self.metadata,
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:doctor-model")
+
+    cases = [
+        (
+            "load",
+            {"total_duration": 1_000_000_000, "load_duration": 800_000_000},
+            0.0,
+        ),
+        (
+            "prompt_eval",
+            {"total_duration": 1_000_000_000, "prompt_eval_duration": 800_000_000},
+            0.0,
+        ),
+        (
+            "generation",
+            {"total_duration": 1_000_000_000, "eval_duration": 800_000_000},
+            0.0,
+        ),
+        (
+            "queue",
+            {"total_duration": 20_000_000, "eval_duration": 10_000_000},
+            0.35,
+        ),
+    ]
+    for expected, metadata, padding in cases:
+        monkeypatch.setattr(
+            "verlato.cli.main.build_provider",
+            lambda config, mode=None, metadata=metadata, padding=padding: DoctorProvider(metadata, padding),
+        )
+        result = _run_ollama_doctor()
+        assert result["summary"]["bottleneck"] == expected
+        assert result["summary"]["status"] == "warning"
+        assert result["summary"]["recommendations"]
+
+
+def test_ollama_doctor_reports_unavailable_provider(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+
+    class UnavailableProvider:
+        endpoint = "http://127.0.0.1:11434/api/chat"
+        model = "missing-model"
+        timeout_seconds = 15.0
+        stream = False
+        keep_alive = "10m"
+        num_ctx = None
+        num_predict = None
+        suggest_num_predict = None
+        suggest_think = False
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(
+                content="[ollama-unavailable] unable to reach local Ollama",
+                confidence=0.0,
+                model="ollama:missing-model",
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:missing-model")
+
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: UnavailableProvider())
+
+    result = _run_ollama_doctor()
+
+    assert result["summary"]["status"] == "error"
+    assert result["summary"]["bottleneck"] == "unavailable"
+    assert "Ollama is running" in result["summary"]["recommendations"][0]
+
+
+def test_ollama_doctor_parallel_probe_overlaps_calls(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+
+    class BlockingProvider:
+        endpoint = "http://127.0.0.1:11434/api/chat"
+        model = "doctor-model"
+        timeout_seconds = 15.0
+        stream = False
+        keep_alive = "10m"
+        num_ctx = None
+        num_predict = None
+        suggest_num_predict = None
+        suggest_think = False
+
+        def __init__(self) -> None:
+            self.calls = 0
+            self.active = 0
+            self.max_active = 0
+            self.lock = threading.Lock()
+            self.barrier = threading.Barrier(2, timeout=2)
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            with self.lock:
+                self.calls += 1
+                call_number = self.calls
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            try:
+                if call_number > 1:
+                    self.barrier.wait()
+                    time.sleep(0.02)
+                return ProviderResponse(
+                    content="Adds a model health check for suggestion performance.",
+                    confidence=0.9,
+                    model="ollama:doctor-model",
+                    metadata={"total_duration": 20_000_000, "eval_duration": 10_000_000},
+                )
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:doctor-model")
+
+    provider = BlockingProvider()
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
+
+    result = _run_ollama_doctor(parallel_probe=True)
+
+    assert provider.calls == 3
+    assert provider.max_active == 2
+    assert [probe["name"] for probe in result["probes"]] == ["single", "parallel-a", "parallel-b"]
 
 
 def test_load_config_reads_suggestion_tone(monkeypatch, tmp_path: Path):

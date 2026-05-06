@@ -21,7 +21,7 @@ from verlato.core.grouper import Grouper
 from verlato.core.models import ChangeGroup, ChangeItem
 from verlato.core.reconciler import Reconciler
 from verlato.github.adapter import GitHubApiAdapter
-from verlato.providers.base import ProviderRequest
+from verlato.providers.base import ProviderRequest, ProviderResponse
 from verlato.providers.factory import build_provider
 from verlato.providers.model_logging import (
     append_log_line,
@@ -149,6 +149,15 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("--include-provenance", action="store_true")
 
     sub.add_parser("serve")
+
+    doctor = sub.add_parser("doctor")
+    doctor_sub = doctor.add_subparsers(dest="doctor_command", required=True)
+    doctor_ollama = doctor_sub.add_parser("ollama")
+    doctor_ollama.add_argument(
+        "--parallel-probe",
+        action="store_true",
+        help="Run two tiny Ollama suggestion probes concurrently to detect server queueing.",
+    )
 
     model_logs = sub.add_parser("model-logs")
     model_logs_sub = model_logs.add_subparsers(dest="model_logs_command", required=True)
@@ -578,6 +587,210 @@ def _normalized_provider_timings(metadata: dict[str, object], model_ms: int) -> 
     if eval_tokens is not None and isinstance(eval_duration_ms, int) and eval_duration_ms > 0:
         timings["tokens_per_second"] = round(eval_tokens / (eval_duration_ms / 1000), 1)
     return timings
+
+
+def _ollama_doctor_prompt() -> str:
+    return (
+        "Return one concise release-note style sentence for this diagnostic change: "
+        "Verlato adds a model health check for suggestion performance."
+    )
+
+
+def _run_ollama_doctor(*, parallel_probe: bool = False) -> dict[str, object]:
+    config = _load_config()
+    suggestion_parallelism = _resolve_suggestion_parallelism(config.suggestion_parallelism)
+    provider = build_provider(config.provider, mode="ollama")
+    prompt = _ollama_doctor_prompt()
+    request = ProviderRequest(
+        task="suggest",
+        prompt=prompt,
+        evidence={
+            "title": "Ollama doctor probe",
+            "item_id": "doctor_ollama",
+            "suggestion_count": 1,
+            "doctor": True,
+        },
+    )
+    config_snapshot = _ollama_doctor_config(provider, request, suggestion_parallelism)
+    probes = [_run_ollama_doctor_probe(provider, request, name="single")]
+    if parallel_probe:
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="verlato-ollama-doctor") as executor:
+            futures = [
+                executor.submit(_run_ollama_doctor_probe, provider, request, name="parallel-a"),
+                executor.submit(_run_ollama_doctor_probe, provider, request, name="parallel-b"),
+            ]
+            probes.extend(future.result() for future in as_completed(futures))
+        probes[1:] = sorted(probes[1:], key=lambda probe: str(probe.get("name") or ""))
+    return {
+        "schema": "ollama_doctor.v1",
+        "provider": "ollama",
+        "config": config_snapshot,
+        "probes": probes,
+        "summary": _summarize_ollama_doctor(probes, config_snapshot),
+    }
+
+
+def _ollama_doctor_config(provider: object, request: ProviderRequest, suggestion_parallelism: int) -> dict[str, object]:
+    options = {}
+    option_builder = getattr(provider, "_options_for_task", None)
+    if callable(option_builder):
+        try:
+            options = option_builder("suggest", request_data=request)
+        except TypeError:
+            options = {}
+    return {
+        "endpoint": getattr(provider, "endpoint", None),
+        "model": getattr(provider, "model", None),
+        "timeout_seconds": getattr(provider, "timeout_seconds", None),
+        "stream": getattr(provider, "stream", None),
+        "keep_alive": getattr(provider, "keep_alive", None),
+        "num_ctx": getattr(provider, "num_ctx", None),
+        "num_predict": getattr(provider, "num_predict", None),
+        "suggest_num_predict": getattr(provider, "suggest_num_predict", None),
+        "suggest_num_predict_effective": options.get("num_predict") if isinstance(options, dict) else None,
+        "suggest_think": getattr(provider, "suggest_think", None),
+        "suggestion_parallelism": suggestion_parallelism,
+    }
+
+
+def _run_ollama_doctor_probe(provider, request: ProviderRequest, *, name: str) -> dict[str, object]:
+    started = perf_counter()
+    try:
+        response = provider.summarize(request)
+    except BaseException as exc:
+        elapsed_ms = _elapsed_ms(started)
+        return {
+            "name": name,
+            "ok": False,
+            "error": str(exc),
+            "elapsed_ms": elapsed_ms,
+            "prompt_chars": len(request.prompt),
+            "timings": {"model_ms": elapsed_ms},
+            "metadata": {},
+        }
+    elapsed_ms = _elapsed_ms(started)
+    metadata = dict(response.metadata)
+    timings = _normalized_provider_timings(metadata, elapsed_ms)
+    ok, error_message = _ollama_probe_status(response)
+    return {
+        "name": name,
+        "ok": ok,
+        "error": error_message,
+        "elapsed_ms": elapsed_ms,
+        "prompt_chars": len(request.prompt),
+        "model": response.model,
+        "content_chars": len(response.content),
+        "timings": {
+            "model_ms": elapsed_ms,
+            **timings,
+        },
+        "metadata": metadata,
+    }
+
+
+def _ollama_probe_status(response: ProviderResponse) -> tuple[bool, str | None]:
+    content = (response.content or "").strip()
+    lowered = content.lower()
+    if lowered.startswith("[ollama-unavailable]"):
+        return False, content
+    if lowered.startswith("[ollama-error]"):
+        return False, content
+    if lowered.startswith("[ollama-empty]") or not content:
+        return False, content or "[ollama-empty] no content"
+    return True, None
+
+
+def _summarize_ollama_doctor(probes: list[dict[str, object]], config_snapshot: dict[str, object]) -> dict[str, object]:
+    ok_probes = [probe for probe in probes if probe.get("ok") is True]
+    if not ok_probes:
+        diagnostics = [str(probe.get("error") or "Ollama probe failed") for probe in probes]
+        return {
+            "status": "error",
+            "bottleneck": "unavailable",
+            "diagnostics": diagnostics,
+            "recommendations": [
+                "Check that Ollama is running and reachable at the configured endpoint.",
+                "Confirm the configured model is pulled and the endpoint matches Ollama's /api/chat route.",
+            ],
+        }
+    bottleneck, diagnostic = _ollama_doctor_bottleneck(ok_probes)
+    recommendations = _ollama_doctor_recommendations(bottleneck, config_snapshot)
+    status = "ok" if bottleneck == "healthy" else "warning"
+    return {
+        "status": status,
+        "bottleneck": bottleneck,
+        "diagnostics": [diagnostic],
+        "recommendations": recommendations,
+    }
+
+
+def _ollama_doctor_bottleneck(probes: list[dict[str, object]]) -> tuple[str, str]:
+    max_values = {
+        "queue": _max_probe_timing(probes, "queue_ms"),
+        "load": _max_probe_timing(probes, "load_ms"),
+        "prompt_eval": _max_probe_timing(probes, "prompt_eval_ms"),
+        "generation": _max_probe_timing(probes, "eval_ms"),
+        "model": max(_max_probe_timing(probes, "model_ms"), _max_probe_timing(probes, "ollama_total_ms")),
+    }
+    model_ms = max_values["model"]
+    if max_values["queue"] >= 250 and (model_ms <= 0 or max_values["queue"] / model_ms >= 0.2):
+        return "queue", f"Ollama queue time reached {max_values['queue']}ms during the probe."
+    if max_values["load"] >= 500 and _timing_ratio(max_values["load"], model_ms) >= 0.35:
+        return "load", f"Ollama model load time reached {max_values['load']}ms."
+    if max_values["prompt_eval"] >= 500 and _timing_ratio(max_values["prompt_eval"], model_ms) >= 0.35:
+        return "prompt_eval", f"Ollama prompt evaluation reached {max_values['prompt_eval']}ms."
+    if max_values["generation"] >= 500 and _timing_ratio(max_values["generation"], model_ms) >= 0.35:
+        return "generation", f"Ollama generation reached {max_values['generation']}ms."
+    if model_ms >= 2500:
+        return "generation", f"Ollama probe took {model_ms}ms without a more specific timing breakdown."
+    return "healthy", f"Ollama probe completed in {model_ms}ms with no obvious bottleneck."
+
+
+def _ollama_doctor_recommendations(bottleneck: str, config_snapshot: dict[str, object]) -> list[str]:
+    parallelism = config_snapshot.get("suggestion_parallelism")
+    if bottleneck == "queue":
+        return [
+            f"Lower Verlato suggestion parallelism from {parallelism} if the local server is serializing requests.",
+            "Set OLLAMA_NUM_PARALLEL before starting Ollama if your hardware has memory for parallel requests.",
+        ]
+    if bottleneck == "load":
+        return [
+            "Keep the model warm with VERLATO_OLLAMA_KEEP_ALIVE or provider.keep_alive.",
+            "Run a small warmup request before large all-visible suggestion runs.",
+        ]
+    if bottleneck == "prompt_eval":
+        return [
+            "Reduce prompt budget further or inspect prompt budget telemetry for files/hunks that dominate.",
+            "Consider a later multi-item batching pass if prompt eval remains the main cost.",
+        ]
+    if bottleneck == "generation":
+        return [
+            "Lower VERLATO_OLLAMA_SUGGEST_NUM_PREDICT or provider.suggest_num_predict.",
+            "Try a smaller/faster local model for suggestion generation.",
+        ]
+    if bottleneck == "unavailable":
+        return [
+            "Check that Ollama is running and reachable at the configured endpoint.",
+            "Confirm the configured model is pulled and available to Ollama.",
+        ]
+    return ["No obvious Ollama bottleneck was detected by the probe."]
+
+
+def _max_probe_timing(probes: list[dict[str, object]], key: str) -> int:
+    values = []
+    for probe in probes:
+        timings = probe.get("timings")
+        if isinstance(timings, dict):
+            value = timings.get(key)
+            if isinstance(value, (int, float)):
+                values.append(int(value))
+    return max(values) if values else 0
+
+
+def _timing_ratio(value: int, total: int) -> float:
+    if total <= 0:
+        return 0.0
+    return value / total
 
 
 def _nanoseconds_to_ms(value: object) -> int | None:
@@ -2610,6 +2823,10 @@ def main(argv: list[str] | None = None) -> int:
             return run_mcp_stdio()
         except RuntimeError as exc:
             raise SystemExit(str(exc)) from exc
+
+    if args.command == "doctor" and args.doctor_command == "ollama":
+        print(json.dumps(_run_ollama_doctor(parallel_probe=args.parallel_probe), indent=2))
+        return 0
 
     if args.command == "model-logs" and args.model_logs_command == "export":
         return _run_model_logs_export(

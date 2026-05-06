@@ -7,6 +7,7 @@ import {
   DraftRangeRequest,
   DraftSuggestionPreview,
   ModelSettings,
+  OllamaDoctorResult,
   RepositoryOverview,
 } from "../client/types";
 import { type NotificationAction, handleNotificationAction, showErrorNotification, showSuccessNotification } from "../notifications";
@@ -18,6 +19,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   private document: DraftDocument | undefined;
   private overview: RepositoryOverview | undefined;
   private suggestions: DraftSuggestionPreview | undefined;
+  private ollamaDoctor: OllamaDoctorResult | undefined;
   private requests: CommandRequestSnapshot[] = [];
   private modelSettings: ModelSettings;
   private range: DraftRangeRequest = { base: "HEAD~10", head: "HEAD", version: "Unreleased" };
@@ -169,6 +171,9 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     if (message.type === "changeModel") {
       await vscode.commands.executeCommand("verlato.changeModel");
     }
+    if (message.type === "diagnoseOllama") {
+      await this.diagnoseOllama();
+    }
     if (message.type === "togglePromptPayloads") {
       await this.togglePromptPayloads();
     }
@@ -311,6 +316,20 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       this.suggestions = undefined;
       this.refresh(undefined, undefined, this.client.getModelSettings());
     });
+    if (successMessage) {
+      await handleNotificationAction(await showSuccessNotification(successMessage, "Open Verlato", "View Activity"));
+    }
+  }
+
+  private async diagnoseOllama(): Promise<void> {
+    let successMessage: string | undefined;
+    await this.runBusy(async () => {
+      const result = await this.client.diagnoseOllama();
+      this.ollamaDoctor = result;
+      this.statusMessage = `Ollama health: ${result.summary.status} (${result.summary.bottleneck}).`;
+      successMessage = this.statusMessage;
+      this.render();
+    }, { errorActions: ["View Activity", "Change Model"] });
     if (successMessage) {
       await handleNotificationAction(await showSuccessNotification(successMessage, "Open Verlato", "View Activity"));
     }
@@ -565,6 +584,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       range: this.range,
       busy: this.busy,
       suggestions: this.suggestions,
+      ollamaDoctor: this.ollamaDoctor,
       requests: this.requests,
       statusMessage: this.statusMessage,
       errorMessage: this.errorMessage,

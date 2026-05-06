@@ -299,6 +299,47 @@ export interface DraftSuggestionPerformance {
   total_ms?: number;
 }
 
+export interface OllamaDoctorResult {
+  schema: "ollama_doctor.v1";
+  provider: "ollama";
+  config: OllamaDoctorConfig;
+  probes: OllamaDoctorProbe[];
+  summary: OllamaDoctorSummary;
+}
+
+export interface OllamaDoctorConfig {
+  endpoint?: string;
+  model?: string;
+  timeout_seconds?: number;
+  stream?: boolean;
+  keep_alive?: string | null;
+  num_ctx?: number | null;
+  num_predict?: number | null;
+  suggest_num_predict?: number | null;
+  suggest_num_predict_effective?: number | null;
+  suggest_think?: boolean | null;
+  suggestion_parallelism?: number;
+}
+
+export interface OllamaDoctorProbe {
+  name: string;
+  ok: boolean;
+  error?: string | null;
+  elapsed_ms: number;
+  prompt_chars: number;
+  model?: string;
+  content_chars?: number;
+  timings?: DraftSuggestionTimings;
+  metadata?: Record<string, unknown>;
+}
+
+export interface OllamaDoctorSummary {
+  status: "ok" | "warning" | "error";
+  bottleneck: "healthy" | "unavailable" | "queue" | "load" | "prompt_eval" | "generation";
+  diagnostics: string[];
+  recommendations: string[];
+}
+
 export type ClientMode = "cli";
 
 export interface ClientStatus {

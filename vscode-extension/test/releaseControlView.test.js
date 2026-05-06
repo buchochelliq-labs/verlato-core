@@ -144,6 +144,20 @@ function makeClient(overrides = {}) {
     clearSuggestionCache() {
       return Promise.resolve({ removed_entries: 0, path: ".verlato_suggestion_cache.json" });
     },
+    diagnoseOllama() {
+      return Promise.resolve({
+        schema: "ollama_doctor.v1",
+        provider: "ollama",
+        config: { model: "mock-model" },
+        probes: [],
+        summary: {
+          status: "ok",
+          bottleneck: "healthy",
+          diagnostics: ["Ollama probe completed in 100ms with no obvious bottleneck."],
+          recommendations: ["No obvious Ollama bottleneck was detected by the probe."],
+        },
+      });
+    },
     ...overrides,
   };
 }
@@ -340,6 +354,46 @@ test("control view clears the persistent suggestion cache", async () => {
 
   assert.equal(clearCalls, 1);
   assert.match(htmlSnapshots.at(-1), /Cleared 3 cached suggestion entries/);
+});
+
+test("control view runs and renders Ollama doctor diagnostics", async () => {
+  let doctorCalls = 0;
+  const { ReleaseControlViewProvider } = loadControlViewWithVscodeMock(makeVscodeMock());
+  const client = makeClient({
+    diagnoseOllama() {
+      doctorCalls += 1;
+      return Promise.resolve({
+        schema: "ollama_doctor.v1",
+        provider: "ollama",
+        config: { model: "gemma4:latest" },
+        probes: [
+          {
+            name: "single",
+            ok: true,
+            elapsed_ms: 1500,
+            prompt_chars: 120,
+            timings: { model_ms: 1500, prompt_eval_ms: 900, eval_ms: 300 },
+          },
+        ],
+        summary: {
+          status: "warning",
+          bottleneck: "prompt_eval",
+          diagnostics: ["Ollama prompt evaluation reached 900ms."],
+          recommendations: ["Reduce prompt budget further or inspect prompt budget telemetry for files/hunks that dominate."],
+        },
+      });
+    },
+  });
+  const { provider, htmlSnapshots } = makeProvider(ReleaseControlViewProvider, client);
+
+  await provider.handleMessage({ type: "diagnoseOllama" });
+
+  assert.equal(doctorCalls, 1);
+  const html = htmlSnapshots.at(-1);
+  assert.match(html, /Ollama health/);
+  assert.match(html, /warning \| prompt eval/);
+  assert.match(html, /prompt 900ms/);
+  assert.match(html, /Reduce prompt budget further/);
 });
 
 test("control view keeps partial suggestions visible when a later item fails", async () => {

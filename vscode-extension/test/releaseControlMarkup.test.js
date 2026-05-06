@@ -764,6 +764,43 @@ test("renders Ollama timing diagnostics and queue warning for suggestions", () =
   assert.match(html, /Ollama bottleneck: prompt eval 1\.4s \| 16\.7 tok\/s \| 30\/15 tok \| prompt 1\.7k chars \| files 8\/14 \| hunks 2\/7 \| skipped 6 files, 5 hunks/);
 });
 
+test("renders Ollama doctor health recommendations", () => {
+  const html = buildReleaseControlHtml({
+    modelSettings: { ...modelSettings, provider: "ollama", model: "gemma4:latest" },
+    range,
+    busy: false,
+    ollamaDoctor: {
+      schema: "ollama_doctor.v1",
+      provider: "ollama",
+      config: { model: "gemma4:latest" },
+      probes: [
+        {
+          name: "single",
+          ok: true,
+          elapsed_ms: 2000,
+          prompt_chars: 120,
+          timings: {
+            model_ms: 2000,
+            queue_ms: 700,
+            eval_ms: 400,
+          },
+        },
+      ],
+      summary: {
+        status: "warning",
+        bottleneck: "queue",
+        diagnostics: ["Ollama queue time reached 700ms during the probe."],
+        recommendations: ["Set OLLAMA_NUM_PARALLEL before starting Ollama if your hardware has memory for parallel requests."],
+      },
+    },
+  });
+
+  assert.match(html, /Model health/);
+  assert.match(html, /warning \| queue/);
+  assert.match(html, /queue 700ms/);
+  assert.match(html, /OLLAMA_NUM_PARALLEL/);
+});
+
 test("keeps request inspection out of the release control view", () => {
   const html = buildReleaseControlHtml({
     modelSettings,

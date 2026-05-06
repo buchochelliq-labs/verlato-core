@@ -225,6 +225,36 @@ test("clear suggestion cache invokes the state command", async () => {
   assert.equal(result.removed_entries, 2);
 });
 
+test("diagnose Ollama invokes doctor command with parallel probe when configured", async () => {
+  const spawnCalls = [];
+  const child = makeChild(559);
+  const client = makeClient((command, args, options) => {
+    spawnCalls.push({ command, args, options });
+    return child;
+  }, { suggestionParallelism: 3 });
+
+  const pending = client.diagnoseOllama();
+  await waitForSpawn(spawnCalls);
+  child.stdout.emit("data", JSON.stringify({
+    schema: "ollama_doctor.v1",
+    provider: "ollama",
+    config: { model: "gemma4:latest" },
+    probes: [],
+    summary: {
+      status: "ok",
+      bottleneck: "healthy",
+      diagnostics: [],
+      recommendations: [],
+    },
+  }));
+  child.emit("close", 0);
+  const result = await pending;
+
+  assert.deepEqual(spawnCalls[0].args, ["doctor", "ollama", "--parallel-probe"]);
+  assert.equal(spawnCalls[0].options.env.VERLATO_MODEL_PROVIDER, "ollama");
+  assert.equal(result.schema, "ollama_doctor.v1");
+});
+
 test("preview suggestions streams partial items before final stdout resolves", async () => {
   const spawnCalls = [];
   const child = makeChild(558);
