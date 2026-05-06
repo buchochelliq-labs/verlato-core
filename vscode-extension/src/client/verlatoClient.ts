@@ -156,24 +156,18 @@ export class VerlatoClient implements vscode.Disposable {
       }
       : undefined;
     return this.runJsonCommand<DraftSuggestionPreview>([
-      "draft",
-      "suggest",
-      "--base",
-      request.base,
-      "--head",
-      request.head ?? "HEAD",
-      "--preview",
-      "--count",
-      String(settings.suggestionCount),
-      "--parallelism",
-      String(settings.suggestionParallelism),
-      "--batch-size",
-      String(settings.suggestionBatchSize),
-      "--tone",
-      settings.suggestionTone,
+      ...draftSuggestionPreviewArgs(request, settings),
       ...cacheArgs,
       ...(itemId ? ["--id", itemId] : ["--all-visible"]),
     ], { onActivity });
+  }
+
+  async warmDraftSuggestionCache(request: DraftRangeRequest): Promise<DraftSuggestionPreview> {
+    const settings = this.getModelSettings();
+    return this.runJsonCommand<DraftSuggestionPreview>([
+      ...draftSuggestionPreviewArgs(request, settings),
+      "--all-visible",
+    ]);
   }
 
   async recordFeedback(event: string, itemId: string, metadata: Record<string, unknown> = {}): Promise<void> {
@@ -244,6 +238,7 @@ export class VerlatoClient implements vscode.Disposable {
       suggestionCount: config.get<number>("suggestionCount") ?? 1,
       suggestionParallelism: config.get<number>("suggestionParallelism") ?? 2,
       suggestionBatchSize: config.get<number>("suggestionBatchSize") ?? 2,
+      suggestionAutoWarmCache: config.get<boolean>("suggestionAutoWarmCache") ?? true,
       suggestionTone: config.get<string>("suggestionTone") || "release-note",
       styleGuidance: config.get<string>("styleGuidance") || "",
       projectVocabulary: config.get<string[]>("projectVocabulary") ?? [],
@@ -283,6 +278,9 @@ export class VerlatoClient implements vscode.Disposable {
     }
     if (settings.suggestionBatchSize !== undefined) {
       await config.update("suggestionBatchSize", settings.suggestionBatchSize, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.suggestionAutoWarmCache !== undefined) {
+      await config.update("suggestionAutoWarmCache", settings.suggestionAutoWarmCache, vscode.ConfigurationTarget.Workspace);
     }
     if (settings.suggestionTone !== undefined) {
       await config.update("suggestionTone", settings.suggestionTone, vscode.ConfigurationTarget.Workspace);
@@ -969,7 +967,28 @@ function formatModelSettings(settings: ModelSettings): string {
     ? "; style controls on"
     : "";
   const timeout = settings.provider === "ollama" ? `; timeout: ${settings.ollamaTimeoutSeconds}s` : "";
-  return `${settings.provider}${model}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; parallelism: ${settings.suggestionParallelism}; batch size: ${settings.suggestionBatchSize}; tone: ${settings.suggestionTone}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
+  const warm = settings.provider === "ollama" ? `; cache warm: ${settings.suggestionAutoWarmCache ? "on" : "off"}` : "";
+  return `${settings.provider}${model}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; parallelism: ${settings.suggestionParallelism}; batch size: ${settings.suggestionBatchSize}; tone: ${settings.suggestionTone}${warm}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
+}
+
+function draftSuggestionPreviewArgs(request: DraftRangeRequest, settings: ModelSettings): string[] {
+  return [
+    "draft",
+    "suggest",
+    "--base",
+    request.base,
+    "--head",
+    request.head ?? "HEAD",
+    "--preview",
+    "--count",
+    String(settings.suggestionCount),
+    "--parallelism",
+    String(settings.suggestionParallelism),
+    "--batch-size",
+    String(settings.suggestionBatchSize),
+    "--tone",
+    settings.suggestionTone,
+  ];
 }
 
 interface SuggestionPartialState {

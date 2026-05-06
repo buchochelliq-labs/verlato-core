@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
+import uuid
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Iterator, Protocol
 
 
 class SuggestionCacheError(RuntimeError):
@@ -151,40 +154,85 @@ class JsonSuggestionCacheStore:
         self.dirty = True
 
     def save(self) -> None:
-        now = _utc_now()
-        compacted: dict[str, dict[str, Any]] = {}
-        for key, entry in self.entries.items():
-            if self._expired(entry):
-                self.dirty = True
-                continue
-            compacted[key] = entry
-        self.entries = compacted
-        payload = {
-            "schema_version": self.CURRENT_SCHEMA_VERSION,
-            "created_at": self.created_at,
-            "updated_at": now,
-            "entries": self.entries,
-        }
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self.path.with_name(f"{self.path.name}.tmp")
-        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
-        tmp_path.replace(self.path)
-        self.updated_at = now
-        self.dirty = False
+        with _cache_file_lock(self.path):
+            disk_created_at, disk_entries = self._read_disk_entries_for_merge()
+            merged = {**disk_entries, **self.entries}
+            compacted: dict[str, dict[str, Any]] = {}
+            for key, entry in merged.items():
+                if self._expired(entry):
+                    self.dirty = True
+                    continue
+                compacted[key] = entry
+            now = _utc_now()
+            self.entries = compacted
+            self.created_at = disk_created_at or self.created_at
+            payload = {
+                "schema_version": self.CURRENT_SCHEMA_VERSION,
+                "created_at": self.created_at,
+                "updated_at": now,
+                "entries": self.entries,
+            }
+            tmp_path = self.path.with_name(f"{self.path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+            try:
+                tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+                tmp_path.replace(self.path)
+            finally:
+                try:
+                    tmp_path.unlink()
+                except FileNotFoundError:
+                    pass
+            self.updated_at = now
+            self.dirty = False
 
     def clear(self) -> int:
         count = 0
-        if self.path.exists():
-            try:
-                raw = json.loads(self.path.read_text())
-            except (OSError, json.JSONDecodeError):
-                raw = {}
-            entries = raw.get("entries") if isinstance(raw, dict) else None
-            count = len(entries) if isinstance(entries, dict) else 0
-            self.path.unlink()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with _cache_file_lock(self.path):
+            if self.path.exists():
+                try:
+                    raw = json.loads(self.path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    raw = {}
+                entries = raw.get("entries") if isinstance(raw, dict) else None
+                count = len(entries) if isinstance(entries, dict) else 0
+                self.path.unlink()
         self.entries = {}
         self.dirty = False
         return count
+
+    def _read_disk_entries_for_merge(self) -> tuple[str | None, dict[str, dict[str, Any]]]:
+        if not self.path.exists():
+            return None, {}
+        try:
+            raw = json.loads(self.path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None, {}
+        if not isinstance(raw, dict):
+            return None, {}
+        if str(raw.get("schema_version") or "v1") != self.CURRENT_SCHEMA_VERSION:
+            return None, {}
+        created_at = str(raw.get("created_at") or self.created_at)
+        updated_at = str(raw.get("updated_at") or self.updated_at)
+        raw_entries = raw.get("entries")
+        if not isinstance(raw_entries, dict):
+            return created_at, {}
+        entries: dict[str, dict[str, Any]] = {}
+        for key, entry in raw_entries.items():
+            if not isinstance(key, str) or not isinstance(entry, dict):
+                continue
+            item = entry.get("item")
+            if not isinstance(item, dict):
+                continue
+            normalized = {
+                "key": str(entry.get("key") or key),
+                "created_at": str(entry.get("created_at") or created_at),
+                "updated_at": str(entry.get("updated_at") or entry.get("created_at") or updated_at),
+                "item": item,
+            }
+            if not self._expired(normalized):
+                entries[key] = normalized
+        return created_at, entries
 
     def _expired(self, entry: dict[str, Any]) -> bool:
         if self.ttl_days <= 0:
@@ -199,6 +247,46 @@ SuggestionCacheStore = JsonSuggestionCacheStore
 
 
 register_suggestion_cache_backend("json", lambda path, ttl_days: JsonSuggestionCacheStore(path=path, ttl_days=ttl_days))
+
+
+@contextmanager
+def _cache_file_lock(path: Path) -> Iterator[None]:
+    lock_path = path.with_name(f"{path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_file:
+        _lock_file(lock_file)
+        try:
+            yield
+        finally:
+            _unlock_file(lock_file)
+
+
+def _lock_file(lock_file) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        lock_file.seek(0, os.SEEK_END)
+        if lock_file.tell() == 0:
+            lock_file.write(b"\0")
+            lock_file.flush()
+        lock_file.seek(0)
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+
+def _unlock_file(lock_file) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        lock_file.seek(0)
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _utc_now() -> str:

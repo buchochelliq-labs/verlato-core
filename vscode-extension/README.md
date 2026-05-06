@@ -64,12 +64,14 @@ The default provider is local Ollama with `gemma4:latest`. Change it from `Verla
 "verlato.ollamaEndpoint": "http://127.0.0.1:11434/api/chat",
 "verlato.maxModelItems": 25,
 "verlato.suggestionParallelism": 2,
-"verlato.suggestionBatchSize": 2
+"verlato.suggestionBatchSize": 2,
+"verlato.suggestionAutoWarmCache": true
 ```
 
 `verlato.maxModelItems` prevents a large comparison range from sending one LLM request per grouped change. Set it to `-1` only when you intentionally want no fanout guard.
 `verlato.suggestionParallelism` controls how many draft suggestion preview requests may run at once.
 `verlato.suggestionBatchSize` controls how many uncached Ollama suggestion items can share one structured model request; non-Ollama providers still run item-by-item.
+`verlato.suggestionAutoWarmCache` quietly warms the local suggestion cache after a draft loads when the active provider is Ollama; turn it off if you only want model calls after clicking Suggest.
 The Intent Inference panel includes Model health and Warm model actions for Ollama. Model health runs a tiny suggestion-style probe, reads `/api/ps` through the configured endpoint, and optionally enriches the result with `ollama ps` processor details when the CLI is available. Warm model runs the same style of tiny request before larger suggestion runs. If Ollama diagnostics show queue time, set server variables such as `OLLAMA_NUM_PARALLEL`, `OLLAMA_MAX_QUEUE`, and `OLLAMA_CONTEXT_LENGTH` before starting Ollama; the extension can only tune Verlato's client-side request fanout.
 
 If the launch config does not appear, open `.vscode/launch.json` from the repo root and start the `Verlato Extension` configuration from the editor's debug controls.

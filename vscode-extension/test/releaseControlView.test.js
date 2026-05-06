@@ -11,6 +11,7 @@ const modelSettings = {
   suggestionCount: 1,
   suggestionParallelism: 2,
   suggestionBatchSize: 2,
+  suggestionAutoWarmCache: true,
   suggestionTone: "release-note",
   styleGuidance: "",
   projectVocabulary: [],
@@ -139,6 +140,15 @@ function makeClient(overrides = {}) {
         items: [],
       });
     },
+    warmDraftSuggestionCache() {
+      return Promise.resolve({
+        base_ref: "v1.0.0",
+        head_ref: "HEAD",
+        provider: "mock",
+        count: 1,
+        items: [],
+      });
+    },
     recordFeedback() {
       return Promise.resolve(undefined);
     },
@@ -204,6 +214,19 @@ function suggestionPreview(text, itemId = "ci_1") {
   };
 }
 
+function draftDocument(itemCount = 1) {
+  return {
+    version: "Unreleased",
+    generated_on: "2026-05-03",
+    base_ref: "v1.0.0",
+    head_ref: "HEAD",
+    targets: [],
+    sections: [],
+    rendered: {},
+    item_count: itemCount,
+  };
+}
+
 function makeProvider(ReleaseControlViewProvider, client) {
   const htmlSnapshots = [];
   const webview = {
@@ -233,9 +256,13 @@ async function waitFor(predicate) {
     if (predicate()) {
       return;
     }
-    await new Promise((resolve) => setImmediate(resolve));
+    await sleep(10);
   }
   assert.fail("Timed out waiting for async view update.");
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 test("success notifications do not keep the control view busy", async () => {
@@ -307,6 +334,129 @@ test("error notifications do not keep the control view busy", async () => {
     resolveNotification(undefined);
     await suggestPromise;
   }
+});
+
+test("draft load schedules quiet Ollama suggestion cache warming", async () => {
+  const { ReleaseControlViewProvider } = loadControlViewWithVscodeMock(makeVscodeMock());
+  const warmRequests = [];
+  const client = makeClient({
+    getModelSettings() {
+      return { ...modelSettings, provider: "ollama", model: "gemma4:latest" };
+    },
+    getDraft() {
+      return Promise.resolve(draftDocument(2));
+    },
+    warmDraftSuggestionCache(request) {
+      warmRequests.push(request);
+      return Promise.resolve({
+        base_ref: request.base,
+        head_ref: request.head,
+        provider: "ollama",
+        count: 1,
+        items: [{ item_id: "ci_1", title: "One", current_summary: "", provider: "ollama", suggestions: ["Warmed suggestion"] }],
+      });
+    },
+  });
+  const { provider, htmlSnapshots } = makeProvider(ReleaseControlViewProvider, client);
+
+  await provider.handleMessage({ type: "scan" });
+  await waitFor(() => warmRequests.length === 1);
+
+  assert.deepEqual(warmRequests[0], { base: "v1.0.0", head: "HEAD", version: "Unreleased" });
+  assert.match(htmlSnapshots.at(-1), /Suggestion cache warmed for 1 item\(s\)/);
+  assert.doesNotMatch(htmlSnapshots.at(-1), /Warmed suggestion/);
+});
+
+test("draft load does not warm suggestion cache for non-Ollama providers", async () => {
+  const { ReleaseControlViewProvider } = loadControlViewWithVscodeMock(makeVscodeMock());
+  let warmCalls = 0;
+  const client = makeClient({
+    warmDraftSuggestionCache() {
+      warmCalls += 1;
+      return Promise.resolve(suggestionPreview("Warmed suggestion"));
+    },
+  });
+  const { provider } = makeProvider(ReleaseControlViewProvider, client);
+
+  await provider.handleMessage({ type: "scan" });
+  await sleep(150);
+
+  assert.equal(warmCalls, 0);
+});
+
+test("draft load does not warm suggestion cache when auto warm is disabled", async () => {
+  const { ReleaseControlViewProvider } = loadControlViewWithVscodeMock(makeVscodeMock());
+  let warmCalls = 0;
+  const client = makeClient({
+    getModelSettings() {
+      return { ...modelSettings, provider: "ollama", suggestionAutoWarmCache: false };
+    },
+    warmDraftSuggestionCache() {
+      warmCalls += 1;
+      return Promise.resolve(suggestionPreview("Warmed suggestion"));
+    },
+  });
+  const { provider } = makeProvider(ReleaseControlViewProvider, client);
+
+  await provider.handleMessage({ type: "scan" });
+  await sleep(150);
+
+  assert.equal(warmCalls, 0);
+});
+
+test("foreground suggest waits for a matching active cache warm", async () => {
+  let resolveWarm;
+  let previewCalls = 0;
+  const { ReleaseControlViewProvider } = loadControlViewWithVscodeMock(makeVscodeMock());
+  const client = makeClient({
+    getModelSettings() {
+      return { ...modelSettings, provider: "ollama", model: "gemma4:latest" };
+    },
+    warmDraftSuggestionCache() {
+      return new Promise((resolve) => {
+        resolveWarm = resolve;
+      });
+    },
+    previewDraftSuggestions() {
+      previewCalls += 1;
+      return Promise.resolve(suggestionPreview("Foreground suggestion"));
+    },
+  });
+  const { provider, htmlSnapshots } = makeProvider(ReleaseControlViewProvider, client);
+
+  await provider.handleMessage({ type: "scan" });
+  await waitFor(() => Boolean(resolveWarm));
+
+  const suggestPromise = provider.handleMessage({ type: "suggestAll" });
+  await sleep(25);
+  assert.equal(previewCalls, 0);
+
+  resolveWarm(suggestionPreview("Warm-only suggestion"));
+  await waitFor(() => previewCalls === 1);
+  await suggestPromise;
+
+  assert.match(htmlSnapshots.at(-1), /Foreground suggestion/);
+  assert.doesNotMatch(htmlSnapshots.at(-1), /Warm-only suggestion/);
+});
+
+test("failed background cache warm does not clear visible suggestions or show an error banner", async () => {
+  const { ReleaseControlViewProvider } = loadControlViewWithVscodeMock(makeVscodeMock());
+  const client = makeClient({
+    getModelSettings() {
+      return { ...modelSettings, provider: "ollama", model: "gemma4:latest" };
+    },
+    warmDraftSuggestionCache() {
+      return Promise.reject(new Error("ollama busy"));
+    },
+  });
+  const { provider, htmlSnapshots } = makeProvider(ReleaseControlViewProvider, client);
+  provider.suggestions = suggestionPreview("Existing visible suggestion");
+  provider.refresh(draftDocument(1), undefined, client.getModelSettings());
+
+  await waitFor(() => /did not complete/.test(htmlSnapshots.at(-1) ?? ""));
+
+  assert.match(htmlSnapshots.at(-1), /Existing visible suggestion/);
+  assert.doesNotMatch(htmlSnapshots.at(-1), /ollama busy/);
 });
 
 test("control view renders partial suggestions while the request is running", async () => {

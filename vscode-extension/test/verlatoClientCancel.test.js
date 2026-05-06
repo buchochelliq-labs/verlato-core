@@ -210,6 +210,49 @@ test("preview suggestions can refresh the persistent suggestion cache", async ()
   assert.ok(!spawnCalls[0].args.includes("--no-cache"));
 });
 
+test("warm suggestion cache invokes all-visible preview without changing visible state", async () => {
+  const spawnCalls = [];
+  const child = makeChild(561);
+  const client = makeClient((command, args, options) => {
+    spawnCalls.push({ command, args, options });
+    return child;
+  }, { suggestionParallelism: 3, suggestionBatchSize: 2 });
+
+  const pending = client.warmDraftSuggestionCache({ base: "v1.0.0", head: "HEAD" });
+  await waitForSpawn(spawnCalls);
+  child.stdout.emit("data", JSON.stringify({
+    base_ref: "v1.0.0",
+    head_ref: "HEAD",
+    provider: "ollama",
+    count: 1,
+    items: [],
+  }));
+  child.emit("close", 0);
+  const result = await pending;
+
+  assert.deepEqual(spawnCalls[0].args, [
+    "draft",
+    "suggest",
+    "--base",
+    "v1.0.0",
+    "--head",
+    "HEAD",
+    "--preview",
+    "--count",
+    "1",
+    "--parallelism",
+    "3",
+    "--batch-size",
+    "2",
+    "--tone",
+    "release-note",
+    "--all-visible",
+  ]);
+  assert.ok(!spawnCalls[0].args.includes("--refresh-cache"));
+  assert.ok(!spawnCalls[0].args.includes("--no-cache"));
+  assert.equal(result.provider, "ollama");
+});
+
 test("clear suggestion cache invokes the state command", async () => {
   const spawnCalls = [];
   const child = makeChild(557);

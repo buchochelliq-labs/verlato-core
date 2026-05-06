@@ -14,6 +14,8 @@ import { type NotificationAction, handleNotificationAction, showErrorNotificatio
 import { buildReleaseControlHtml } from "./releaseControlMarkup";
 import { PreviewPanel } from "./previewPanel";
 
+const SUGGESTION_CACHE_WARM_DELAY_MS = 100;
+
 export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined;
   private document: DraftDocument | undefined;
@@ -27,6 +29,10 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   private statusMessage: string | undefined;
   private errorMessage: string | undefined;
   private pendingRender: NodeJS.Timeout | undefined;
+  private pendingSuggestionWarm: SuggestionWarmRequest | undefined;
+  private suggestionWarmTimer: NodeJS.Timeout | undefined;
+  private activeSuggestionWarm: { signature: string; promise: Promise<void> } | undefined;
+  private lastSuggestionWarmSignature: string | undefined;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -81,6 +87,9 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     }
     this.render();
     this.onDidRefresh?.(document, overview, modelSettings, this.suggestions);
+    if (document || modelSettings) {
+      this.scheduleSuggestionCacheWarm();
+    }
   }
 
   getDocument(): DraftDocument | undefined {
@@ -99,6 +108,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
         head: message.head || "HEAD",
         version: message.version || "Unreleased",
       };
+      this.cancelPendingSuggestionWarm();
       return;
     }
     if (message.type === "cancel") {
@@ -111,6 +121,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     }
     if (message.type === "useRef" && message.ref && message.slot) {
       this.range = { ...this.range, [message.slot]: message.ref };
+      this.cancelPendingSuggestionWarm();
       this.render();
       return;
     }
@@ -364,6 +375,10 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     this.suggestions = undefined;
     this.onDidRefresh?.(this.document, this.overview, this.modelSettings, this.suggestions);
     await this.runBusy(async () => {
+      if (!itemId && cacheMode === "default") {
+        this.cancelPendingSuggestionWarm();
+        await this.waitForMatchingSuggestionWarm();
+      }
       const suggestions = await this.client.previewDraftSuggestions(this.range, itemId, (partial) => {
         this.suggestions = partial;
         if (partial.items.length) {
@@ -455,10 +470,12 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async setTone(tone: string): Promise<void> {
+    this.cancelPendingSuggestionWarm();
     await this.client.updateModelSettings({ suggestionTone: tone });
     this.modelSettings = this.client.getModelSettings();
     this.statusMessage = `Suggestion tone set to ${tone}.`;
     this.render();
+    this.scheduleSuggestionCacheWarm();
   }
 
   private async markItem(itemId: string, status: "needs-review" | "ready" | "accepted" | "hidden"): Promise<void> {
@@ -578,6 +595,126 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     this.render();
   }
 
+  private scheduleSuggestionCacheWarm(): void {
+    const request = this.buildSuggestionWarmRequest();
+    if (!request) {
+      this.cancelPendingSuggestionWarm();
+      return;
+    }
+    if (
+      request.signature === this.lastSuggestionWarmSignature ||
+      request.signature === this.activeSuggestionWarm?.signature ||
+      request.signature === this.pendingSuggestionWarm?.signature
+    ) {
+      return;
+    }
+    this.pendingSuggestionWarm = request;
+    if (this.suggestionWarmTimer) {
+      clearTimeout(this.suggestionWarmTimer);
+    }
+    this.suggestionWarmTimer = setTimeout(() => {
+      this.suggestionWarmTimer = undefined;
+      void this.startPendingSuggestionWarm();
+    }, SUGGESTION_CACHE_WARM_DELAY_MS);
+  }
+
+  private cancelPendingSuggestionWarm(): void {
+    if (this.suggestionWarmTimer) {
+      clearTimeout(this.suggestionWarmTimer);
+      this.suggestionWarmTimer = undefined;
+    }
+    this.pendingSuggestionWarm = undefined;
+  }
+
+  private async startPendingSuggestionWarm(): Promise<void> {
+    const request = this.pendingSuggestionWarm;
+    if (!request) {
+      return;
+    }
+    if (this.activeSuggestionWarm) {
+      return;
+    }
+    this.pendingSuggestionWarm = undefined;
+    const promise = this.runSuggestionWarm(request);
+    this.activeSuggestionWarm = { signature: request.signature, promise };
+    await promise;
+  }
+
+  private async runSuggestionWarm(request: SuggestionWarmRequest): Promise<void> {
+    this.statusMessage = "Warming suggestion cache...";
+    this.render();
+    try {
+      const result = await this.client.warmDraftSuggestionCache(request.range);
+      const current = this.buildSuggestionWarmRequest();
+      if (current?.signature === request.signature) {
+        this.lastSuggestionWarmSignature = request.signature;
+        this.statusMessage = `Suggestion cache warmed for ${result.items.length} item(s).`;
+        this.render();
+      }
+    } catch {
+      const current = this.buildSuggestionWarmRequest();
+      if (current?.signature === request.signature) {
+        this.statusMessage = "Suggestion cache warm did not complete; Suggest will retry normally.";
+        this.render();
+      }
+    } finally {
+      if (this.activeSuggestionWarm?.signature === request.signature) {
+        this.activeSuggestionWarm = undefined;
+      }
+      if (this.pendingSuggestionWarm) {
+        void this.startPendingSuggestionWarm();
+      }
+    }
+  }
+
+  private async waitForMatchingSuggestionWarm(): Promise<void> {
+    const request = this.buildSuggestionWarmRequest();
+    const active = this.activeSuggestionWarm;
+    if (!request || !active || active.signature !== request.signature) {
+      return;
+    }
+    this.statusMessage = "Finishing suggestion cache warm before rendering suggestions...";
+    this.render();
+    await active.promise;
+  }
+
+  private buildSuggestionWarmRequest(): SuggestionWarmRequest | undefined {
+    const document = this.document;
+    const settings = this.client.getModelSettings();
+    this.modelSettings = settings;
+    if (
+      !document ||
+      document.item_count < 1 ||
+      settings.provider !== "ollama" ||
+      !settings.suggestionAutoWarmCache ||
+      !this.hasSelectedBase()
+    ) {
+      return undefined;
+    }
+    const range = {
+      base: this.range.base,
+      head: this.range.head || "HEAD",
+      version: this.range.version || document.version,
+    };
+    const signature = JSON.stringify({
+      base: range.base,
+      head: range.head,
+      provider: settings.provider,
+      model: settings.model,
+      endpoint: settings.endpoint,
+      count: settings.suggestionCount,
+      parallelism: settings.suggestionParallelism,
+      batchSize: settings.suggestionBatchSize,
+      tone: settings.suggestionTone,
+      styleGuidance: settings.styleGuidance,
+      projectVocabulary: settings.projectVocabulary,
+      bannedPhrases: settings.bannedPhrases,
+      specificityFloor: settings.specificityFloor,
+      itemCount: document.item_count,
+    });
+    return { signature, range, itemCount: document.item_count };
+  }
+
   private cancelRequest(requestId: number): void {
     this.statusMessage = `Stopping request ${requestId}...`;
     this.client.cancelCommand(requestId);
@@ -641,3 +778,9 @@ type ViewMessage = {
   label?: string;
   tone?: string;
 };
+
+interface SuggestionWarmRequest {
+  signature: string;
+  range: DraftRangeRequest;
+  itemCount: number;
+}

@@ -165,6 +165,7 @@ export interface ModelSettings {
   suggestionCount: number;
   suggestionParallelism: number;
   suggestionBatchSize: number;
+  suggestionAutoWarmCache: boolean;
   suggestionTone: string;
   styleGuidance: string;
   projectVocabulary: string[];

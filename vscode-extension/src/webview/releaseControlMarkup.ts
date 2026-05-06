@@ -1145,6 +1145,7 @@ function modelDetail(settings: ModelSettings): string {
     `Suggestions: ${settings.suggestionCount}`,
     `Parallelism: ${settings.suggestionParallelism}`,
     `Batch size: ${settings.suggestionBatchSize}`,
+    `Auto-warm cache: ${settings.suggestionAutoWarmCache ? "on" : "off"}`,
     `Streaming: ${settings.ollamaStreamResponses ? "on" : "off"}`,
     `Prompt payloads: ${settings.includePromptPayloads ? "on" : "off"}`,
     `Reasoning payloads: ${settings.includeReasoningPayloads ? "on" : "off"}`,

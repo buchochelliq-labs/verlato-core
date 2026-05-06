@@ -191,6 +191,7 @@ class ModelNode extends vscode.TreeItem {
       `Endpoint: ${settings.endpoint}`,
       `Timeout: ${settings.ollamaTimeoutSeconds}s`,
       `Fanout guard: ${settings.maxModelItems}`,
+      `Suggestion cache warm: ${settings.suggestionAutoWarmCache ? "enabled" : "disabled"}`,
       `Ollama streaming: ${settings.ollamaStreamResponses ? "enabled" : "disabled"}`,
       `Prompt payloads: ${settings.includePromptPayloads ? "enabled" : "disabled"}`,
       `Reasoning payloads: ${settings.includeReasoningPayloads ? "enabled" : "disabled"}`,

@@ -237,6 +237,11 @@
           "maximum": 2,
           "description": "Maximum uncached Ollama suggestion items Verlato may ask for in one structured model request."
         },
+        "verlato.suggestionAutoWarmCache": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warm the local suggestion cache in the background after loading a draft when using Ollama."
+        },
         "verlato.suggestionTone": {
           "type": "string",
           "default": "release-note",

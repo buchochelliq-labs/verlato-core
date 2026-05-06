@@ -13,6 +13,7 @@ const modelSettings = {
   suggestionCount: 1,
   suggestionParallelism: 2,
   suggestionBatchSize: 2,
+  suggestionAutoWarmCache: true,
   suggestionTone: "release-note",
   styleGuidance: "",
   projectVocabulary: [],
@@ -1153,6 +1154,7 @@ test("contributes focused Verlato views and optional walkthrough", () => {
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionParallelism"].maximum, 8);
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionBatchSize"].default, 2);
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionBatchSize"].maximum, 2);
+  assert.equal(manifest.contributes.configuration.properties["verlato.suggestionAutoWarmCache"].default, true);
   assert.equal(manifest.contributes.walkthroughs[0].title, "Get started with Verlato");
   assert.match(manifest.contributes.walkthroughs[0].description, /Optional shortcuts/);
   assert.deepEqual(

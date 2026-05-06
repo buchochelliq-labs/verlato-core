@@ -33,6 +33,7 @@ from verlato.providers.base import ProviderRequest, ProviderResponse
 from verlato.providers.stub import StubProvider
 from verlato.state.suggestion_cache import (
     CachedSuggestion,
+    JsonSuggestionCacheStore,
     SuggestionCacheError,
     build_suggestion_cache_backend,
     register_suggestion_cache_backend,
@@ -1733,6 +1734,57 @@ def test_draft_suggest_expired_cache_entry_is_ignored_and_compacted(monkeypatch,
     assert preview["items"][0]["suggestions"] == ["Clarifies login recovery guidance after cache expiry"]
     assert preview["items"][0]["cache"]["hit"] is False
     assert refreshed_cache["entries"][cache_key]["updated_at"] != "2000-01-01T00:00:00Z"
+
+
+def test_json_suggestion_cache_save_merges_newer_disk_entries(tmp_path: Path):
+    cache_path = tmp_path / "suggestions.json"
+    first = JsonSuggestionCacheStore(str(cache_path), ttl_days=30).load()
+    second = JsonSuggestionCacheStore(str(cache_path), ttl_days=30).load()
+
+    first.put("key-a", {"item_id": "ci_a", "suggestions": ["First cached suggestion"]})
+    second.put("key-b", {"item_id": "ci_b", "suggestions": ["Second cached suggestion"]})
+
+    first.save()
+    second.save()
+
+    data = json.loads(cache_path.read_text())
+    assert set(data["entries"]) == {"key-a", "key-b"}
+    assert data["entries"]["key-a"]["item"]["item_id"] == "ci_a"
+    assert data["entries"]["key-b"]["item"]["item_id"] == "ci_b"
+
+
+def test_json_suggestion_cache_concurrent_saves_do_not_drop_entries(tmp_path: Path):
+    cache_path = tmp_path / "suggestions.json"
+    barrier = threading.Barrier(4)
+
+    def write_entry(index: int) -> None:
+        store = JsonSuggestionCacheStore(str(cache_path), ttl_days=30).load()
+        store.put(f"key-{index}", {"item_id": f"ci_{index}", "suggestions": [f"Suggestion {index}"]})
+        barrier.wait(timeout=5)
+        store.save()
+
+    threads = [threading.Thread(target=write_entry, args=(index,)) for index in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    data = json.loads(cache_path.read_text())
+    assert set(data["entries"]) == {"key-0", "key-1", "key-2", "key-3"}
+
+
+def test_json_suggestion_cache_clear_uses_locked_file_count(tmp_path: Path):
+    cache_path = tmp_path / "suggestions.json"
+    store = JsonSuggestionCacheStore(str(cache_path), ttl_days=30).load()
+    store.put("key-a", {"item_id": "ci_a", "suggestions": ["First cached suggestion"]})
+    store.put("key-b", {"item_id": "ci_b", "suggestions": ["Second cached suggestion"]})
+    store.save()
+
+    removed = JsonSuggestionCacheStore(str(cache_path), ttl_days=30).load().clear()
+
+    assert removed == 2
+    assert not cache_path.exists()
 
 
 def test_draft_suggest_streams_suggestion_events_when_traced(monkeypatch, tmp_path: Path, capsys):
