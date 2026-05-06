@@ -182,12 +182,14 @@ test("preview suggestions passes configured parallelism and batch size to the CL
     "conservative",
     "--tone",
     "release-note",
+    "--instant-provisional",
     "--all-visible",
   ]);
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_PARALLELISM, "4");
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_BATCH_SIZE, "2");
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_PROMPT_PROFILE, "conservative");
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS, "0");
+  assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_INSTANT_PROVISIONAL, "1");
   assert.equal(spawnCalls[0].options.env.VERLATO_OLLAMA_SUGGEST_MODEL, "");
 });
 
@@ -423,6 +425,12 @@ test("preview suggestions streams partial items before final stdout resolves", a
     prompt_budget: { profile: "suggestion-conservative", prompt_chars: 900 },
     suggestions: ["Second streamed suggestion"],
   };
+  const provisionalSecondItem = {
+    ...secondItem,
+    provider: "instant:local",
+    provisional: { source: "instant-local", state: "provisional" },
+    suggestions: ["Instant second suggestion"],
+  };
   const partials = [];
 
   const pending = client.previewDraftSuggestions({ base: "v1.0.0", head: "HEAD" }, undefined, (preview) => {
@@ -441,6 +449,12 @@ test("preview suggestions streams partial items before final stdout resolves", a
       performance: { parallelism: 2 },
       items: [],
     },
+  })}\n`);
+  child.stderr.emit("data", `[verlato:suggestion] json ${JSON.stringify({
+    event: "suggestion_item_provisional",
+    order: 1,
+    item_id: "ci_b",
+    item: provisionalSecondItem,
   })}\n`);
   child.stderr.emit("data", `[verlato:suggestion] json ${JSON.stringify({
     event: "suggestion_item_result",
@@ -467,10 +481,13 @@ test("preview suggestions streams partial items before final stdout resolves", a
   assert.deepEqual(partials.map((preview) => preview.items.map((item) => item.item_id)), [
     [],
     ["ci_b"],
+    ["ci_b"],
     ["ci_a", "ci_b"],
   ]);
+  assert.equal(partials[1].items[0].provider, "instant:local");
+  assert.equal(partials[2].items[0].provider, "mock-local");
   assert.deepEqual(final.items.map((item) => item.item_id), ["ci_a", "ci_b"]);
-  assert.equal(partials[2].items[0].prompt_budget.prompt_chars, 1100);
+  assert.equal(partials[3].items[0].prompt_budget.prompt_chars, 1100);
   assert.equal(client.getCommandRequests()[0].activity.some((entry) => entry.category === "suggestion"), true);
 });
 

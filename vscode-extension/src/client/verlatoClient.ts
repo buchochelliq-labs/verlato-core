@@ -157,6 +157,7 @@ export class VerlatoClient implements vscode.Disposable {
       : undefined;
     return this.runJsonCommand<DraftSuggestionPreview>([
       ...draftSuggestionPreviewArgs(request, settings),
+      ...(settings.suggestionInstantProvisional ? ["--instant-provisional"] : []),
       ...cacheArgs,
       ...(itemId ? ["--id", itemId] : ["--all-visible"]),
     ], { onActivity });
@@ -248,6 +249,7 @@ export class VerlatoClient implements vscode.Disposable {
       suggestionParallelism: config.get<number>("suggestionParallelism") ?? 2,
       suggestionBatchSize: config.get<number>("suggestionBatchSize") ?? 2,
       suggestionAutoWarmCache: config.get<boolean>("suggestionAutoWarmCache") ?? true,
+      suggestionInstantProvisional: config.get<boolean>("suggestionInstantProvisional") ?? true,
       suggestionPromptProfile: config.get<string>("suggestionPromptProfile") || "conservative",
       suggestionAdaptiveRecommendations: config.get<boolean>("suggestionAdaptiveRecommendations") ?? false,
       suggestionTone: config.get<string>("suggestionTone") || "release-note",
@@ -295,6 +297,9 @@ export class VerlatoClient implements vscode.Disposable {
     }
     if (settings.suggestionAutoWarmCache !== undefined) {
       await config.update("suggestionAutoWarmCache", settings.suggestionAutoWarmCache, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.suggestionInstantProvisional !== undefined) {
+      await config.update("suggestionInstantProvisional", settings.suggestionInstantProvisional, vscode.ConfigurationTarget.Workspace);
     }
     if (settings.suggestionPromptProfile !== undefined) {
       await config.update("suggestionPromptProfile", settings.suggestionPromptProfile, vscode.ConfigurationTarget.Workspace);
@@ -770,6 +775,7 @@ export class VerlatoClient implements vscode.Disposable {
     env.VERLATO_SUGGESTION_BATCH_SIZE = String(settings.suggestionBatchSize);
     env.VERLATO_SUGGESTION_PROMPT_PROFILE = settings.suggestionPromptProfile;
     env.VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS = settings.suggestionAdaptiveRecommendations ? "1" : "0";
+    env.VERLATO_SUGGESTION_INSTANT_PROVISIONAL = settings.suggestionInstantProvisional ? "1" : "0";
     env.VERLATO_SUGGESTION_TONE = settings.suggestionTone;
     env.VERLATO_STYLE_GUIDANCE = settings.styleGuidance;
     env.VERLATO_PROJECT_VOCABULARY = settings.projectVocabulary.join(",");
@@ -994,8 +1000,9 @@ function formatModelSettings(settings: ModelSettings): string {
     : "";
   const timeout = settings.provider === "ollama" ? `; timeout: ${settings.ollamaTimeoutSeconds}s` : "";
   const warm = settings.provider === "ollama" ? `; cache warm: ${settings.suggestionAutoWarmCache ? "on" : "off"}` : "";
+  const instant = settings.suggestionInstantProvisional ? "; instant provisional on" : "";
   const adaptive = settings.suggestionAdaptiveRecommendations ? "; adaptive advice on" : "";
-  return `${settings.provider}${model}${suggestionModel}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; parallelism: ${settings.suggestionParallelism}; batch size: ${settings.suggestionBatchSize}; prompt profile: ${settings.suggestionPromptProfile}; tone: ${settings.suggestionTone}${warm}${adaptive}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
+  return `${settings.provider}${model}${suggestionModel}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; parallelism: ${settings.suggestionParallelism}; batch size: ${settings.suggestionBatchSize}; prompt profile: ${settings.suggestionPromptProfile}; tone: ${settings.suggestionTone}${warm}${instant}${adaptive}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
 }
 
 function suggestModelArgs(settings: ModelSettings): string[] {
@@ -1077,7 +1084,7 @@ function mergeSuggestionActivity(
     preview.items.forEach((item, index) => state.itemOrders.set(item.item_id, index));
     return state.preview;
   }
-  if (entry.event !== "suggestion_item_result") {
+  if (entry.event !== "suggestion_item_result" && entry.event !== "suggestion_item_provisional") {
     return undefined;
   }
   const item = coerceSuggestionItem(attrs.item);
@@ -1275,6 +1282,9 @@ function suggestionActivityMessage(event: string, attrs: Record<string, unknown>
   }
   if (event === "suggestion_item_result") {
     return itemId ? `Generated suggestion for ${itemId}` : "Generated suggestion";
+  }
+  if (event === "suggestion_item_provisional") {
+    return itemId ? `Prepared instant suggestion for ${itemId}` : "Prepared instant suggestion";
   }
   if (event === "suggestion_item_failed") {
     return itemId ? `Suggestion failed for ${itemId}` : "Suggestion failed";

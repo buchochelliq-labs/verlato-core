@@ -54,6 +54,7 @@ class VerlatoConfig:
     suggestion_batch_size: int = 2
     suggestion_prompt_profile: str = "conservative"
     suggestion_adaptive_recommendations: bool = False
+    suggestion_instant_provisional: bool = False
     suggestion_tone: str = "release-note"
     suggestion_style: SuggestionStyleConfig = field(default_factory=SuggestionStyleConfig)
     feedback_include_text: bool = False
@@ -97,6 +98,8 @@ def load_config(cwd: str | None = None) -> VerlatoConfig:
         )
     if raw.get("suggestion_adaptive_recommendations") is not None:
         config.suggestion_adaptive_recommendations = bool(raw["suggestion_adaptive_recommendations"])
+    if raw.get("suggestion_instant_provisional") is not None:
+        config.suggestion_instant_provisional = bool(raw["suggestion_instant_provisional"])
     if raw.get("suggestion_tone") is not None:
         config.suggestion_tone = str(raw["suggestion_tone"]).strip() or config.suggestion_tone
     if raw.get("feedback_include_text") is not None:

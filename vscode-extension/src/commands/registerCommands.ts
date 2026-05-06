@@ -485,6 +485,16 @@ async function changeModelSettings(
   if (!adaptiveChoice) {
     return;
   }
+  const instantProvisionalChoice = await vscode.window.showQuickPick(
+    ["enabled", "disabled"],
+    {
+      title: "Instant provisional suggestions",
+      placeHolder: "Show local suggestions while AI results are still running",
+    },
+  );
+  if (!instantProvisionalChoice) {
+    return;
+  }
   const suggestionTone = await vscode.window.showQuickPick(
     ["release-note", "concise", "technical", "customer-facing"],
     {
@@ -508,6 +518,7 @@ async function changeModelSettings(
     suggestionBatchSize: Number(suggestionBatchSizeRaw),
     suggestionPromptProfile,
     suggestionAdaptiveRecommendations: adaptiveChoice === "enabled",
+    suggestionInstantProvisional: instantProvisionalChoice === "enabled",
     suggestionTone,
   });
   await client.initialize();

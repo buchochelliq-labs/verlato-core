@@ -1148,6 +1148,7 @@ function modelDetail(settings: ModelSettings): string {
     `Parallelism: ${settings.suggestionParallelism}`,
     `Batch size: ${settings.suggestionBatchSize}`,
     `Auto-warm cache: ${settings.suggestionAutoWarmCache ? "on" : "off"}`,
+    `Instant provisional: ${settings.suggestionInstantProvisional ? "on" : "off"}`,
     `Prompt profile: ${settings.suggestionPromptProfile}`,
     `Adaptive advice: ${settings.suggestionAdaptiveRecommendations ? "on" : "off"}`,
     `Streaming: ${settings.ollamaStreamResponses ? "on" : "off"}`,
@@ -1281,6 +1282,7 @@ function renderSuggestions(preview: DraftSuggestionPreview | undefined, modelBus
         <span class="badge">${escapeHtml(item.provider)}</span>
         ${item.tone ? `<span class="badge">${escapeHtml(item.tone)}</span>` : ""}
         ${renderSuggestionCacheBadge(item)}
+        ${renderSuggestionProvisionalBadge(item)}
       </div>
       ${renderSuggestionDiagnostics(item)}
       ${renderSuggestionComparison(item)}
@@ -1353,6 +1355,13 @@ function renderSuggestionCacheBadge(item: DraftSuggestionItem): string {
   }
   const age = typeof item.cache.age_seconds === "number" ? ` ${formatCacheAge(item.cache.age_seconds)}` : "";
   return `<span class="badge cached">cached${escapeHtml(age)}</span>`;
+}
+
+function renderSuggestionProvisionalBadge(item: DraftSuggestionItem): string {
+  if (!item.provisional) {
+    return "";
+  }
+  return `<span class="badge provisional">provisional</span>`;
 }
 
 function renderSuggestionDiagnostics(item: DraftSuggestionItem): string {
@@ -1974,6 +1983,9 @@ function suggestionActivityMessage(event: string, attrs: Record<string, unknown>
   }
   if (event === "suggestion_item_result") {
     return itemId ? `Generated suggestion for ${itemId}` : "Generated suggestion";
+  }
+  if (event === "suggestion_item_provisional") {
+    return itemId ? `Prepared instant suggestion for ${itemId}` : "Prepared instant suggestion";
   }
   if (event === "suggestion_item_failed") {
     return itemId ? `Suggestion failed for ${itemId}` : "Suggestion failed";
@@ -2925,6 +2937,10 @@ function styles(): string {
     .suggestion .badge.cached {
       color: var(--vscode-editor-background);
       background: var(--verlato-green);
+    }
+    .suggestion .badge.provisional {
+      color: var(--vscode-editor-background);
+      background: var(--verlato-blue);
     }
     .request .badge {
       display: inline-flex;

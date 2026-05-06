@@ -15,6 +15,7 @@ const modelSettings = {
   suggestionParallelism: 2,
   suggestionBatchSize: 2,
   suggestionAutoWarmCache: true,
+  suggestionInstantProvisional: true,
   suggestionPromptProfile: "conservative",
   suggestionAdaptiveRecommendations: false,
   suggestionTone: "release-note",
@@ -655,7 +656,8 @@ test("renders suggestion actions and review variants", () => {
           item_id: "ci_1",
           title: "Improve API",
           current_summary: "A concise release note",
-          provider: "mock-local",
+          provider: "instant:local",
+          provisional: { source: "instant-local", state: "provisional" },
           provider_reasoning: "Focused on the API response diff.",
           source_evidence: [
             { kind: "pull-request", label: "PR #12", detail: "Improve API" },
@@ -689,6 +691,7 @@ test("renders suggestion actions and review variants", () => {
   assert.match(controlHtml, /data-action="suggestAll"/);
   assert.match(controlHtml, /data-action="suggest" data-item="ci_1"/);
   assert.match(html, /INTENT INFERENCE/);
+  assert.match(html, /provisional/);
   assert.match(html, /Current/);
   assert.match(html, /Suggested/);
   assert.match(html, /Evidence/);
@@ -1182,6 +1185,7 @@ test("contributes focused Verlato views and optional walkthrough", () => {
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionBatchSize"].default, 2);
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionBatchSize"].maximum, 2);
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionAutoWarmCache"].default, true);
+  assert.equal(manifest.contributes.configuration.properties["verlato.suggestionInstantProvisional"].default, true);
   assert.equal(manifest.contributes.configuration.properties["verlato.ollamaSuggestionModel"].default, "");
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionPromptProfile"].default, "conservative");
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionAdaptiveRecommendations"].default, false);

@@ -170,6 +170,11 @@ def build_parser() -> argparse.ArgumentParser:
     draft_suggest.add_argument("--batch-size", type=int)
     draft_suggest.add_argument("--prompt-profile", choices=SUGGESTION_PROMPT_PROFILE_CHOICES)
     draft_suggest.add_argument("--adaptive-recommendations", action="store_true")
+    draft_suggest.add_argument(
+        "--instant-provisional",
+        action="store_true",
+        help="Emit local provisional suggestion events on stderr before provider results.",
+    )
     draft_suggest.add_argument("--suggest-model")
     draft_suggest.add_argument("--no-cache", action="store_true")
     draft_suggest.add_argument("--refresh-cache", action="store_true")
@@ -655,6 +660,15 @@ def _resolve_suggestion_adaptive_recommendations(configured: bool, requested: bo
     if requested:
         return True
     raw = os.getenv("VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS")
+    if raw is None:
+        return bool(configured)
+    return _parse_bool(raw, default=bool(configured))
+
+
+def _resolve_suggestion_instant_provisional(configured: bool, requested: bool = False) -> bool:
+    if requested:
+        return True
+    raw = os.getenv("VERLATO_SUGGESTION_INSTANT_PROVISIONAL")
     if raw is None:
         return bool(configured)
     return _parse_bool(raw, default=bool(configured))
@@ -1828,6 +1842,7 @@ def _preview_draft_model_suggestions(
     no_cache: bool = False,
     refresh_cache: bool = False,
     adaptive_recommendations: bool = False,
+    instant_provisional: bool = False,
 ) -> dict:
     if all_visible == bool(item_id):
         raise SystemExit("Provide exactly one suggestion target: --id or --all-visible")
@@ -1846,6 +1861,10 @@ def _preview_draft_model_suggestions(
     adaptive_enabled = _resolve_suggestion_adaptive_recommendations(
         config.suggestion_adaptive_recommendations,
         requested=adaptive_recommendations,
+    )
+    instant_provisional_enabled = _trace_progress_enabled() and _resolve_suggestion_instant_provisional(
+        config.suggestion_instant_provisional,
+        requested=instant_provisional,
     )
     suggestion_tone = _resolve_suggestion_tone(config.suggestion_tone, requested=tone)
     suggestion_style = _resolve_suggestion_style(config)
@@ -2265,6 +2284,21 @@ def _preview_draft_model_suggestions(
             return None
         return _cached_suggestion_result(work, cached)
 
+    def record_provisional(work: _SuggestionWork) -> None:
+        item = _build_instant_provisional_suggestion_item(work)
+        if item is None:
+            return
+        _trace_suggestion_event(
+            "suggestion_item_provisional",
+            order=work.order,
+            item_id=work.baseline_item.id,
+            current=completed_count,
+            total=total_targets,
+            batch=work.batch,
+            batch_total=len(target_batches),
+            item=item,
+        )
+
     for batch_index, batch in enumerate(target_batches, start=1):
         _trace_progress(
             "suggestion_batch",
@@ -2293,6 +2327,8 @@ def _preview_draft_model_suggestions(
                 batch_results[result.order] = result
                 record_result(result)
                 continue
+            if instant_provisional_enabled:
+                record_provisional(work)
             uncached_item_count += 1
             pending_chunk.append(work)
             if len(pending_chunk) >= effective_suggestion_batch_size:
@@ -2791,6 +2827,206 @@ def _parse_suggestion_batch_json(content: str) -> dict[str, list[str]] | None:
         if suggestions:
             suggestions_by_item[item_id] = suggestions
     return suggestions_by_item
+
+
+def _build_instant_provisional_suggestion_item(work: _SuggestionWork) -> dict[str, object] | None:
+    candidates = _instant_provisional_candidates(work)
+    if not candidates:
+        return None
+    parse_start = perf_counter()
+    suggestion_details, rejected_candidates = _parse_suggestion_variants(
+        "\n".join(f"{index}. {candidate}" for index, candidate in enumerate(candidates, start=1)),
+        work.suggestion_count,
+        work.baseline_item,
+        work.group,
+        trace_title=work.baseline_item.content.title,
+        trace_model="instant:local",
+        banned_phrases=list(work.suggestion_style["banned_phrases"]),
+        specificity_floor=float(work.suggestion_style["specificity_floor"]),
+    )
+    if not suggestion_details:
+        return None
+    parse_ms = _elapsed_ms(parse_start)
+    return {
+        "item_id": work.baseline_item.id,
+        "title": work.baseline_item.content.title,
+        "current_summary": work.baseline_item.edited_summary or work.baseline_item.content.summary,
+        "provider": "instant:local",
+        "prompt_sha": work.prompt_sha,
+        "tone": work.suggestion_tone,
+        "style_profile": work.suggestion_style,
+        "source_evidence": work.source_evidence,
+        "prompt_budget": work.prompt_budget,
+        "suggestion_details": suggestion_details,
+        "rejected_candidates": rejected_candidates,
+        "suggestions": [detail["summary"] for detail in suggestion_details],
+        "provisional": {
+            "source": "instant-local",
+            "state": "provisional",
+        },
+        "timings": {
+            "evidence_ms": work.evidence_ms,
+            "prompt_ms": work.prompt_ms,
+            "model_ms": 0,
+            "parse_ms": parse_ms,
+            "total_ms": _elapsed_ms(work.started_at),
+        },
+    }
+
+
+def _instant_provisional_candidates(work: _SuggestionWork) -> list[str]:
+    topic = _instant_topic(work)
+    file_hint = _instant_file_hint(work.group)
+    audience = _instant_audience_label(work.baseline_item)
+    tone = work.suggestion_tone
+    candidates: list[str] = []
+    if tone == "technical":
+        candidates.extend(
+            [
+                f"Documents {topic} updates across {file_hint}",
+                f"Clarifies {topic} behavior for {audience} release readers",
+                f"Highlights {topic} changes from the latest diff evidence",
+            ]
+        )
+    elif tone == "customer-facing":
+        candidates.extend(
+            [
+                f"Explains {topic} improvements for customers",
+                f"Highlights {topic} changes for customer-facing release notes",
+                f"Clarifies how {topic} updates affect users",
+            ]
+        )
+    elif tone == "concise":
+        candidates.extend(
+            [
+                f"Highlights {topic} updates",
+                f"Clarifies {topic} behavior",
+                f"Documents {topic} changes",
+            ]
+        )
+    else:
+        candidates.extend(
+            [
+                f"Highlights {topic} updates for {audience} release readers",
+                f"Clarifies {topic} behavior across {file_hint}",
+                f"Documents {topic} changes from the latest evidence",
+            ]
+        )
+    candidates.extend(_instant_evidence_candidates(work, topic, file_hint))
+    unique: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = _clean_instant_candidate(candidate)
+        key = normalized.lower().rstrip(".")
+        if normalized and key not in seen:
+            seen.add(key)
+            unique.append(normalized)
+    return unique[: max(work.suggestion_count * 3, 3)]
+
+
+def _instant_topic(work: _SuggestionWork) -> str:
+    tokens: list[str] = []
+    values = [
+        work.baseline_item.content.title,
+        *[commit.message.splitlines()[0] for commit in work.group.commits[:2]],
+    ]
+    for value in values:
+        for token in _summary_tokens(value):
+            if token in _INSTANT_TOPIC_STOPWORDS or token in tokens:
+                continue
+            tokens.append(token)
+            if len(tokens) >= 4:
+                return " ".join(tokens)
+    file_hint = _instant_file_hint(work.group)
+    file_stem = Path(file_hint).stem.replace("-", " ").replace("_", " ")
+    fallback_tokens = [token for token in _summary_tokens(file_stem) if token not in _INSTANT_TOPIC_STOPWORDS]
+    return " ".join(fallback_tokens[:3]) or "release note"
+
+
+_INSTANT_TOPIC_STOPWORDS = {
+    "add",
+    "adds",
+    "added",
+    "change",
+    "changes",
+    "changed",
+    "clarify",
+    "clarifies",
+    "clarified",
+    "document",
+    "documents",
+    "documented",
+    "enable",
+    "enables",
+    "enabled",
+    "fix",
+    "fixes",
+    "fixed",
+    "improve",
+    "improves",
+    "improved",
+    "make",
+    "makes",
+    "made",
+    "refactor",
+    "refactors",
+    "refactored",
+    "support",
+    "supports",
+    "supported",
+    "tune",
+    "tunes",
+    "tuned",
+    "update",
+    "updates",
+    "updated",
+}
+
+
+def _instant_file_hint(group: ChangeGroup) -> str:
+    files = group.pr.files if group.pr else group.files
+    if files:
+        return files[0].path
+    return "changed files"
+
+
+def _instant_audience_label(item: ChangeItem) -> str:
+    audience = item.classification.audience
+    if audience in {"external", "user", "customer"}:
+        return "external"
+    if audience in {"internal", "developer"}:
+        return "internal"
+    return audience or "general"
+
+
+def _instant_evidence_candidates(work: _SuggestionWork, topic: str, file_hint: str) -> list[str]:
+    candidates: list[str] = []
+    summary = next(
+        (
+            entry["detail"]
+            for entry in work.source_evidence
+            if entry.get("kind") == "summary" and entry.get("detail")
+        ),
+        "",
+    )
+    summary_tokens = [token for token in _summary_tokens(summary) if token not in _INSTANT_TOPIC_STOPWORDS]
+    if summary_tokens:
+        focus = " ".join(summary_tokens[:5])
+        candidates.append(f"Summarizes {topic} work around {focus}")
+    for entry in work.source_evidence:
+        if entry.get("kind") == "commit" and entry.get("detail"):
+            commit_topic = _clean_instant_candidate(entry["detail"])
+            if commit_topic:
+                candidates.append(f"Turns {commit_topic} into release-note wording for {file_hint}")
+            break
+    return candidates
+
+
+def _clean_instant_candidate(value: str) -> str:
+    compact = re.sub(r"\s+", " ", value or "").strip(" .")
+    if not compact:
+        return ""
+    return compact[0].upper() + compact[1:]
 
 
 def _build_suggestion_result_item(
@@ -4137,6 +4373,7 @@ def main(argv: list[str] | None = None) -> int:
                     no_cache=args.no_cache,
                     refresh_cache=args.refresh_cache,
                     adaptive_recommendations=args.adaptive_recommendations,
+                    instant_provisional=args.instant_provisional,
                 )
                 print(json.dumps(suggestions, indent=2))
                 return 0

@@ -167,6 +167,7 @@ export interface ModelSettings {
   suggestionParallelism: number;
   suggestionBatchSize: number;
   suggestionAutoWarmCache: boolean;
+  suggestionInstantProvisional: boolean;
   suggestionPromptProfile: "conservative" | "lean" | "minimal" | string;
   suggestionAdaptiveRecommendations: boolean;
   suggestionTone: string;
@@ -198,7 +199,13 @@ export interface DraftSuggestionItem {
   rejected_candidates?: DraftRejectedSuggestion[];
   timings?: DraftSuggestionTimings;
   cache?: DraftSuggestionCache;
+  provisional?: DraftSuggestionProvisional;
   suggestions: string[];
+}
+
+export interface DraftSuggestionProvisional {
+  source?: string;
+  state?: string;
 }
 
 export interface DraftSuggestionCache {

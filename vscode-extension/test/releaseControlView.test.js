@@ -13,6 +13,7 @@ const modelSettings = {
   suggestionParallelism: 2,
   suggestionBatchSize: 2,
   suggestionAutoWarmCache: true,
+  suggestionInstantProvisional: true,
   suggestionPromptProfile: "conservative",
   suggestionAdaptiveRecommendations: false,
   suggestionTone: "release-note",
@@ -217,6 +218,24 @@ function suggestionPreview(text, itemId = "ci_1") {
   };
 }
 
+function provisionalSuggestionPreview(text, itemId = "ci_1") {
+  const preview = suggestionPreview(text, itemId);
+  preview.items[0].provider = "instant:local";
+  preview.items[0].provisional = { source: "instant-local", state: "provisional" };
+  preview.items[0].suggestion_details = [
+    {
+      summary: text,
+      similarity_to_current: 0.25,
+      specificity_score: 0.7,
+      comparison: {
+        current: "Old API summary",
+        suggested: text,
+      },
+    },
+  ];
+  return preview;
+}
+
 function draftDocument(itemCount = 1) {
   return {
     version: "Unreleased",
@@ -299,6 +318,28 @@ test("success notifications do not keep the control view busy", async () => {
     resolveNotification(undefined);
     await scanPromise;
   }
+});
+
+test("applying a provisional suggestion records instant provenance", async () => {
+  let reviewUpdate;
+  const client = makeClient({
+    reviewDraftItem(_range, _itemId, update) {
+      reviewUpdate = update;
+      return Promise.resolve({});
+    },
+  });
+  const { ReleaseControlViewProvider } = loadControlViewWithVscodeMock(makeVscodeMock());
+  const { provider } = makeProvider(ReleaseControlViewProvider, client);
+  provider.suggestions = provisionalSuggestionPreview("Instant API wording");
+
+  await provider.handleMessage({ type: "applySuggestion", itemId: "ci_1", suggestionIndex: 0 });
+
+  assert.equal(reviewUpdate.summary, "Instant API wording");
+  assert.equal(reviewUpdate.summaryProvenance.source, "instant-suggestion");
+  assert.equal(reviewUpdate.summaryProvenance.model, "instant:local");
+  assert.equal(reviewUpdate.summaryProvenance.similarity_to_current, 0.25);
+  assert.equal(reviewUpdate.summaryProvenance.specificity_score, 0.7);
+  assert.equal(reviewUpdate.summaryProvenance.source_evidence_count, 0);
 });
 
 test("error notifications do not keep the control view busy", async () => {

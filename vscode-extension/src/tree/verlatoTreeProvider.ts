@@ -193,6 +193,7 @@ class ModelNode extends vscode.TreeItem {
       `Timeout: ${settings.ollamaTimeoutSeconds}s`,
       `Fanout guard: ${settings.maxModelItems}`,
       `Suggestion cache warm: ${settings.suggestionAutoWarmCache ? "enabled" : "disabled"}`,
+      `Instant provisional suggestions: ${settings.suggestionInstantProvisional ? "enabled" : "disabled"}`,
       `Suggestion prompt profile: ${settings.suggestionPromptProfile}`,
       `Adaptive suggestions: ${settings.suggestionAdaptiveRecommendations ? "enabled" : "disabled"}`,
       `Ollama streaming: ${settings.ollamaStreamResponses ? "enabled" : "disabled"}`,

@@ -247,6 +247,11 @@
           "default": true,
           "description": "Warm the local suggestion cache in the background after loading a draft when using Ollama."
         },
+        "verlato.suggestionInstantProvisional": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show instant local provisional suggestions in VS Code while AI suggestion results are still running."
+        },
         "verlato.suggestionPromptProfile": {
           "type": "string",
           "default": "conservative",

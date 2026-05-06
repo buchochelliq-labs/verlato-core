@@ -417,11 +417,12 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     const detail = suggestionItem?.suggestion_details?.find((entry) => entry.summary === summary);
+    const suggestionSource = suggestionItem?.provisional ? "instant-suggestion" : "model-suggestion";
     await this.runBusy(async () => {
       await this.client.reviewDraftItem(this.range, itemId, {
         summary,
         summaryProvenance: {
-          source: "model-suggestion",
+          source: suggestionSource,
           provider: this.suggestions?.provider,
           model: suggestionItem?.provider,
           prompt_sha: suggestionItem?.prompt_sha,
