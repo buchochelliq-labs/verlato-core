@@ -177,6 +177,39 @@ def test_ollama_provider_allows_suggest_thinking_and_cap_overrides(monkeypatch):
     assert captured["body"]["options"]["num_predict"] == 72
 
 
+def test_ollama_provider_sends_response_format_for_structured_suggestions(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        @staticmethod
+        def read():
+            return json.dumps({"message": {"content": '{"items":[]}'}}).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr("verlato.providers.ollama.request.urlopen", fake_urlopen)
+
+    provider = OllamaProvider(model="test-model")
+    provider.summarize(
+        ProviderRequest(
+            task="suggest",
+            prompt="Suggest wording",
+            evidence={"suggestion_count": 1},
+            response_format={"type": "object", "required": ["items"]},
+        )
+    )
+
+    assert captured["body"]["format"] == {"type": "object", "required": ["items"]}
+
+
 def test_ollama_provider_streams_chat_response_chunks(monkeypatch):
     captured: dict[str, object] = {}
     records: list[ModelLogRecord] = []

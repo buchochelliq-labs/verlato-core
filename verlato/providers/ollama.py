@@ -86,6 +86,8 @@ class OllamaProvider(VerlatoProvider):
                 {"role": "user", "content": request_data.prompt},
             ],
         }
+        if request_data.response_format is not None:
+            body["format"] = request_data.response_format
         if task == "suggest" and self.suggest_think is not None:
             body["think"] = self.suggest_think
         if self.keep_alive:
@@ -152,6 +154,8 @@ class OllamaProvider(VerlatoProvider):
             "system": system_prompt,
             "prompt": request_data.prompt,
         }
+        if request_data.response_format is not None:
+            body["format"] = request_data.response_format
         if task == "suggest" and self.suggest_think is not None:
             body["think"] = self.suggest_think
         if self.keep_alive:

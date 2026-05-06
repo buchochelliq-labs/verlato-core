@@ -10,6 +10,7 @@ const modelSettings = {
   maxModelItems: 25,
   suggestionCount: 1,
   suggestionParallelism: 2,
+  suggestionBatchSize: 2,
   suggestionTone: "release-note",
   styleGuidance: "",
   projectVocabulary: [],

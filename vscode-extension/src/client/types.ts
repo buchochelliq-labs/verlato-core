@@ -164,6 +164,7 @@ export interface ModelSettings {
   maxModelItems: number;
   suggestionCount: number;
   suggestionParallelism: number;
+  suggestionBatchSize: number;
   suggestionTone: string;
   styleGuidance: string;
   projectVocabulary: string[];
@@ -242,6 +243,8 @@ export interface DraftSuggestionTimings {
   prompt_tokens?: number;
   eval_tokens?: number;
   tokens_per_second?: number;
+  batch_model_ms?: number;
+  batch_item_count?: number;
 }
 
 export interface DraftSuggestionEvidence {
@@ -291,12 +294,17 @@ export interface DraftSuggestionPreview {
 
 export interface DraftSuggestionPerformance {
   parallelism?: number;
+  batch_size?: number;
   target_selection_ms?: number;
   preparation_ms?: number;
   prompt_chars?: number;
   model_ms?: number;
   parse_ms?: number;
   total_ms?: number;
+  model_call_count?: number;
+  batched_model_calls?: number;
+  single_model_calls?: number;
+  model_calls_saved?: number;
 }
 
 export interface OllamaDoctorResult {

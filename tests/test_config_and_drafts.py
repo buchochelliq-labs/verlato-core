@@ -11,6 +11,7 @@ from verlato.cli.main import (
     _run_ollama_doctor,
     _resolve_suggestion_cache_backend,
     _resolve_suggestion_cache_ttl_days,
+    _resolve_suggestion_batch_size,
     _resolve_suggestion_parallelism,
     main,
 )
@@ -221,6 +222,16 @@ def test_load_config_reads_suggestion_parallelism(monkeypatch, tmp_path: Path):
     assert config.suggestion_parallelism == 3
 
 
+def test_load_config_reads_suggestion_batch_size(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "verlato.json"
+    config_path.write_text(json.dumps({"suggestion_batch_size": 2}))
+    monkeypatch.chdir(tmp_path)
+
+    config = load_config()
+
+    assert config.suggestion_batch_size == 2
+
+
 def test_load_config_reads_suggestion_cache_settings(monkeypatch, tmp_path: Path):
     config_path = tmp_path / "verlato.json"
     config_path.write_text(
@@ -280,6 +291,17 @@ def test_resolve_suggestion_parallelism_clamps_cli_env_and_config(monkeypatch):
 
     monkeypatch.setenv("VERLATO_SUGGESTION_PARALLELISM", "not-an-int")
     assert _resolve_suggestion_parallelism(4) == 4
+
+
+def test_resolve_suggestion_batch_size_clamps_cli_env_and_config(monkeypatch):
+    monkeypatch.setenv("VERLATO_SUGGESTION_BATCH_SIZE", "2")
+
+    assert _resolve_suggestion_batch_size(1) == 2
+    assert _resolve_suggestion_batch_size(1, requested=99) == 2
+    assert _resolve_suggestion_batch_size(2, requested=0) == 1
+
+    monkeypatch.setenv("VERLATO_SUGGESTION_BATCH_SIZE", "not-an-int")
+    assert _resolve_suggestion_batch_size(2) == 2
 
 
 def test_normalized_provider_timings_converts_ollama_metadata():
@@ -867,6 +889,7 @@ def test_load_config_defaults_to_one_suggestion(monkeypatch, tmp_path: Path):
     config = load_config()
 
     assert config.suggestion_count == 1
+    assert config.suggestion_batch_size == 2
 
 
 def test_draft_json_command_outputs_sections_and_targets(monkeypatch, tmp_path: Path, capsys):
@@ -2224,6 +2247,330 @@ def test_draft_suggest_all_visible_batches_large_model_fanout(monkeypatch, tmp_p
     assert preview["batch_size"] == 1
     assert preview["batch_count"] == 2
     assert len(preview["items"]) == 2
+
+
+def test_draft_suggest_ollama_batches_two_uncached_items(monkeypatch, tmp_path: Path, capsys):
+    class BatchProvider:
+        def __init__(self):
+            self.calls: list[ProviderRequest] = []
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            self.calls.append(request)
+            assert request.response_format is not None
+            item_ids = request.evidence["item_ids"]
+            return ProviderResponse(
+                content=json.dumps(
+                    {
+                        "items": [
+                            {
+                                "item_id": item_id,
+                                "suggestions": [
+                                    f"Clarifies batched release-note behavior for {item_id} reviewers"
+                                ],
+                            }
+                            for item_id in item_ids
+                        ]
+                    }
+                ),
+                confidence=0.9,
+                model="ollama:doctor-model",
+                metadata={
+                    "total_duration": 100_000_000,
+                    "prompt_eval_duration": 40_000_000,
+                    "eval_duration": 60_000_000,
+                },
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:doctor-model")
+
+    provider = BatchProvider()
+    groups = [
+        _mk_group(number=1, title="First change", commit_sha="a1", commit_message="first"),
+        _mk_group(number=2, title="Second change", commit_sha="b2", commit_message="second"),
+    ]
+    expected_ids = [Classifier().classify(group, "v1.0.0", "HEAD")[0].id for group in groups]
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
+
+    rc = main([
+        "draft",
+        "suggest",
+        "--base",
+        "v1.0.0",
+        "--all-visible",
+        "--preview",
+        "--model-provider",
+        "ollama",
+        "--batch-size",
+        "2",
+    ])
+    preview = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert len(provider.calls) == 1
+    assert provider.calls[0].evidence["batch"] is True
+    assert provider.calls[0].evidence["item_ids"] == expected_ids
+    assert [item["item_id"] for item in preview["items"]] == expected_ids
+    assert preview["performance"]["batch_size"] == 2
+    assert preview["performance"]["model_call_count"] == 1
+    assert preview["performance"]["batched_model_calls"] == 1
+    assert preview["performance"]["single_model_calls"] == 0
+    assert preview["performance"]["model_calls_saved"] == 1
+    assert preview["performance"]["model_ms"] >= 0
+    assert all(item["timings"]["batch_item_count"] == 2 for item in preview["items"])
+    assert all("batch_model_ms" in item["timings"] for item in preview["items"])
+
+
+def test_draft_suggest_batch_size_one_preserves_single_item_calls(monkeypatch, tmp_path: Path, capsys):
+    class CountingProvider:
+        def __init__(self):
+            self.calls: list[ProviderRequest] = []
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            self.calls.append(request)
+            return ProviderResponse(
+                content="Clarifies single release-note behavior for reviewers without batching.",
+                confidence=0.9,
+                model="ollama:test-model",
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:test-model")
+
+    provider = CountingProvider()
+    groups = [
+        _mk_group(number=1, title="First change", commit_sha="a1", commit_message="first"),
+        _mk_group(number=2, title="Second change", commit_sha="b2", commit_message="second"),
+    ]
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
+
+    rc = main([
+        "draft",
+        "suggest",
+        "--base",
+        "v1.0.0",
+        "--all-visible",
+        "--preview",
+        "--model-provider",
+        "ollama",
+        "--batch-size",
+        "1",
+    ])
+    preview = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert len(provider.calls) == 2
+    assert all(call.response_format is None for call in provider.calls)
+    assert preview["performance"]["batch_size"] == 1
+    assert preview["performance"]["single_model_calls"] == 2
+    assert preview["performance"]["model_calls_saved"] == 0
+
+
+def test_draft_suggest_batch_falls_back_to_single_item_calls(monkeypatch, tmp_path: Path, capsys):
+    class FallbackProvider:
+        def __init__(self):
+            self.calls: list[ProviderRequest] = []
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            self.calls.append(request)
+            if request.evidence.get("batch"):
+                return ProviderResponse(content="not json", confidence=0.9, model="ollama:test-model")
+            return ProviderResponse(
+                content=f"Clarifies fallback release-note behavior for {request.evidence['item_id']} reviewers",
+                confidence=0.9,
+                model="ollama:test-model",
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:test-model")
+
+    provider = FallbackProvider()
+    groups = [
+        _mk_group(number=1, title="First change", commit_sha="a1", commit_message="first"),
+        _mk_group(number=2, title="Second change", commit_sha="b2", commit_message="second"),
+    ]
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
+
+    rc = main([
+        "draft",
+        "suggest",
+        "--base",
+        "v1.0.0",
+        "--all-visible",
+        "--preview",
+        "--model-provider",
+        "ollama",
+        "--batch-size",
+        "2",
+    ])
+    preview = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert len(provider.calls) == 3
+    assert provider.calls[0].evidence["batch"] is True
+    assert all(not call.evidence.get("batch") for call in provider.calls[1:])
+    assert preview["performance"]["model_call_count"] == 3
+    assert preview["performance"]["batched_model_calls"] == 1
+    assert preview["performance"]["single_model_calls"] == 2
+    assert preview["performance"]["model_calls_saved"] == 0
+
+
+def test_draft_suggest_batch_retries_missing_unusable_and_error_items(monkeypatch, tmp_path: Path, capsys):
+    groups = [
+        _mk_group(number=1, title="First change", commit_sha="a1", commit_message="first"),
+        _mk_group(number=2, title="Second change", commit_sha="b2", commit_message="second"),
+    ]
+    item_ids = [Classifier().classify(group, "v1.0.0", "HEAD")[0].id for group in groups]
+
+    cases = {
+        "missing": (
+            {
+                "items": [
+                    {
+                        "item_id": item_ids[0],
+                        "suggestions": [f"Clarifies batched release-note behavior for {item_ids[0]} reviewers"],
+                    }
+                ]
+            },
+            2,
+            1,
+            1,
+        ),
+        "unusable": (
+            {
+                "items": [
+                    {
+                        "item_id": item_ids[0],
+                        "suggestions": [f"Clarifies batched release-note behavior for {item_ids[0]} reviewers"],
+                    },
+                    {
+                        "item_id": item_ids[1],
+                        "suggestions": ["Second change"],
+                    },
+                ]
+            },
+            2,
+            1,
+            1,
+        ),
+        "provider-error": ("[ollama-error] local model request failed", 3, 1, 2),
+    }
+
+    for case, (batch_content, expected_calls, expected_batched, expected_single) in cases.items():
+        class FallbackProvider:
+            def __init__(self):
+                self.calls: list[ProviderRequest] = []
+
+            def summarize(self, request: ProviderRequest) -> ProviderResponse:
+                self.calls.append(request)
+                if request.evidence.get("batch"):
+                    content = batch_content if isinstance(batch_content, str) else json.dumps(batch_content)
+                    return ProviderResponse(content=content, confidence=0.9, model="ollama:test-model")
+                return ProviderResponse(
+                    content=f"Clarifies fallback release-note behavior for {request.evidence['item_id']} reviewers",
+                    confidence=0.9,
+                    model="ollama:test-model",
+                )
+
+            def classify(self, request: ProviderRequest) -> ProviderResponse:
+                return ProviderResponse(content="", confidence=0.0, model="ollama:test-model")
+
+        provider = FallbackProvider()
+        case_dir = tmp_path / case
+        case_dir.mkdir()
+        monkeypatch.chdir(case_dir)
+        monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+        monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None, provider=provider: provider)
+
+        rc = main([
+            "draft",
+            "suggest",
+            "--base",
+            "v1.0.0",
+            "--all-visible",
+            "--preview",
+            "--model-provider",
+            "ollama",
+            "--batch-size",
+            "2",
+        ])
+        preview = json.loads(capsys.readouterr().out)
+
+        assert rc == 0
+        assert len(provider.calls) == expected_calls
+        assert preview["performance"]["batched_model_calls"] == expected_batched
+        assert preview["performance"]["single_model_calls"] == expected_single
+        assert [item["item_id"] for item in preview["items"]] == item_ids
+
+
+def test_draft_suggest_cache_hit_is_not_included_in_ollama_batch(monkeypatch, tmp_path: Path, capsys):
+    class CacheAwareProvider:
+        def __init__(self):
+            self.calls: list[ProviderRequest] = []
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            self.calls.append(request)
+            return ProviderResponse(
+                content=f"Clarifies cache-aware release-note behavior for {request.evidence['item_id']} reviewers",
+                confidence=0.9,
+                model="ollama:test-model",
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:test-model")
+
+    provider = CacheAwareProvider()
+    groups = [
+        _mk_group(number=1, title="First change", commit_sha="a1", commit_message="first"),
+        _mk_group(number=2, title="Second change", commit_sha="b2", commit_message="second"),
+    ]
+    first_id = Classifier().classify(groups[0], "v1.0.0", "HEAD")[0].id
+    expected_ids = [Classifier().classify(group, "v1.0.0", "HEAD")[0].id for group in groups]
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
+
+    assert main([
+        "draft",
+        "suggest",
+        "--base",
+        "v1.0.0",
+        "--id",
+        first_id,
+        "--preview",
+        "--model-provider",
+        "ollama",
+    ]) == 0
+    capsys.readouterr()
+    provider.calls.clear()
+
+    rc = main([
+        "draft",
+        "suggest",
+        "--base",
+        "v1.0.0",
+        "--all-visible",
+        "--preview",
+        "--model-provider",
+        "ollama",
+        "--batch-size",
+        "2",
+    ])
+    preview = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert len(provider.calls) == 1
+    assert not provider.calls[0].evidence.get("batch")
+    assert provider.calls[0].evidence["item_id"] == expected_ids[1]
+    assert [item["item_id"] for item in preview["items"]] == expected_ids
+    assert preview["items"][0]["cache"]["hit"] is True
+    assert preview["items"][1]["cache"]["hit"] is False
 
 
 def test_draft_suggest_parallelism_overlaps_model_calls(monkeypatch, tmp_path: Path, capsys):

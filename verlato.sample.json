@@ -6,6 +6,7 @@
   "feedback_include_text": false,
   "suggestion_count": 1,
   "suggestion_parallelism": 1,
+  "suggestion_batch_size": 2,
   "suggestion_tone": "release-note",
   "suggestion_style": {
     "guidance": "Prefer concrete user workflow language.",

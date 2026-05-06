@@ -50,6 +50,7 @@ class VerlatoConfig:
     provider: ProviderConfig = field(default_factory=ProviderConfig)
     suggestion_count: int = 1
     suggestion_parallelism: int = 1
+    suggestion_batch_size: int = 2
     suggestion_tone: str = "release-note"
     suggestion_style: SuggestionStyleConfig = field(default_factory=SuggestionStyleConfig)
     feedback_include_text: bool = False
@@ -85,6 +86,8 @@ def load_config(cwd: str | None = None) -> VerlatoConfig:
         config.suggestion_count = int(raw["suggestion_count"])
     if raw.get("suggestion_parallelism") is not None:
         config.suggestion_parallelism = int(raw["suggestion_parallelism"])
+    if raw.get("suggestion_batch_size") is not None:
+        config.suggestion_batch_size = int(raw["suggestion_batch_size"])
     if raw.get("suggestion_tone") is not None:
         config.suggestion_tone = str(raw["suggestion_tone"]).strip() or config.suggestion_tone
     if raw.get("feedback_include_text") is not None:

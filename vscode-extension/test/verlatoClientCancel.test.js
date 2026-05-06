@@ -144,13 +144,13 @@ test("optional enrichment processes are visible and cancellable", async () => {
   }
 });
 
-test("preview suggestions passes configured parallelism to the CLI and environment", async () => {
+test("preview suggestions passes configured parallelism and batch size to the CLI and environment", async () => {
   const spawnCalls = [];
   const child = makeChild(555);
   const client = makeClient((command, args, options) => {
     spawnCalls.push({ command, args, options });
     return child;
-  }, { suggestionParallelism: 4 });
+  }, { suggestionParallelism: 4, suggestionBatchSize: 2 });
 
   const pending = client.previewDraftSuggestions({ base: "v1.0.0", head: "HEAD" });
   await waitForSpawn(spawnCalls);
@@ -176,11 +176,14 @@ test("preview suggestions passes configured parallelism to the CLI and environme
     "1",
     "--parallelism",
     "4",
+    "--batch-size",
+    "2",
     "--tone",
     "release-note",
     "--all-visible",
   ]);
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_PARALLELISM, "4");
+  assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_BATCH_SIZE, "2");
 });
 
 test("preview suggestions can refresh the persistent suggestion cache", async () => {

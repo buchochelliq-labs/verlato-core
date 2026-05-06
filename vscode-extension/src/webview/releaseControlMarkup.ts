@@ -1144,6 +1144,7 @@ function modelDetail(settings: ModelSettings): string {
     `Tone: ${settings.suggestionTone}`,
     `Suggestions: ${settings.suggestionCount}`,
     `Parallelism: ${settings.suggestionParallelism}`,
+    `Batch size: ${settings.suggestionBatchSize}`,
     `Streaming: ${settings.ollamaStreamResponses ? "on" : "off"}`,
     `Prompt payloads: ${settings.includePromptPayloads ? "on" : "off"}`,
     `Reasoning payloads: ${settings.includeReasoningPayloads ? "on" : "off"}`,
@@ -1254,6 +1255,7 @@ function renderSuggestions(preview: DraftSuggestionPreview | undefined, modelBus
   return `<section class="sub-panel suggestions">
     <div class="section-title">${renderIcon("intent")}<span>INTENT INFERENCE</span><button class="inline-action model-action" data-action="regenerateAll"${modelBusy ? " disabled" : ""}>Regenerate</button></div>
     ${renderOllamaQueueWarning(preview)}
+    ${renderSuggestionBatching(preview)}
     ${preview.items.map((item) => `<article class="suggestion">
       <div class="item-head">
         <span class="name">${escapeHtml(item.title)}</span>
@@ -1296,6 +1298,21 @@ function renderOllamaQueueWarning(preview: DraftSuggestionPreview): string {
     return "";
   }
   return `<div class="model-diagnostic">${renderIcon("intent")}<span>Ollama queue time detected with parallelism ${parallelism}; the server may be serializing requests.</span></div>`;
+}
+
+function renderSuggestionBatching(preview: DraftSuggestionPreview): string {
+  const batchSize = preview.performance?.batch_size ?? 1;
+  const saved = preview.performance?.model_calls_saved ?? 0;
+  const batchedCalls = preview.performance?.batched_model_calls ?? 0;
+  if (batchSize <= 1 && saved <= 0 && batchedCalls <= 0) {
+    return "";
+  }
+  const parts = [
+    batchSize > 1 ? `batched ${batchSize}/item` : "",
+    saved > 0 ? `saved ${saved} call${saved === 1 ? "" : "s"}` : "",
+    batchedCalls > 0 ? `${batchedCalls} batch call${batchedCalls === 1 ? "" : "s"}` : "",
+  ].filter(Boolean);
+  return parts.length ? `<div class="model-diagnostic">${renderIcon("intent")}<span>${escapeHtml(parts.join(" | "))}</span></div>` : "";
 }
 
 function renderSuggestionCacheBadge(item: DraftSuggestionItem): string {

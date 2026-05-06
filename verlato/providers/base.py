@@ -10,6 +10,7 @@ class ProviderRequest:
     task: str
     prompt: str
     evidence: dict[str, Any] = field(default_factory=dict)
+    response_format: str | dict[str, Any] | None = None
 
 
 @dataclass

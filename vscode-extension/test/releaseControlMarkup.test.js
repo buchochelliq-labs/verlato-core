@@ -12,6 +12,7 @@ const modelSettings = {
   maxModelItems: 25,
   suggestionCount: 1,
   suggestionParallelism: 2,
+  suggestionBatchSize: 2,
   suggestionTone: "release-note",
   styleGuidance: "",
   projectVocabulary: [],
@@ -723,7 +724,7 @@ test("renders Ollama timing diagnostics and queue warning for suggestions", () =
       head_ref: "HEAD",
       provider: "ollama",
       count: 1,
-      performance: { parallelism: 2 },
+      performance: { parallelism: 2, batch_size: 2, batched_model_calls: 1, model_calls_saved: 3 },
       items: [
         {
           item_id: "ci_1",
@@ -760,6 +761,7 @@ test("renders Ollama timing diagnostics and queue warning for suggestions", () =
   const html = buildReleaseReleasesHtml(state);
 
   assert.match(html, /Ollama queue time detected with parallelism 2/);
+  assert.match(html, /batched 2\/item \| saved 3 calls \| 1 batch call/);
   assert.match(html, /cached 2m/);
   assert.match(html, /Ollama bottleneck: prompt eval 1\.4s \| 16\.7 tok\/s \| 30\/15 tok \| prompt 1\.7k chars \| files 8\/14 \| hunks 2\/7 \| skipped 6 files, 5 hunks/);
 });
@@ -1149,6 +1151,8 @@ test("contributes focused Verlato views and optional walkthrough", () => {
   ]);
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionParallelism"].default, 2);
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionParallelism"].maximum, 8);
+  assert.equal(manifest.contributes.configuration.properties["verlato.suggestionBatchSize"].default, 2);
+  assert.equal(manifest.contributes.configuration.properties["verlato.suggestionBatchSize"].maximum, 2);
   assert.equal(manifest.contributes.walkthroughs[0].title, "Get started with Verlato");
   assert.match(manifest.contributes.walkthroughs[0].description, /Optional shortcuts/);
   assert.deepEqual(

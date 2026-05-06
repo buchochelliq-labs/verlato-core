@@ -167,6 +167,8 @@ export class VerlatoClient implements vscode.Disposable {
       String(settings.suggestionCount),
       "--parallelism",
       String(settings.suggestionParallelism),
+      "--batch-size",
+      String(settings.suggestionBatchSize),
       "--tone",
       settings.suggestionTone,
       ...cacheArgs,
@@ -241,6 +243,7 @@ export class VerlatoClient implements vscode.Disposable {
       maxModelItems: config.get<number>("maxModelItems") ?? 25,
       suggestionCount: config.get<number>("suggestionCount") ?? 1,
       suggestionParallelism: config.get<number>("suggestionParallelism") ?? 2,
+      suggestionBatchSize: config.get<number>("suggestionBatchSize") ?? 2,
       suggestionTone: config.get<string>("suggestionTone") || "release-note",
       styleGuidance: config.get<string>("styleGuidance") || "",
       projectVocabulary: config.get<string[]>("projectVocabulary") ?? [],
@@ -277,6 +280,9 @@ export class VerlatoClient implements vscode.Disposable {
     }
     if (settings.suggestionParallelism !== undefined) {
       await config.update("suggestionParallelism", settings.suggestionParallelism, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.suggestionBatchSize !== undefined) {
+      await config.update("suggestionBatchSize", settings.suggestionBatchSize, vscode.ConfigurationTarget.Workspace);
     }
     if (settings.suggestionTone !== undefined) {
       await config.update("suggestionTone", settings.suggestionTone, vscode.ConfigurationTarget.Workspace);
@@ -742,6 +748,7 @@ export class VerlatoClient implements vscode.Disposable {
     env.VERLATO_MODEL_MAX_ITEMS = String(settings.maxModelItems);
     env.VERLATO_SUGGESTION_COUNT = String(settings.suggestionCount);
     env.VERLATO_SUGGESTION_PARALLELISM = String(settings.suggestionParallelism);
+    env.VERLATO_SUGGESTION_BATCH_SIZE = String(settings.suggestionBatchSize);
     env.VERLATO_SUGGESTION_TONE = settings.suggestionTone;
     env.VERLATO_STYLE_GUIDANCE = settings.styleGuidance;
     env.VERLATO_PROJECT_VOCABULARY = settings.projectVocabulary.join(",");
@@ -962,7 +969,7 @@ function formatModelSettings(settings: ModelSettings): string {
     ? "; style controls on"
     : "";
   const timeout = settings.provider === "ollama" ? `; timeout: ${settings.ollamaTimeoutSeconds}s` : "";
-  return `${settings.provider}${model}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; parallelism: ${settings.suggestionParallelism}; tone: ${settings.suggestionTone}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
+  return `${settings.provider}${model}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; parallelism: ${settings.suggestionParallelism}; batch size: ${settings.suggestionBatchSize}; tone: ${settings.suggestionTone}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
 }
 
 interface SuggestionPartialState {
@@ -984,6 +991,7 @@ function createSuggestionPartialState(
       tone: settings.suggestionTone,
       performance: {
         parallelism: settings.suggestionParallelism,
+        batch_size: settings.suggestionBatchSize,
       },
       items: [],
     },

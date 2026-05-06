@@ -39,6 +39,7 @@ from verlato.state.store import StateStore
 MODEL_PROVIDER_CHOICES = ["stub", "mock", "ollama", "github-copilot"]
 SUGGESTION_TONE_CHOICES = ["release-note", "concise", "technical", "customer-facing"]
 MAX_SUGGESTION_PARALLELISM = 8
+MAX_SUGGESTION_BATCH_SIZE = 2
 SUGGESTION_CACHE_PROMPT_PROFILE = "suggestion-conservative"
 
 
@@ -72,6 +73,48 @@ class _SuggestionResult:
     item: dict[str, object]
     model_ms: int
     parse_ms: int
+    aggregate_model_ms: int = 0
+    model_call_count: int = 0
+    batched_model_calls: int = 0
+    single_model_calls: int = 0
+
+
+@dataclass
+class _SuggestionBatchOutcome:
+    results: list[_SuggestionResult]
+    fallback_works: list[_SuggestionWork]
+    model_ms: int = 0
+    model_call_count: int = 0
+    batched_model_calls: int = 0
+
+
+class _SuggestionWorkFailure(Exception):
+    def __init__(
+        self,
+        work: _SuggestionWork,
+        exc: BaseException,
+        completed_results: list[_SuggestionResult] | None = None,
+    ) -> None:
+        self.work = work
+        self.exc = exc
+        self.completed_results = completed_results or []
+        super().__init__(str(exc))
+
+
+class _SuggestionBatchFallback(Exception):
+    def __init__(
+        self,
+        works: list[_SuggestionWork],
+        *,
+        model_ms: int = 0,
+        model_call_count: int = 0,
+        batched_model_calls: int = 0,
+    ) -> None:
+        self.works = works
+        self.model_ms = model_ms
+        self.model_call_count = model_call_count
+        self.batched_model_calls = batched_model_calls
+        super().__init__("Batch suggestion response could not be used.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -122,6 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     draft_suggest.add_argument("--preview", action="store_true")
     draft_suggest.add_argument("--count", type=int)
     draft_suggest.add_argument("--parallelism", type=int)
+    draft_suggest.add_argument("--batch-size", type=int)
     draft_suggest.add_argument("--no-cache", action="store_true")
     draft_suggest.add_argument("--refresh-cache", action="store_true")
     draft_suggest.add_argument("--tone", choices=SUGGESTION_TONE_CHOICES)
@@ -436,6 +480,10 @@ def _resolve_suggest_model_provider(model_provider: str | None) -> str | None:
     return "ollama"
 
 
+def _suggestion_batching_allowed_for_provider(provider_mode: str | None) -> bool:
+    return (provider_mode or "").strip().lower() in {"ollama", "local"}
+
+
 def build_draft_document(
     *,
     base: str,
@@ -516,6 +564,17 @@ def _resolve_suggestion_parallelism(configured: int, requested: int | None = Non
         except ValueError:
             value = configured
     return max(1, min(value, MAX_SUGGESTION_PARALLELISM))
+
+
+def _resolve_suggestion_batch_size(configured: int, requested: int | None = None) -> int:
+    raw = str(requested) if requested is not None else os.getenv("VERLATO_SUGGESTION_BATCH_SIZE")
+    value = configured
+    if raw is not None:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = configured
+    return max(1, min(value, MAX_SUGGESTION_BATCH_SIZE))
 
 
 def _resolve_suggestion_cache_backend(configured: str) -> str:
@@ -1371,6 +1430,7 @@ def _preview_draft_model_suggestions(
     all_visible: bool,
     count: int | None,
     parallelism: int | None = None,
+    batch_size: int | None = None,
     model_provider: str | None = None,
     tone: str | None = None,
     no_cache: bool = False,
@@ -1385,6 +1445,7 @@ def _preview_draft_model_suggestions(
     config = _load_config()
     suggestion_count = _resolve_suggestion_count(config.suggestion_count, requested=count)
     suggestion_parallelism = _resolve_suggestion_parallelism(config.suggestion_parallelism, requested=parallelism)
+    requested_suggestion_batch_size = _resolve_suggestion_batch_size(config.suggestion_batch_size, requested=batch_size)
     suggestion_tone = _resolve_suggestion_tone(config.suggestion_tone, requested=tone)
     suggestion_style = _resolve_suggestion_style(config)
     cache_read_enabled = not no_cache and not refresh_cache
@@ -1394,6 +1455,11 @@ def _preview_draft_model_suggestions(
         "cli" if count is not None else "env" if os.getenv("VERLATO_SUGGESTION_COUNT") else "config"
     )
     effective_model_provider = _resolve_suggest_model_provider(model_provider)
+    effective_suggestion_batch_size = (
+        requested_suggestion_batch_size
+        if _suggestion_batching_allowed_for_provider(effective_model_provider or config.provider.name)
+        else 1
+    )
     target_selection_start = perf_counter()
     groups = _collect_groups(base, head)
     baseline_classifier = Classifier()
@@ -1463,20 +1529,20 @@ def _preview_draft_model_suggestions(
     max_model_items = _resolve_max_model_items(config.provider.max_items_per_scan)
     visible_target_count = len(targets)
     if all_visible and max_model_items == 0:
-        batch_size = 0
+        fanout_batch_size = 0
         target_batches = []
     else:
-        batch_size = max_model_items if all_visible and max_model_items > 0 else len(targets) or 1
+        fanout_batch_size = max_model_items if all_visible and max_model_items > 0 else len(targets) or 1
         target_batches = [
-            targets[index : index + batch_size]
-            for index in range(0, len(targets), batch_size)
+            targets[index : index + fanout_batch_size]
+            for index in range(0, len(targets), fanout_batch_size)
         ] or [[]]
     if all_visible and max_model_items >= 0 and len(target_batches) > 1:
         _trace_model_suggest_stage(
             "fanout-batches",
             (
                 f"visible_items={len(targets)} fanout_guard={max_model_items} "
-                f"batch_size={batch_size} batches={len(target_batches)}"
+                f"batch_size={fanout_batch_size} batches={len(target_batches)}"
             ),
         )
     total_targets = sum(len(batch) for batch in target_batches)
@@ -1487,7 +1553,7 @@ def _preview_draft_model_suggestions(
         current=0,
         total=total_targets,
         unit="item",
-        batch_size=batch_size,
+        batch_size=fanout_batch_size,
         batch_total=len(target_batches),
         fanout_guard=max_model_items,
     )
@@ -1518,15 +1584,20 @@ def _preview_draft_model_suggestions(
                 "model_ms": 0,
                 "parse_ms": 0,
                 "total_ms": 0,
+                "batch_size": effective_suggestion_batch_size,
+                "model_call_count": 0,
+                "batched_model_calls": 0,
+                "single_model_calls": 0,
+                "model_calls_saved": 0,
             },
             "visible_item_count": visible_target_count,
             "fanout_guard": max_model_items,
-            "batch_size": batch_size,
+            "batch_size": fanout_batch_size,
             "batch_count": len(target_batches),
             "items": [],
         },
         total=total_targets,
-        batch_size=batch_size,
+        batch_size=fanout_batch_size,
         batch_total=len(target_batches),
         fanout_guard=max_model_items,
     )
@@ -1551,10 +1622,15 @@ def _preview_draft_model_suggestions(
                 "model_ms": 0,
                 "parse_ms": 0,
                 "total_ms": total_ms,
+                "batch_size": effective_suggestion_batch_size,
+                "model_call_count": 0,
+                "batched_model_calls": 0,
+                "single_model_calls": 0,
+                "model_calls_saved": 0,
             },
             "visible_item_count": visible_target_count,
             "fanout_guard": max_model_items,
-            "batch_size": batch_size,
+            "batch_size": fanout_batch_size,
             "batch_count": len(target_batches),
             "items": [],
         }
@@ -1576,6 +1652,10 @@ def _preview_draft_model_suggestions(
     prompt_chars = 0
     model_ms = 0
     parse_ms = 0
+    uncached_item_count = 0
+    model_call_count = 0
+    batched_model_calls = 0
+    single_model_calls = 0
 
     def prepare_work(order: int, group: ChangeGroup, baseline_item: ChangeItem, batch_index: int) -> _SuggestionWork:
         nonlocal preparation_ms, prompt_chars
@@ -1690,10 +1770,13 @@ def _preview_draft_model_suggestions(
         )
 
     def record_result(result: _SuggestionResult) -> None:
-        nonlocal completed_count, model_ms, parse_ms
+        nonlocal completed_count, model_ms, parse_ms, model_call_count, batched_model_calls, single_model_calls
         completed_count += 1
-        model_ms += result.model_ms
+        model_ms += result.aggregate_model_ms
         parse_ms += result.parse_ms
+        model_call_count += result.model_call_count
+        batched_model_calls += result.batched_model_calls
+        single_model_calls += result.single_model_calls
         timings = result.item.get("timings")
         elapsed = timings.get("total_ms") if isinstance(timings, dict) else None
         _trace_progress(
@@ -1770,43 +1853,64 @@ def _preview_draft_model_suggestions(
                 f"batch={batch_index}/{len(target_batches)} targets={len(batch)} fanout_guard={max_model_items}",
             )
         batch_results: dict[int, _SuggestionResult] = {}
-        if suggestion_parallelism <= 1 or len(batch) <= 1:
-            for batch_offset, (group, baseline_item) in enumerate(batch):
-                order = len(items) + batch_offset
-                work = prepare_work(order, group, baseline_item, batch_index)
-                result = cached_result_for_work(work)
-                if result is None:
-                    try:
-                        result = _run_suggestion_model_work(provider, provider_classifier, work)
-                    except (Exception, SystemExit) as exc:
-                        record_failure(work, exc)
-                        raise
+        miss_chunks: list[list[_SuggestionWork]] = []
+        pending_chunk: list[_SuggestionWork] = []
+        batch_base_order = len(items)
+        for batch_offset, (group, baseline_item) in enumerate(batch):
+            order = batch_base_order + batch_offset
+            work = prepare_work(order, group, baseline_item, batch_index)
+            result = cached_result_for_work(work)
+            if result is not None:
                 batch_results[result.order] = result
                 record_result(result)
-        else:
-            workers = min(suggestion_parallelism, len(batch))
-            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="verlato-suggest") as executor:
-                future_to_work = {}
-                for batch_offset, (group, baseline_item) in enumerate(batch):
-                    order = len(items) + batch_offset
-                    work = prepare_work(order, group, baseline_item, batch_index)
-                    result = cached_result_for_work(work)
-                    if result is not None:
-                        batch_results[result.order] = result
-                        record_result(result)
-                        continue
-                    future_to_work[executor.submit(_run_suggestion_model_work, provider, provider_classifier, work)] = work
+                continue
+            uncached_item_count += 1
+            pending_chunk.append(work)
+            if len(pending_chunk) >= effective_suggestion_batch_size:
+                miss_chunks.append(pending_chunk)
+                pending_chunk = []
+        if pending_chunk:
+            miss_chunks.append(pending_chunk)
+
+        if suggestion_parallelism <= 1 or len(miss_chunks) <= 1:
+            for chunk in miss_chunks:
                 try:
-                    for future in as_completed(future_to_work):
-                        try:
-                            result = future.result()
-                        except (Exception, SystemExit) as exc:
-                            record_failure(future_to_work[future], exc)
-                            raise
+                    chunk_results = _run_suggestion_work_chunk(provider, provider_classifier, chunk)
+                except _SuggestionWorkFailure as exc:
+                    for result in exc.completed_results:
                         batch_results[result.order] = result
                         record_result(result)
+                    record_failure(exc.work, exc.exc)
+                    raise exc.exc
+                for result in chunk_results:
+                    batch_results[result.order] = result
+                    record_result(result)
+        else:
+            workers = min(suggestion_parallelism, len(miss_chunks))
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="verlato-suggest") as executor:
+                future_to_chunk = {
+                    executor.submit(_run_suggestion_work_chunk, provider, provider_classifier, chunk): chunk
+                    for chunk in miss_chunks
+                }
+                try:
+                    for future in as_completed(future_to_chunk):
+                        try:
+                            chunk_results = future.result()
+                        except _SuggestionWorkFailure as exc:
+                            for result in exc.completed_results:
+                                batch_results[result.order] = result
+                                record_result(result)
+                            record_failure(exc.work, exc.exc)
+                            raise exc.exc
+                        except (Exception, SystemExit) as exc:
+                            for work in future_to_chunk[future]:
+                                record_failure(work, exc)
+                            raise
+                        for result in chunk_results:
+                            batch_results[result.order] = result
+                            record_result(result)
                 except BaseException:
-                    for pending in future_to_work:
+                    for pending in future_to_chunk:
                         pending.cancel()
                     raise
         for order in sorted(batch_results):
@@ -1817,6 +1921,7 @@ def _preview_draft_model_suggestions(
     if suggestion_cache is not None and suggestion_cache.dirty:
         suggestion_cache.save()
     total_ms = _elapsed_ms(total_start)
+    model_calls_saved = max(0, uncached_item_count - model_call_count)
     _trace_progress(
         "suggestions_ready",
         "Generated suggestions",
@@ -1833,18 +1938,23 @@ def _preview_draft_model_suggestions(
         "count": suggestion_count,
         "tone": suggestion_tone,
         "style_profile": suggestion_style,
-            "performance": {
-                "parallelism": suggestion_parallelism,
-                "target_selection_ms": target_selection_ms,
-                "preparation_ms": preparation_ms,
-                "prompt_chars": prompt_chars,
-                "model_ms": model_ms,
-                "parse_ms": parse_ms,
-                "total_ms": total_ms,
+        "performance": {
+            "parallelism": suggestion_parallelism,
+            "target_selection_ms": target_selection_ms,
+            "preparation_ms": preparation_ms,
+            "prompt_chars": prompt_chars,
+            "model_ms": model_ms,
+            "parse_ms": parse_ms,
+            "total_ms": total_ms,
+            "batch_size": effective_suggestion_batch_size,
+            "model_call_count": model_call_count,
+            "batched_model_calls": batched_model_calls,
+            "single_model_calls": single_model_calls,
+            "model_calls_saved": model_calls_saved,
         },
         "visible_item_count": visible_target_count,
         "fanout_guard": max_model_items,
-        "batch_size": batch_size,
+        "batch_size": fanout_batch_size,
         "batch_count": len(target_batches),
         "items": items,
     }
@@ -1976,6 +2086,309 @@ def _cached_suggestion_details(
     return details
 
 
+def _run_suggestion_work_chunk(provider, provider_classifier: Classifier, works: list[_SuggestionWork]) -> list[_SuggestionResult]:
+    if len(works) <= 1:
+        return [_run_single_suggestion_with_failure(provider, provider_classifier, works[0])]
+
+    try:
+        outcome = _run_suggestion_batch_model_work(provider, provider_classifier, works)
+    except _SuggestionBatchFallback as fallback:
+        fallback_results: list[_SuggestionResult] = []
+        for work in fallback.works:
+            try:
+                fallback_results.append(_run_suggestion_model_work(provider, provider_classifier, work))
+            except (Exception, SystemExit) as exc:
+                raise _SuggestionWorkFailure(work, exc, completed_results=fallback_results) from exc
+        if fallback_results:
+            fallback_results[0].aggregate_model_ms += fallback.model_ms
+            fallback_results[0].model_call_count += fallback.model_call_count
+            fallback_results[0].batched_model_calls += fallback.batched_model_calls
+        return sorted(fallback_results, key=lambda result: result.order)
+
+    results = list(outcome.results)
+    if outcome.fallback_works:
+        fallback_results: list[_SuggestionResult] = []
+        for work in outcome.fallback_works:
+            try:
+                fallback_results.append(_run_suggestion_model_work(provider, provider_classifier, work))
+            except (Exception, SystemExit) as exc:
+                raise _SuggestionWorkFailure(work, exc, completed_results=results + fallback_results) from exc
+        if not results and fallback_results:
+            fallback_results[0].aggregate_model_ms += outcome.model_ms
+            fallback_results[0].model_call_count += outcome.model_call_count
+            fallback_results[0].batched_model_calls += outcome.batched_model_calls
+        results.extend(fallback_results)
+    return sorted(results, key=lambda result: result.order)
+
+
+def _run_single_suggestion_with_failure(provider, provider_classifier: Classifier, work: _SuggestionWork) -> _SuggestionResult:
+    try:
+        return _run_suggestion_model_work(provider, provider_classifier, work)
+    except (Exception, SystemExit) as exc:
+        raise _SuggestionWorkFailure(work, exc) from exc
+
+
+def _run_suggestion_batch_model_work(
+    provider,
+    provider_classifier: Classifier,
+    works: list[_SuggestionWork],
+) -> _SuggestionBatchOutcome:
+    provider_name = works[0].effective_model_provider or "configured"
+    item_ids = [work.baseline_item.id for work in works]
+    _trace_model_call_start("suggest", f"batch:{','.join(item_ids)}", provider_name)
+    _trace_progress(
+        "suggestion_model_request",
+        f"Prompting model for {len(works)} suggestion items",
+        current=works[0].item_number,
+        total=works[0].total_targets,
+        unit="item",
+        item_id=",".join(item_ids),
+        batch=works[0].batch,
+        batch_total=works[0].batch_total,
+        batch_item_count=len(works),
+        elapsed_ms=max(_elapsed_ms(work.started_at) for work in works),
+    )
+    prompt = _build_suggestion_batch_prompt(works)
+    _trace_model_payload("prompt-preview", prompt)
+    model_start = perf_counter()
+    response = provider.summarize(
+        ProviderRequest(
+            task="suggest",
+            prompt=prompt,
+            evidence={
+                "batch": True,
+                "item_ids": item_ids,
+                "item_count": len(works),
+                "suggestion_count": works[0].suggestion_count,
+            },
+            response_format=_suggestion_batch_response_format(works[0].suggestion_count),
+        )
+    )
+    model_ms = _elapsed_ms(model_start)
+    provider_timings = _normalized_provider_timings(response.metadata, model_ms)
+    _trace_model_call_result("suggest", f"batch:{','.join(item_ids)}", response.model, response.confidence)
+    _trace_model_response_detail(response.model, response.content, response.metadata, response.reasoning)
+    _trace_progress(
+        "suggestion_model_response",
+        f"Reading model response for {len(works)} suggestion items",
+        current=works[-1].item_number,
+        total=works[-1].total_targets,
+        unit="item",
+        item_id=",".join(item_ids),
+        batch=works[0].batch,
+        batch_total=works[0].batch_total,
+        elapsed_ms=max(_elapsed_ms(work.started_at) for work in works),
+        model_ms=model_ms,
+        queue_ms=provider_timings.get("queue_ms"),
+        ollama_total_ms=provider_timings.get("ollama_total_ms"),
+        prompt_eval_ms=provider_timings.get("prompt_eval_ms"),
+        eval_ms=provider_timings.get("eval_ms"),
+    )
+    if provider_classifier._is_provider_error(response.content):
+        raise _SuggestionBatchFallback(
+            works,
+            model_ms=model_ms,
+            model_call_count=1,
+            batched_model_calls=1,
+        )
+
+    parsed_items = _parse_suggestion_batch_json(response.content)
+    if parsed_items is None:
+        raise _SuggestionBatchFallback(
+            works,
+            model_ms=model_ms,
+            model_call_count=1,
+            batched_model_calls=1,
+        )
+
+    provider_reasoning = response.reasoning if _trace_model_reasoning_payloads_enabled() else ""
+    results: list[_SuggestionResult] = []
+    fallback_works: list[_SuggestionWork] = []
+    for work in works:
+        raw_suggestions = parsed_items.get(work.baseline_item.id)
+        if not raw_suggestions:
+            fallback_works.append(work)
+            continue
+        parse_start = perf_counter()
+        suggestion_details, rejected_candidates = _parse_suggestion_variants(
+            "\n".join(raw_suggestions),
+            work.suggestion_count,
+            work.baseline_item,
+            work.group,
+            trace_title=work.baseline_item.content.title,
+            trace_model=response.model,
+            banned_phrases=list(work.suggestion_style["banned_phrases"]),
+            specificity_floor=float(work.suggestion_style["specificity_floor"]),
+        )
+        parse_ms = _elapsed_ms(parse_start)
+        _trace_model_suggestion_decision(
+            title=work.baseline_item.content.title,
+            model=response.model,
+            parsed_count=len(suggestion_details),
+            requested_count=work.suggestion_count,
+            accepted=_suggestions_preview(suggestion_details),
+            rejected_count=len(rejected_candidates),
+        )
+        if not suggestion_details:
+            fallback_works.append(work)
+            continue
+        item = _build_suggestion_result_item(
+            work=work,
+            response=response,
+            suggestion_details=suggestion_details,
+            rejected_candidates=rejected_candidates,
+            model_ms=model_ms,
+            parse_ms=parse_ms,
+            provider_timings=provider_timings,
+            provider_reasoning=provider_reasoning,
+            batch_model_ms=model_ms,
+            batch_item_count=len(works),
+        )
+        results.append(_SuggestionResult(order=work.order, item=item, model_ms=model_ms, parse_ms=parse_ms))
+
+    if not results:
+        return _SuggestionBatchOutcome(
+            results=[],
+            fallback_works=fallback_works or works,
+            model_ms=model_ms,
+            model_call_count=1,
+            batched_model_calls=1,
+        )
+    results[0].aggregate_model_ms = model_ms
+    results[0].model_call_count = 1
+    results[0].batched_model_calls = 1
+    return _SuggestionBatchOutcome(
+        results=results,
+        fallback_works=fallback_works,
+        model_ms=model_ms,
+        model_call_count=1,
+        batched_model_calls=1,
+    )
+
+
+def _build_suggestion_batch_prompt(works: list[_SuggestionWork]) -> str:
+    payload = {
+        "suggestion_count": works[0].suggestion_count,
+        "tone": works[0].suggestion_tone,
+        "style_profile": works[0].suggestion_style,
+        "items": [
+            {
+                "item_id": work.baseline_item.id,
+                "title": work.baseline_item.content.title,
+                "current_summary": work.baseline_item.edited_summary or work.baseline_item.content.summary,
+                "prepared_prompt": work.prompt,
+            }
+            for work in works
+        ],
+    }
+    return (
+        "Generate release-note suggestion variants for each item independently.\n"
+        "Return only JSON that matches the requested schema. Do not include Markdown fences or prose.\n"
+        f"For each item, return exactly {works[0].suggestion_count} suggestion string(s) in the suggestions array.\n"
+        "Do not combine items, rename item ids, or omit an item.\n"
+        "Input JSON:\n"
+        + json.dumps(payload, indent=2, sort_keys=True)
+    )
+
+
+def _suggestion_batch_response_format(suggestion_count: int) -> dict[str, object]:
+    return {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "item_id": {"type": "string"},
+                        "suggestions": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 1,
+                            "maxItems": suggestion_count,
+                        },
+                    },
+                    "required": ["item_id", "suggestions"],
+                },
+            }
+        },
+        "required": ["items"],
+    }
+
+
+def _parse_suggestion_batch_json(content: str) -> dict[str, list[str]] | None:
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    raw_items = parsed.get("items")
+    if not isinstance(raw_items, list):
+        return None
+    suggestions_by_item: dict[str, list[str]] = {}
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            continue
+        item_id = raw_item.get("item_id")
+        raw_suggestions = raw_item.get("suggestions")
+        if not isinstance(item_id, str) or not isinstance(raw_suggestions, list):
+            continue
+        suggestions = [suggestion.strip() for suggestion in raw_suggestions if isinstance(suggestion, str) and suggestion.strip()]
+        if suggestions:
+            suggestions_by_item[item_id] = suggestions
+    return suggestions_by_item
+
+
+def _build_suggestion_result_item(
+    *,
+    work: _SuggestionWork,
+    response: ProviderResponse,
+    suggestion_details: list[dict[str, object]],
+    rejected_candidates: list[dict[str, object]],
+    model_ms: int,
+    parse_ms: int,
+    provider_timings: dict[str, object],
+    provider_reasoning: str,
+    batch_model_ms: int | None = None,
+    batch_item_count: int | None = None,
+) -> dict[str, object]:
+    timings: dict[str, object] = {
+        "evidence_ms": work.evidence_ms,
+        "prompt_ms": work.prompt_ms,
+        "model_ms": model_ms,
+        "parse_ms": parse_ms,
+        "total_ms": _elapsed_ms(work.started_at),
+        **provider_timings,
+    }
+    if batch_model_ms is not None:
+        timings["batch_model_ms"] = batch_model_ms
+    if batch_item_count is not None:
+        timings["batch_item_count"] = batch_item_count
+    return {
+        "item_id": work.baseline_item.id,
+        "title": work.baseline_item.content.title,
+        "current_summary": work.baseline_item.edited_summary or work.baseline_item.content.summary,
+        "provider": response.model,
+        "prompt_sha": work.prompt_sha,
+        "tone": work.suggestion_tone,
+        "style_profile": work.suggestion_style,
+        "provider_metadata": response.metadata,
+        "provider_reasoning": provider_reasoning,
+        "source_evidence": work.source_evidence,
+        "prompt_budget": work.prompt_budget,
+        "suggestion_details": suggestion_details,
+        "rejected_candidates": rejected_candidates,
+        "suggestions": [detail["summary"] for detail in suggestion_details],
+        "cache": {
+            "hit": False,
+            "key": work.cache_key,
+        },
+        "timings": timings,
+        "batch": work.batch,
+    }
+
+
 def _run_suggestion_model_work(provider, provider_classifier: Classifier, work: _SuggestionWork) -> _SuggestionResult:
     baseline_item = work.baseline_item
     provider_name = work.effective_model_provider or "configured"
@@ -2070,7 +2483,15 @@ def _run_suggestion_model_work(provider, provider_classifier: Classifier, work: 
         },
         "batch": work.batch,
     }
-    return _SuggestionResult(order=work.order, item=item, model_ms=model_ms, parse_ms=parse_ms)
+    return _SuggestionResult(
+        order=work.order,
+        item=item,
+        model_ms=model_ms,
+        parse_ms=parse_ms,
+        aggregate_model_ms=model_ms,
+        model_call_count=1,
+        single_model_calls=1,
+    )
 
 
 def _parse_suggestion_variants(
@@ -3245,6 +3666,7 @@ def main(argv: list[str] | None = None) -> int:
                     all_visible=args.all_visible,
                     count=args.count,
                     parallelism=args.parallelism,
+                    batch_size=args.batch_size,
                     model_provider=args.model_provider,
                     tone=args.tone,
                     no_cache=args.no_cache,

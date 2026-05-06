@@ -444,6 +444,17 @@ async function changeModelSettings(
   if (suggestionParallelismRaw === undefined) {
     return;
   }
+  const suggestionBatchSizeRaw = await vscode.window.showInputBox({
+    prompt: "Maximum uncached Ollama suggestion items per request (1-2)",
+    value: String(current.suggestionBatchSize),
+    validateInput: (value) => {
+      const parsed = Number(value);
+      return Number.isInteger(parsed) && parsed >= 1 && parsed <= 2 ? undefined : "Enter an integer from 1 to 2.";
+    },
+  });
+  if (suggestionBatchSizeRaw === undefined) {
+    return;
+  }
   const suggestionTone = await vscode.window.showQuickPick(
     ["release-note", "concise", "technical", "customer-facing"],
     {
@@ -463,6 +474,7 @@ async function changeModelSettings(
     maxModelItems: Number(maxRaw),
     suggestionCount: Number(suggestionCountRaw),
     suggestionParallelism: Number(suggestionParallelismRaw),
+    suggestionBatchSize: Number(suggestionBatchSizeRaw),
     suggestionTone,
   });
   await client.initialize();
