@@ -473,6 +473,54 @@ def test_adaptive_recommendations_classify_prompt_queue_generation_cache_and_fee
         source="preview",
     )
     assert any(item["kind"] == "tune-style-before-slimming" for item in feedback["recommendations"])
+
+    instant = _build_suggestion_adaptive_recommendations(
+        current={
+            "provider": "ollama",
+            "prompt_profile": "conservative",
+            "suggestion_count": 1,
+            "suggestion_parallelism": 1,
+            "suggestion_batch_size": 1,
+            "cache_warming": None,
+        },
+        timing_sources=[],
+        feedback_events=[
+            {"event": "suggestion_applied", "metadata": {"source": "instant-suggestion", "instant_confidence_band": "high"}},
+            {"event": "suggestion_marked_useful", "metadata": {"source": "instant-suggestion", "instant_confidence_band": "high"}},
+            {"event": "suggestion_marked_not_useful", "metadata": {"source": "model-suggestion"}},
+        ],
+        cache_hit_count=1,
+        item_count=1,
+        prompt_chars=1000,
+        source="preview",
+    )
+    instant_feedback = instant["signals"]["feedback"]["source_feedback"]["instant-suggestion"]
+    assert instant_feedback["event_count"] == 2
+    assert instant_feedback["positive_rate"] == 1.0
+    assert any(item["kind"] == "instant-candidates-need-feedback" for item in instant["recommendations"])
+
+    promising = _build_suggestion_adaptive_recommendations(
+        current={
+            "provider": "ollama",
+            "prompt_profile": "conservative",
+            "suggestion_count": 1,
+            "suggestion_parallelism": 1,
+            "suggestion_batch_size": 1,
+            "cache_warming": None,
+        },
+        timing_sources=[],
+        feedback_events=[
+            {"event": "suggestion_applied", "metadata": {"source": "instant-suggestion", "instant_confidence_band": "high"}},
+            {"event": "suggestion_marked_useful", "metadata": {"source": "instant-suggestion", "instant_confidence_band": "high"}},
+            {"event": "suggestion_applied", "metadata": {"source": "instant-suggestion", "instant_confidence_band": "medium"}},
+        ],
+        cache_hit_count=1,
+        item_count=1,
+        prompt_chars=1000,
+        source="preview",
+    )
+    promising_rec = next(item for item in promising["recommendations"] if item["kind"] == "instant-candidates-promising")
+    assert promising_rec["suggested_config"]["suggestion_instant_skip"] == "high-confidence"
     assert not any(item["kind"] == "use-minimal-prompt-profile" for item in feedback["recommendations"])
 
 
@@ -2259,8 +2307,15 @@ def test_draft_suggest_can_emit_instant_provisional_events(monkeypatch, tmp_path
     assert provisional_events[0]["item_id"] == target_item.id
     assert provisional_events[0]["item"]["provider"] == "instant:local"
     assert provisional_events[0]["item"]["provisional"]["state"] == "provisional"
+    confidence = provisional_events[0]["item"]["instant_confidence"]
+    assert confidence["band"] in {"low", "medium", "high"}
+    assert 0 <= confidence["score"] <= 1
+    assert confidence["candidate_rank"] == 1
+    assert "reasons" in confidence
+    assert provisional_events[0]["item"]["suggestion_details"][0]["instant_confidence"] == confidence
     assert provisional_events[0]["item"]["suggestions"]
     assert "provisional" not in preview["items"][0]
+    assert "instant_confidence" not in preview["items"][0]
     assert preview["items"][0]["provider"] == "mock-local"
 
 

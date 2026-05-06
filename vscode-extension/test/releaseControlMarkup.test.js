@@ -658,6 +658,15 @@ test("renders suggestion actions and review variants", () => {
           current_summary: "A concise release note",
           provider: "instant:local",
           provisional: { source: "instant-local", state: "provisional" },
+          instant_confidence: {
+            score: 0.81,
+            band: "high",
+            reasons: ["top-local-candidate", "specific-evidence"],
+            evidence_overlap: 0.75,
+            similarity_to_current: 0.12,
+            specificity_score: 0.7,
+            candidate_rank: 1,
+          },
           provider_reasoning: "Focused on the API response diff.",
           source_evidence: [
             { kind: "pull-request", label: "PR #12", detail: "Improve API" },
@@ -692,6 +701,7 @@ test("renders suggestion actions and review variants", () => {
   assert.match(controlHtml, /data-action="suggest" data-item="ci_1"/);
   assert.match(html, /INTENT INFERENCE/);
   assert.match(html, /provisional/);
+  assert.match(html, /confidence high 81%/);
   assert.match(html, /Current/);
   assert.match(html, /Suggested/);
   assert.match(html, /Evidence/);

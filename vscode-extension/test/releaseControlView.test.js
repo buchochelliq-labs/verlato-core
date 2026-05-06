@@ -220,13 +220,24 @@ function suggestionPreview(text, itemId = "ci_1") {
 
 function provisionalSuggestionPreview(text, itemId = "ci_1") {
   const preview = suggestionPreview(text, itemId);
+  const confidence = {
+    score: 0.82,
+    band: "high",
+    reasons: ["top-local-candidate", "specific-evidence"],
+    evidence_overlap: 0.8,
+    similarity_to_current: 0.25,
+    specificity_score: 0.7,
+    candidate_rank: 1,
+  };
   preview.items[0].provider = "instant:local";
   preview.items[0].provisional = { source: "instant-local", state: "provisional" };
+  preview.items[0].instant_confidence = confidence;
   preview.items[0].suggestion_details = [
     {
       summary: text,
       similarity_to_current: 0.25,
       specificity_score: 0.7,
+      instant_confidence: confidence,
       comparison: {
         current: "Old API summary",
         suggested: text,
@@ -337,9 +348,36 @@ test("applying a provisional suggestion records instant provenance", async () =>
   assert.equal(reviewUpdate.summary, "Instant API wording");
   assert.equal(reviewUpdate.summaryProvenance.source, "instant-suggestion");
   assert.equal(reviewUpdate.summaryProvenance.model, "instant:local");
+  assert.equal(reviewUpdate.summaryProvenance.prompt_profile, "suggestion-conservative");
   assert.equal(reviewUpdate.summaryProvenance.similarity_to_current, 0.25);
   assert.equal(reviewUpdate.summaryProvenance.specificity_score, 0.7);
+  assert.equal(reviewUpdate.summaryProvenance.instant_confidence_band, "high");
+  assert.equal(reviewUpdate.summaryProvenance.instant_confidence_score, 0.82);
   assert.equal(reviewUpdate.summaryProvenance.source_evidence_count, 0);
+});
+
+test("suggestion feedback includes source and instant confidence metadata", async () => {
+  const feedbackCalls = [];
+  const client = makeClient({
+    recordFeedback(event, itemId, metadata) {
+      feedbackCalls.push({ event, itemId, metadata });
+      return Promise.resolve(undefined);
+    },
+  });
+  const { ReleaseControlViewProvider } = loadControlViewWithVscodeMock(makeVscodeMock());
+  const { provider } = makeProvider(ReleaseControlViewProvider, client);
+  provider.suggestions = provisionalSuggestionPreview("Instant API wording");
+
+  await provider.handleMessage({ type: "feedbackPositive", itemId: "ci_1" });
+  await provider.handleMessage({ type: "skipSuggestion", itemId: "ci_1" });
+
+  assert.equal(feedbackCalls[0].event, "suggestion_marked_useful");
+  assert.equal(feedbackCalls[0].metadata.source, "instant-suggestion");
+  assert.equal(feedbackCalls[0].metadata.instant_confidence_band, "high");
+  assert.equal(feedbackCalls[0].metadata.instant_confidence_score, 0.82);
+  assert.equal(feedbackCalls[0].metadata.specificity_score, 0.7);
+  assert.equal(feedbackCalls[1].event, "suggestion_skipped");
+  assert.equal(feedbackCalls[1].metadata.source, "instant-suggestion");
 });
 
 test("error notifications do not keep the control view busy", async () => {

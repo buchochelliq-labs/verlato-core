@@ -89,11 +89,16 @@ export interface SummaryProvenance {
   provider?: string;
   model?: string;
   prompt_sha?: string;
+  prompt_profile?: string;
+  cache_hit?: boolean;
   tone?: string;
   style_profile?: SuggestionStyleProfile;
   suggestion_index?: number;
   similarity_to_current?: number;
   specificity_score?: number;
+  instant_confidence?: DraftInstantConfidence;
+  instant_confidence_band?: string;
+  instant_confidence_score?: number;
   response_metadata?: Record<string, unknown>;
   source_evidence_count?: number;
   reasoning_exposed?: boolean;
@@ -200,6 +205,7 @@ export interface DraftSuggestionItem {
   timings?: DraftSuggestionTimings;
   cache?: DraftSuggestionCache;
   provisional?: DraftSuggestionProvisional;
+  instant_confidence?: DraftInstantConfidence;
   suggestions: string[];
 }
 
@@ -268,10 +274,21 @@ export interface DraftSuggestionDetail {
   summary: string;
   similarity_to_current: number;
   specificity_score?: number;
+  instant_confidence?: DraftInstantConfidence;
   comparison: {
     current: string;
     suggested: string;
   };
+}
+
+export interface DraftInstantConfidence {
+  score?: number;
+  band?: "low" | "medium" | "high" | string;
+  reasons?: string[];
+  evidence_overlap?: number;
+  similarity_to_current?: number;
+  specificity_score?: number;
+  candidate_rank?: number;
 }
 
 export interface DraftRejectedSuggestion {

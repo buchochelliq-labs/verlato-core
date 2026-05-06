@@ -1283,6 +1283,7 @@ function renderSuggestions(preview: DraftSuggestionPreview | undefined, modelBus
         ${item.tone ? `<span class="badge">${escapeHtml(item.tone)}</span>` : ""}
         ${renderSuggestionCacheBadge(item)}
         ${renderSuggestionProvisionalBadge(item)}
+        ${renderSuggestionConfidenceBadge(item)}
       </div>
       ${renderSuggestionDiagnostics(item)}
       ${renderSuggestionComparison(item)}
@@ -1362,6 +1363,23 @@ function renderSuggestionProvisionalBadge(item: DraftSuggestionItem): string {
     return "";
   }
   return `<span class="badge provisional">provisional</span>`;
+}
+
+function renderSuggestionConfidenceBadge(item: DraftSuggestionItem): string {
+  const confidence = item.instant_confidence;
+  if (!item.provisional || !confidence) {
+    return "";
+  }
+  const band = confidence.band ?? "unknown";
+  const score = typeof confidence.score === "number" ? ` ${Math.round(confidence.score * 100)}%` : "";
+  const reasons = Array.isArray(confidence.reasons) ? confidence.reasons.join(", ") : "";
+  const title = [
+    typeof confidence.evidence_overlap === "number" ? `evidence overlap ${Math.round(confidence.evidence_overlap * 100)}%` : "",
+    typeof confidence.specificity_score === "number" ? `specificity ${Math.round(confidence.specificity_score * 100)}%` : "",
+    typeof confidence.similarity_to_current === "number" ? `similarity ${Math.round(confidence.similarity_to_current * 100)}%` : "",
+    reasons,
+  ].filter(Boolean).join(" | ");
+  return `<span class="badge confidence" title="${escapeHtml(title)}">confidence ${escapeHtml(band)}${escapeHtml(score)}</span>`;
 }
 
 function renderSuggestionDiagnostics(item: DraftSuggestionItem): string {
@@ -2941,6 +2959,10 @@ function styles(): string {
     .suggestion .badge.provisional {
       color: var(--vscode-editor-background);
       background: var(--verlato-blue);
+    }
+    .suggestion .badge.confidence {
+      color: var(--vscode-editor-background);
+      background: color-mix(in srgb, var(--verlato-blue) 60%, var(--verlato-green));
     }
     .request .badge {
       display: inline-flex;

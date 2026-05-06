@@ -144,16 +144,20 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       await this.regenerateSuggestion(message.itemId);
     }
     if (message.type === "regenerateAll") {
-      this.suggestions?.items.forEach((item) => this.recordFeedback("suggestion_regenerated", item.item_id, { scope: "all-visible" }));
+      this.suggestions?.items.forEach((item) => this.recordFeedback(
+        "suggestion_regenerated",
+        item.item_id,
+        { scope: "all-visible", ...this.suggestionFeedbackMetadata(item.item_id) },
+      ));
       await this.suggest(undefined, "refresh-cache");
     }
     if (message.type === "feedbackPositive" && message.itemId) {
-      this.recordFeedback("suggestion_marked_useful", message.itemId);
+      this.recordFeedback("suggestion_marked_useful", message.itemId, this.suggestionFeedbackMetadata(message.itemId));
       this.statusMessage = `Recorded useful feedback for ${message.itemId}.`;
       this.render();
     }
     if (message.type === "feedbackNegative" && message.itemId) {
-      this.recordFeedback("suggestion_marked_not_useful", message.itemId);
+      this.recordFeedback("suggestion_marked_not_useful", message.itemId, this.suggestionFeedbackMetadata(message.itemId));
       this.statusMessage = `Recorded not useful feedback for ${message.itemId}.`;
       this.render();
     }
@@ -161,7 +165,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       await this.applySuggestion(message.itemId, message.suggestionIndex);
     }
     if (message.type === "skipSuggestion" && message.itemId) {
-      this.recordFeedback("suggestion_skipped", message.itemId);
+      this.recordFeedback("suggestion_skipped", message.itemId, this.suggestionFeedbackMetadata(message.itemId));
       this.skipSuggestion(message.itemId);
     }
     if (message.type === "refresh") {
@@ -417,6 +421,8 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     const detail = suggestionItem?.suggestion_details?.find((entry) => entry.summary === summary);
+    const feedbackMetadata = this.suggestionFeedbackMetadata(itemId, suggestionIndex);
+    const instantConfidence = detail?.instant_confidence ?? suggestionItem?.instant_confidence;
     const suggestionSource = suggestionItem?.provisional ? "instant-suggestion" : "model-suggestion";
     await this.runBusy(async () => {
       await this.client.reviewDraftItem(this.range, itemId, {
@@ -426,11 +432,16 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
           provider: this.suggestions?.provider,
           model: suggestionItem?.provider,
           prompt_sha: suggestionItem?.prompt_sha,
+          prompt_profile: this.suggestions?.prompt_profile ?? suggestionItem?.prompt_budget?.profile,
+          cache_hit: suggestionItem?.cache?.hit,
           tone: suggestionItem?.tone ?? this.suggestions?.tone ?? this.client.getModelSettings().suggestionTone,
           style_profile: suggestionItem?.style_profile ?? this.suggestions?.style_profile,
           suggestion_index: suggestionIndex,
           similarity_to_current: detail?.similarity_to_current,
           specificity_score: detail?.specificity_score,
+          instant_confidence: instantConfidence,
+          instant_confidence_band: instantConfidence?.band,
+          instant_confidence_score: instantConfidence?.score,
           response_metadata: suggestionItem?.provider_metadata,
           source_evidence_count: suggestionItem?.source_evidence?.length ?? 0,
           reasoning_exposed: Boolean(suggestionItem?.provider_reasoning),
@@ -459,8 +470,41 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async regenerateSuggestion(itemId: string): Promise<void> {
-    this.recordFeedback("suggestion_regenerated", itemId, { scope: "item" });
+    this.recordFeedback("suggestion_regenerated", itemId, {
+      scope: "item",
+      ...this.suggestionFeedbackMetadata(itemId),
+    });
     await this.suggest(itemId, "refresh-cache");
+  }
+
+  private suggestionFeedbackMetadata(itemId: string, suggestionIndex = 0): Record<string, unknown> {
+    const suggestionItem = this.suggestions?.items.find((item) => item.item_id === itemId);
+    if (!suggestionItem) {
+      return {};
+    }
+    const summary = suggestionItem.suggestions[suggestionIndex] ?? suggestionItem.suggestions[0];
+    const detail = suggestionItem.suggestion_details?.find((entry) => entry.summary === summary)
+      ?? suggestionItem.suggestion_details?.[0];
+    const confidence = detail?.instant_confidence ?? suggestionItem.instant_confidence;
+    const source = suggestionItem.provisional ? "instant-suggestion" : "model-suggestion";
+    const metadata: Record<string, unknown> = {
+      source,
+      provider: this.suggestions?.provider,
+      model: suggestionItem.provider,
+      tone: suggestionItem.tone ?? this.suggestions?.tone ?? this.client.getModelSettings().suggestionTone,
+      prompt_profile: this.suggestions?.prompt_profile ?? suggestionItem.prompt_budget?.profile,
+      cache_hit: suggestionItem.cache?.hit,
+      similarity_to_current: detail?.similarity_to_current,
+      specificity_score: detail?.specificity_score,
+      source_evidence_count: suggestionItem.source_evidence?.length ?? 0,
+    };
+    if (confidence) {
+      metadata.instant_confidence = confidence;
+      metadata.instant_confidence_band = confidence.band;
+      metadata.instant_confidence_score = confidence.score;
+      metadata.instant_confidence_reasons = confidence.reasons;
+    }
+    return Object.fromEntries(Object.entries(metadata).filter(([, value]) => value !== undefined));
   }
 
   private recordFeedback(event: string, itemId: string, metadata: Record<string, unknown> = {}): void {

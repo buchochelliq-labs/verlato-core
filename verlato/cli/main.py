@@ -1471,6 +1471,11 @@ def _adaptive_timing_signals(sources: list[dict[str, object]]) -> dict[str, obje
 def _adaptive_feedback_signals(events: list[dict]) -> dict[str, object]:
     safe_events = [event for event in events if isinstance(event, dict)]
     event_counts = Counter(str(event.get("event") or "unknown") for event in safe_events)
+    positive_names = {
+        "suggestion_applied",
+        "summary_edited",
+        "suggestion_marked_useful",
+    }
     positive_count = (
         event_counts["suggestion_applied"]
         + event_counts["summary_edited"]
@@ -1484,13 +1489,68 @@ def _adaptive_feedback_signals(events: list[dict]) -> dict[str, object]:
         "suggestion_regenerated",
     }
     negative_count = sum(event_counts[name] for name in negative_names)
+    source_feedback = _adaptive_source_feedback(safe_events, positive_names, negative_names)
     return {
         "event_count": len(safe_events),
         "event_counts": dict(sorted(event_counts.items())),
         "positive_count": positive_count,
         "negative_count": negative_count,
         "regenerated_count": event_counts["suggestion_regenerated"],
+        "source_feedback": source_feedback,
     }
+
+
+def _adaptive_source_feedback(
+    events: list[dict],
+    positive_names: set[str],
+    negative_names: set[str],
+) -> dict[str, dict[str, object]]:
+    sources = {
+        "instant-suggestion": {
+            "event_count": 0,
+            "positive_count": 0,
+            "negative_count": 0,
+            "high_confidence_count": 0,
+            "high_confidence_positive_count": 0,
+        },
+        "model-suggestion": {
+            "event_count": 0,
+            "positive_count": 0,
+            "negative_count": 0,
+            "high_confidence_count": 0,
+            "high_confidence_positive_count": 0,
+        },
+    }
+    for event in events:
+        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        source = str(metadata.get("source") or "")
+        if source not in sources:
+            continue
+        event_name = str(event.get("event") or "unknown")
+        bucket = sources[source]
+        bucket["event_count"] = int(bucket["event_count"]) + 1
+        is_positive = event_name in positive_names
+        is_negative = event_name in negative_names
+        if is_positive:
+            bucket["positive_count"] = int(bucket["positive_count"]) + 1
+        if is_negative:
+            bucket["negative_count"] = int(bucket["negative_count"]) + 1
+        if metadata.get("instant_confidence_band") == "high":
+            bucket["high_confidence_count"] = int(bucket["high_confidence_count"]) + 1
+            if is_positive:
+                bucket["high_confidence_positive_count"] = int(bucket["high_confidence_positive_count"]) + 1
+
+    for bucket in sources.values():
+        total = int(bucket["event_count"])
+        high_total = int(bucket["high_confidence_count"])
+        bucket["positive_rate"] = round(int(bucket["positive_count"]) / total, 3) if total else None
+        bucket["negative_rate"] = round(int(bucket["negative_count"]) / total, 3) if total else None
+        bucket["high_confidence_positive_rate"] = (
+            round(int(bucket["high_confidence_positive_count"]) / high_total, 3)
+            if high_total
+            else None
+        )
+    return sources
 
 
 def _adaptive_recommendation_items(current: dict[str, object], signals: dict[str, object]) -> list[dict[str, object]]:
@@ -1503,6 +1563,56 @@ def _adaptive_recommendation_items(current: dict[str, object], signals: dict[str
     negative_count = _optional_int(feedback.get("negative_count")) or 0
     event_count = _optional_int(feedback.get("event_count")) or 0
     negative_dominates = negative_count >= max(3, positive_count)
+    source_feedback = feedback.get("source_feedback") if isinstance(feedback.get("source_feedback"), dict) else {}
+    instant_feedback = (
+        source_feedback.get("instant-suggestion")
+        if isinstance(source_feedback.get("instant-suggestion"), dict)
+        else {}
+    )
+    instant_total = _optional_int(instant_feedback.get("event_count")) or 0
+    instant_positive = _optional_int(instant_feedback.get("positive_count")) or 0
+    instant_negative = _optional_int(instant_feedback.get("negative_count")) or 0
+    instant_positive_rate = _optional_float(instant_feedback.get("positive_rate"))
+
+    if 0 < instant_total < 3:
+        recommendations.append(
+            {
+                "kind": "instant-candidates-need-feedback",
+                "title": "Collect more instant suggestion feedback",
+                "detail": (
+                    f"{instant_total} instant feedback event(s) are available; keep provisional suggestions on "
+                    "until there is enough local signal to judge whether they can save model calls."
+                ),
+                "confidence": "medium",
+                "suggested_config": {"verlato.suggestionInstantProvisional": True},
+            }
+        )
+    elif instant_total >= 3 and instant_positive_rate is not None and instant_positive_rate >= 0.67:
+        recommendations.append(
+            {
+                "kind": "instant-candidates-promising",
+                "title": "Instant suggestions look promising",
+                "detail": (
+                    f"{instant_positive} of {instant_total} instant suggestion feedback event(s) were positive; "
+                    "a future high-confidence skip mode may be worth trying."
+                ),
+                "confidence": "medium" if instant_total < 6 else "high",
+                "suggested_config": {"suggestion_instant_skip": "high-confidence"},
+            }
+        )
+    elif instant_total >= 3 and instant_negative > instant_positive:
+        recommendations.append(
+            {
+                "kind": "instant-candidates-need-tuning",
+                "title": "Instant suggestions need tuning",
+                "detail": (
+                    f"{instant_negative} negative instant feedback event(s) versus {instant_positive} positive "
+                    "suggest keeping Ollama as the authoritative path."
+                ),
+                "confidence": "medium",
+                "suggested_config": {"verlato.suggestionInstantProvisional": True},
+            }
+        )
 
     if negative_dominates:
         recommendations.append(
@@ -2847,6 +2957,19 @@ def _build_instant_provisional_suggestion_item(work: _SuggestionWork) -> dict[st
     if not suggestion_details:
         return None
     parse_ms = _elapsed_ms(parse_start)
+    candidate_rank = {candidate: index for index, candidate in enumerate(candidates, start=1)}
+    for detail in suggestion_details:
+        summary = str(detail.get("summary") or "")
+        confidence = _instant_candidate_confidence(
+            summary=summary,
+            work=work,
+            rank=candidate_rank.get(summary, len(candidates)),
+            similarity=_optional_float(detail.get("similarity_to_current")) or 0.0,
+            specificity=_optional_float(detail.get("specificity_score")) or 0.0,
+            rejected_count=len(rejected_candidates),
+        )
+        detail["instant_confidence"] = confidence
+    instant_confidence = suggestion_details[0].get("instant_confidence")
     return {
         "item_id": work.baseline_item.id,
         "title": work.baseline_item.content.title,
@@ -2859,6 +2982,7 @@ def _build_instant_provisional_suggestion_item(work: _SuggestionWork) -> dict[st
         "prompt_budget": work.prompt_budget,
         "suggestion_details": suggestion_details,
         "rejected_candidates": rejected_candidates,
+        "instant_confidence": instant_confidence,
         "suggestions": [detail["summary"] for detail in suggestion_details],
         "provisional": {
             "source": "instant-local",
@@ -2922,6 +3046,101 @@ def _instant_provisional_candidates(work: _SuggestionWork) -> list[str]:
             seen.add(key)
             unique.append(normalized)
     return unique[: max(work.suggestion_count * 3, 3)]
+
+
+def _instant_candidate_confidence(
+    *,
+    summary: str,
+    work: _SuggestionWork,
+    rank: int,
+    similarity: float,
+    specificity: float,
+    rejected_count: int,
+) -> dict[str, object]:
+    evidence_overlap = _instant_evidence_overlap(summary, work)
+    distinct_score = max(0.0, min(1.0, 1.0 - similarity))
+    rank_score = max(0.0, 1.0 - (max(rank, 1) - 1) * 0.12)
+    rejection_penalty = min(0.18, rejected_count * 0.03)
+    score = (specificity * 0.48) + (evidence_overlap * 0.32) + (distinct_score * 0.15) + (rank_score * 0.05)
+    score = round(max(0.0, min(1.0, score - rejection_penalty)), 3)
+    reasons = _instant_confidence_reasons(
+        score=score,
+        rank=rank,
+        evidence_overlap=evidence_overlap,
+        similarity=similarity,
+        specificity=specificity,
+        rejected_count=rejected_count,
+    )
+    return {
+        "score": score,
+        "band": _instant_confidence_band(score),
+        "reasons": reasons,
+        "evidence_overlap": evidence_overlap,
+        "similarity_to_current": round(similarity, 3),
+        "specificity_score": round(specificity, 3),
+        "candidate_rank": max(rank, 1),
+    }
+
+
+def _instant_confidence_band(score: float) -> str:
+    if score >= 0.72:
+        return "high"
+    if score >= 0.5:
+        return "medium"
+    return "low"
+
+
+def _instant_confidence_reasons(
+    *,
+    score: float,
+    rank: int,
+    evidence_overlap: float,
+    similarity: float,
+    specificity: float,
+    rejected_count: int,
+) -> list[str]:
+    reasons: list[str] = []
+    if rank == 1:
+        reasons.append("top-local-candidate")
+    if specificity >= 0.65:
+        reasons.append("specific-evidence")
+    elif specificity < 0.45:
+        reasons.append("limited-specificity")
+    if evidence_overlap >= 0.55:
+        reasons.append("strong-evidence-overlap")
+    elif evidence_overlap < 0.3:
+        reasons.append("limited-evidence-overlap")
+    if similarity <= 0.45:
+        reasons.append("distinct-from-current")
+    elif similarity >= 0.7:
+        reasons.append("close-to-current")
+    if rejected_count:
+        reasons.append("filtered-nearby-candidates")
+    if not reasons:
+        reasons.append(f"{_instant_confidence_band(score)}-confidence")
+    return reasons
+
+
+def _instant_evidence_overlap(summary: str, work: _SuggestionWork) -> float:
+    candidate_tokens = set(_summary_tokens(summary))
+    if not candidate_tokens:
+        return 0.0
+    files = work.group.pr.files if work.group.pr else work.group.files
+    evidence_parts = [
+        work.baseline_item.content.title,
+        work.baseline_item.content.summary,
+        work.baseline_item.edited_summary or "",
+        work.group.pr.title if work.group.pr else "",
+        work.group.pr.body if work.group.pr else "",
+        " ".join(work.group.pr.labels if work.group.pr else []),
+        " ".join(commit.message for commit in work.group.commits),
+        " ".join(file.path for file in files),
+        " ".join(f"{entry.get('label', '')} {entry.get('detail', '')}" for entry in work.source_evidence),
+    ]
+    evidence_tokens = set(_summary_tokens(" ".join(evidence_parts)))
+    if not evidence_tokens:
+        return 0.0
+    return round(min(len(candidate_tokens & evidence_tokens) / 5, 1.0), 3)
 
 
 def _instant_topic(work: _SuggestionWork) -> str:
@@ -4107,10 +4326,19 @@ def _persist_review_update(
                 **_feedback_summary_metadata(normalized_summary, include_text=_feedback_include_text()),
                 "previous_summary_sha": hashlib.sha256(prior_summary.encode("utf-8")).hexdigest()[:12],
                 "source": match.summary_provenance.get("source") if match.summary_provenance else None,
+                "provider": match.summary_provenance.get("provider") if match.summary_provenance else None,
+                "model": match.summary_provenance.get("model") if match.summary_provenance else None,
+                "prompt_sha": match.summary_provenance.get("prompt_sha") if match.summary_provenance else None,
+                "prompt_profile": match.summary_provenance.get("prompt_profile") if match.summary_provenance else None,
+                "cache_hit": match.summary_provenance.get("cache_hit") if match.summary_provenance else None,
                 "tone": match.summary_provenance.get("tone") if match.summary_provenance else None,
                 "style_profile": match.summary_provenance.get("style_profile") if match.summary_provenance else None,
                 "similarity_to_current": match.summary_provenance.get("similarity_to_current") if match.summary_provenance else None,
                 "specificity_score": match.summary_provenance.get("specificity_score") if match.summary_provenance else None,
+                "instant_confidence": match.summary_provenance.get("instant_confidence") if match.summary_provenance else None,
+                "instant_confidence_band": match.summary_provenance.get("instant_confidence_band") if match.summary_provenance else None,
+                "instant_confidence_score": match.summary_provenance.get("instant_confidence_score") if match.summary_provenance else None,
+                "source_evidence_count": match.summary_provenance.get("source_evidence_count") if match.summary_provenance else None,
             }
             state.feedback_events.append(
                 {
