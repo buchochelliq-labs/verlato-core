@@ -11,6 +11,7 @@ const modelSettings = {
   ollamaTimeoutSeconds: 120,
   maxModelItems: 25,
   suggestionCount: 1,
+  suggestionParallelism: 2,
   suggestionTone: "release-note",
   styleGuidance: "",
   projectVocabulary: [],
@@ -114,6 +115,11 @@ test("renders running substatus and determinate progress when progress telemetry
               unit: "item",
               batch: 1,
               batch_total: 3,
+              elapsed_ms: 1250,
+              model_ms: 1100,
+              queue_ms: 300,
+              prompt_eval_ms: 450,
+              eval_ms: 500,
             },
             receivedAt: "2026-05-03T12:00:01.000Z",
           },
@@ -123,7 +129,7 @@ test("renders running substatus and determinate progress when progress telemetry
   });
 
   assert.match(html, /Prompting model for ci_1/);
-  assert.match(html, /item 2\/6 \| batch 1\/3/);
+  assert.match(html, /item 2\/6 \| batch 1\/3 \| elapsed 1\.3s \| model 1\.1s \| queue 300ms \| prompt 450ms \| gen 500ms/);
   assert.match(html, /<vscode-progress-bar value="2" max="6"><\/vscode-progress-bar>/);
   assert.doesNotMatch(html, /long-running-threshold="1000"/);
 });
@@ -150,6 +156,32 @@ test("keeps unknown running commands indeterminate", () => {
   assert.match(html, /Running Verlato/);
   assert.match(html, /<vscode-progress-bar long-running-threshold="1000"><\/vscode-progress-bar>/);
   assert.doesNotMatch(html, /value="\d+"/);
+});
+
+test("does not show running controls when busy has no active request", () => {
+  const html = buildReleaseControlHtml({
+    modelSettings,
+    range,
+    busy: true,
+    requests: [
+      {
+        id: 15,
+        command: "verlato",
+        args: ["draft", "json"],
+        label: "draft json",
+        status: "completed",
+        startedAt: "2026-05-03T12:00:00.000Z",
+        endedAt: "2026-05-03T12:00:01.000Z",
+        stdout: "{}",
+        stderr: "",
+      },
+    ],
+  });
+
+  assert.doesNotMatch(html, /Running Verlato/);
+  assert.doesNotMatch(html, /class="progress-strip/);
+  assert.doesNotMatch(html, /class="stop" data-action="cancel"/);
+  assert.doesNotMatch(html, /class="progress-stop"/);
 });
 
 test("uses model streaming as compact substatus without exposing payloads", () => {
@@ -237,6 +269,7 @@ test("renders current model as a clickable hover badge", () => {
   assert.match(html, /<span class="model-name">gemma4:latest<\/span>/);
   assert.match(html, /Provider: ollama/);
   assert.match(html, /Suggestions: 3/);
+  assert.match(html, /Parallelism: 2/);
   assert.match(html, /Streaming: on/);
 });
 
@@ -670,6 +703,55 @@ test("renders suggestion actions and review variants", () => {
   assert.match(html, /data-action="feedbackNegative" data-item="ci_1"/);
 });
 
+test("renders Ollama timing diagnostics and queue warning for suggestions", () => {
+  const state = {
+    modelSettings: { ...modelSettings, provider: "ollama" },
+    range,
+    busy: false,
+    document: {
+      version: "Unreleased",
+      generated_on: "2026-05-03",
+      base_ref: "v1.0.0",
+      head_ref: "HEAD",
+      targets: [],
+      rendered: {},
+      item_count: 1,
+      sections: [{ kind: "changed", title: "Changed", items: [draftItem({ id: "ci_1", title: "Improve API" })] }],
+    },
+    suggestions: {
+      base_ref: "v1.0.0",
+      head_ref: "HEAD",
+      provider: "ollama",
+      count: 1,
+      performance: { parallelism: 2 },
+      items: [
+        {
+          item_id: "ci_1",
+          title: "Improve API",
+          current_summary: "A concise release note",
+          provider: "ollama:gemma4:latest",
+          timings: {
+            model_ms: 2200,
+            queue_ms: 600,
+            load_ms: 120,
+            prompt_eval_ms: 300,
+            eval_ms: 900,
+            prompt_tokens: 30,
+            eval_tokens: 15,
+            tokens_per_second: 16.7,
+          },
+          suggestions: ["Make API responses easier to inspect"],
+        },
+      ],
+    },
+  };
+
+  const html = buildReleaseReleasesHtml(state);
+
+  assert.match(html, /Ollama queue time detected with parallelism 2/);
+  assert.match(html, /Ollama bottleneck: generation 900ms \| 16\.7 tok\/s \| 30\/15 tok/);
+});
+
 test("keeps request inspection out of the release control view", () => {
   const html = buildReleaseControlHtml({
     modelSettings,
@@ -956,6 +1038,8 @@ test("contributes focused Verlato views and optional walkthrough", () => {
     "visible",
     "quiet",
   ]);
+  assert.equal(manifest.contributes.configuration.properties["verlato.suggestionParallelism"].default, 2);
+  assert.equal(manifest.contributes.configuration.properties["verlato.suggestionParallelism"].maximum, 8);
   assert.equal(manifest.contributes.walkthroughs[0].title, "Get started with Verlato");
   assert.match(manifest.contributes.walkthroughs[0].description, /Optional shortcuts/);
   assert.deepEqual(

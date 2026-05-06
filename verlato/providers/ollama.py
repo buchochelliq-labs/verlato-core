@@ -20,6 +20,8 @@ DEFAULT_OLLAMA_TIMEOUT_SECONDS = 15.0
 DEFAULT_OLLAMA_KEEP_ALIVE = "10m"
 DEFAULT_OLLAMA_SUMMARY_NUM_PREDICT = 180
 DEFAULT_OLLAMA_CLASSIFY_NUM_PREDICT = 24
+DEFAULT_OLLAMA_MIN_SUGGEST_NUM_PREDICT = 96
+DEFAULT_OLLAMA_MAX_SUGGEST_NUM_PREDICT = 180
 
 
 class OllamaProvider(VerlatoProvider):
@@ -39,6 +41,8 @@ class OllamaProvider(VerlatoProvider):
         num_predict: int | None = None,
         summary_num_predict: int | None = DEFAULT_OLLAMA_SUMMARY_NUM_PREDICT,
         classify_num_predict: int | None = DEFAULT_OLLAMA_CLASSIFY_NUM_PREDICT,
+        suggest_num_predict: int | None = None,
+        suggest_think: bool | None = False,
         log_sink: ModelLogSink | None = None,
     ) -> None:
         self.endpoint: str = endpoint or os.getenv("VERLATO_OLLAMA_ENDPOINT") or DEFAULT_OLLAMA_ENDPOINT
@@ -50,10 +54,13 @@ class OllamaProvider(VerlatoProvider):
         self.num_predict = _resolve_int_env("VERLATO_OLLAMA_NUM_PREDICT", num_predict)
         self.summary_num_predict = _resolve_int_env("VERLATO_OLLAMA_SUMMARY_NUM_PREDICT", summary_num_predict)
         self.classify_num_predict = _resolve_int_env("VERLATO_OLLAMA_CLASSIFY_NUM_PREDICT", classify_num_predict)
+        self.suggest_num_predict = _resolve_int_env("VERLATO_OLLAMA_SUGGEST_NUM_PREDICT", suggest_num_predict)
+        self.suggest_think = _resolve_bool_env("VERLATO_OLLAMA_SUGGEST_THINK", suggest_think)
         self.log_sink = log_sink or default_model_log_sink()
 
     def summarize(self, request_data: ProviderRequest) -> ProviderResponse:
-        return self._invoke(task="summarize", request_data=request_data)
+        task = "suggest" if request_data.task == "suggest" else "summarize"
+        return self._invoke(task=task, request_data=request_data)
 
     def classify(self, request_data: ProviderRequest) -> ProviderResponse:
         return self._invoke(task="classify", request_data=request_data)
@@ -62,7 +69,7 @@ class OllamaProvider(VerlatoProvider):
         system_prompt = (
             "You are Verlato. Write a useful release note with enough context for downstream consumers. "
             "Use paragraphs or bullet points when they make the change clearer, but stay focused and avoid padding."
-            if task == "summarize"
+            if task in {"summarize", "suggest"}
             else "You are Verlato. Return one line: kind/area/audience/semver."
         )
         self._trace(
@@ -73,12 +80,14 @@ class OllamaProvider(VerlatoProvider):
         body: dict[str, object] = {
             "model": self.model,
             "stream": self.stream,
-            "options": self._options_for_task(task),
+            "options": self._options_for_task(task, request_data=request_data),
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": request_data.prompt},
             ],
         }
+        if task == "suggest" and self.suggest_think is not None:
+            body["think"] = self.suggest_think
         if self.keep_alive:
             body["keep_alive"] = self.keep_alive
 
@@ -90,7 +99,7 @@ class OllamaProvider(VerlatoProvider):
                 f"fallback provider=ollama task={task} from=chat to=generate reason=remote-disconnected"
             )
             try:
-                data = self._invoke_generate(task=task, system_prompt=system_prompt, user_prompt=request_data.prompt)
+                data = self._invoke_generate(task=task, system_prompt=system_prompt, request_data=request_data)
             except (client.RemoteDisconnected, error.URLError, TimeoutError, json.JSONDecodeError) as exc:
                 self._trace(
                     f"error provider=ollama task={task} stage=generate reason={type(exc).__name__}",
@@ -135,14 +144,16 @@ class OllamaProvider(VerlatoProvider):
             reasoning=reasoning,
         )
 
-    def _invoke_generate(self, *, task: str, system_prompt: str, user_prompt: str) -> dict[str, object]:
+    def _invoke_generate(self, *, task: str, system_prompt: str, request_data: ProviderRequest) -> dict[str, object]:
         body: dict[str, object] = {
             "model": self.model,
             "stream": self.stream,
-            "options": self._options_for_task(task),
+            "options": self._options_for_task(task, request_data=request_data),
             "system": system_prompt,
-            "prompt": user_prompt,
+            "prompt": request_data.prompt,
         }
+        if task == "suggest" and self.suggest_think is not None:
+            body["think"] = self.suggest_think
         if self.keep_alive:
             body["keep_alive"] = self.keep_alive
         self._trace(f"post provider=ollama task=generate endpoint={self._generate_endpoint()} mode=generate")
@@ -218,13 +229,20 @@ class OllamaProvider(VerlatoProvider):
             return f"{self.endpoint.rstrip('/')[:-len('/api/chat')]}/api/generate"
         return self.endpoint
 
-    def _options_for_task(self, task: str) -> dict[str, object]:
+    def _options_for_task(self, task: str, *, request_data: ProviderRequest | None = None) -> dict[str, object]:
         options: dict[str, object] = {"temperature": 0.1}
         if self.num_ctx is not None:
             options["num_ctx"] = self.num_ctx
         num_predict = self.num_predict
         if num_predict is None:
-            num_predict = self.classify_num_predict if task == "classify" else self.summary_num_predict
+            if task == "classify":
+                num_predict = self.classify_num_predict
+            elif task == "suggest":
+                num_predict = self.suggest_num_predict
+                if num_predict is None:
+                    num_predict = _adaptive_suggest_num_predict(request_data)
+            else:
+                num_predict = self.summary_num_predict
         if num_predict is not None:
             options["num_predict"] = num_predict
         return options
@@ -341,6 +359,26 @@ def _resolve_int_env(name: str, configured: int | None) -> int | None:
     if raw is None or not raw.strip():
         return configured
     return int(raw)
+
+
+def _resolve_bool_env(name: str, configured: bool | None) -> bool | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return configured
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _adaptive_suggest_num_predict(request_data: ProviderRequest | None) -> int:
+    count = 1
+    raw_count = request_data.evidence.get("suggestion_count") if request_data else None
+    if isinstance(raw_count, (int, float)):
+        count = int(raw_count)
+    elif raw_count is not None:
+        try:
+            count = int(str(raw_count))
+        except ValueError:
+            count = 1
+    return max(DEFAULT_OLLAMA_MIN_SUGGEST_NUM_PREDICT, min(DEFAULT_OLLAMA_MAX_SUGGEST_NUM_PREDICT, 60 * count))
 
 
 def _event_suffix(message: str) -> str:

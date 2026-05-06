@@ -26,6 +26,8 @@ def build_provider(config: ProviderConfig | None = None, *, mode: str | None = N
             num_predict=_resolve_int_env("VERLATO_OLLAMA_NUM_PREDICT", config.num_predict),
             summary_num_predict=_resolve_int_env("VERLATO_OLLAMA_SUMMARY_NUM_PREDICT", config.summary_num_predict),
             classify_num_predict=_resolve_int_env("VERLATO_OLLAMA_CLASSIFY_NUM_PREDICT", config.classify_num_predict),
+            suggest_num_predict=_resolve_int_env("VERLATO_OLLAMA_SUGGEST_NUM_PREDICT", config.suggest_num_predict),
+            suggest_think=_resolve_bool_env("VERLATO_OLLAMA_SUGGEST_THINK", config.suggest_think),
         )
     if selected_mode in {"github-copilot", "github", "copilot"}:
         return GitHubCopilotProvider(
@@ -54,3 +56,10 @@ def _resolve_int_env(name: str, fallback: int | None) -> int | None:
     if raw is None or not raw.strip():
         return fallback
     return int(raw)
+
+
+def _resolve_bool_env(name: str, fallback: bool | None) -> bool | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return fallback
+    return raw.strip().lower() in {"1", "true", "yes", "on"}

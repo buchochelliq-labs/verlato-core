@@ -433,6 +433,17 @@ async function changeModelSettings(
   if (suggestionCountRaw === undefined) {
     return;
   }
+  const suggestionParallelismRaw = await vscode.window.showInputBox({
+    prompt: "Maximum suggestions to generate in parallel (1-8)",
+    value: String(current.suggestionParallelism),
+    validateInput: (value) => {
+      const parsed = Number(value);
+      return Number.isInteger(parsed) && parsed >= 1 && parsed <= 8 ? undefined : "Enter an integer from 1 to 8.";
+    },
+  });
+  if (suggestionParallelismRaw === undefined) {
+    return;
+  }
   const suggestionTone = await vscode.window.showQuickPick(
     ["release-note", "concise", "technical", "customer-facing"],
     {
@@ -451,6 +462,7 @@ async function changeModelSettings(
     ollamaTimeoutSeconds,
     maxModelItems: Number(maxRaw),
     suggestionCount: Number(suggestionCountRaw),
+    suggestionParallelism: Number(suggestionParallelismRaw),
     suggestionTone,
   });
   await client.initialize();

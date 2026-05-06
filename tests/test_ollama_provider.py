@@ -4,7 +4,13 @@ from urllib import error
 
 from verlato.providers.base import ProviderRequest
 from verlato.providers.model_logging import ModelLogRecord, ModelLogSink, redact_model_payload
-from verlato.providers.ollama import DEFAULT_OLLAMA_ENDPOINT, DEFAULT_OLLAMA_MODEL, OllamaProvider
+from verlato.providers.ollama import (
+    DEFAULT_OLLAMA_ENDPOINT,
+    DEFAULT_OLLAMA_MODEL,
+    DEFAULT_OLLAMA_MAX_SUGGEST_NUM_PREDICT,
+    DEFAULT_OLLAMA_MIN_SUGGEST_NUM_PREDICT,
+    OllamaProvider,
+)
 
 
 def _clear_ollama_tuning_env(monkeypatch):
@@ -14,6 +20,8 @@ def _clear_ollama_tuning_env(monkeypatch):
         "VERLATO_OLLAMA_NUM_PREDICT",
         "VERLATO_OLLAMA_SUMMARY_NUM_PREDICT",
         "VERLATO_OLLAMA_CLASSIFY_NUM_PREDICT",
+        "VERLATO_OLLAMA_SUGGEST_NUM_PREDICT",
+        "VERLATO_OLLAMA_SUGGEST_THINK",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -32,6 +40,8 @@ def test_ollama_provider_uses_local_defaults(monkeypatch):
     assert provider.keep_alive == "10m"
     assert provider.summary_num_predict == 180
     assert provider.classify_num_predict == 24
+    assert provider.suggest_num_predict is None
+    assert provider.suggest_think is False
 
 
 def test_model_payload_redaction_masks_common_secret_shapes():
@@ -92,11 +102,79 @@ def test_ollama_provider_sends_local_chat_request(monkeypatch):
     assert captured["body"]["stream"] is False
     assert captured["body"]["keep_alive"] == "10m"
     assert captured["body"]["options"] == {"temperature": 0.1, "num_predict": 180}
+    assert "think" not in captured["body"]
     messages = captured["body"]["messages"]
     assert messages[0]["role"] == "system"
     assert "enough context for downstream consumers" in messages[0]["content"]
     assert "avoid padding" in messages[0]["content"]
     assert messages[1] == {"role": "user", "content": "Summarize this change"}
+
+
+def test_ollama_provider_sends_suggest_request_with_thinking_disabled_and_adaptive_caps(monkeypatch):
+    _clear_ollama_tuning_env(monkeypatch)
+    captured_bodies: list[dict[str, object]] = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        @staticmethod
+        def read():
+            return json.dumps({"message": {"content": "Local suggestion"}}).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        captured_bodies.append(json.loads(req.data.decode("utf-8")))
+        return FakeResponse()
+
+    monkeypatch.setattr("verlato.providers.ollama.request.urlopen", fake_urlopen)
+
+    provider = OllamaProvider(model="test-model")
+    for count in (1, 3, 5):
+        response = provider.summarize(
+            ProviderRequest(task="suggest", prompt="Suggest wording", evidence={"suggestion_count": count})
+        )
+        assert response.content == "Local suggestion"
+
+    caps = [body["options"]["num_predict"] for body in captured_bodies]
+    assert caps == [
+        DEFAULT_OLLAMA_MIN_SUGGEST_NUM_PREDICT,
+        180,
+        DEFAULT_OLLAMA_MAX_SUGGEST_NUM_PREDICT,
+    ]
+    assert all(body["think"] is False for body in captured_bodies)
+    assert all("enough context for downstream consumers" in body["messages"][0]["content"] for body in captured_bodies)
+
+
+def test_ollama_provider_allows_suggest_thinking_and_cap_overrides(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        @staticmethod
+        def read():
+            return json.dumps({"message": {"content": "Local suggestion"}}).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setenv("VERLATO_OLLAMA_SUGGEST_THINK", "1")
+    monkeypatch.setenv("VERLATO_OLLAMA_SUGGEST_NUM_PREDICT", "72")
+    monkeypatch.setattr("verlato.providers.ollama.request.urlopen", fake_urlopen)
+
+    provider = OllamaProvider(model="test-model")
+    provider.summarize(ProviderRequest(task="suggest", prompt="Suggest wording", evidence={"suggestion_count": 3}))
+
+    assert captured["body"]["think"] is True
+    assert captured["body"]["options"]["num_predict"] == 72
 
 
 def test_ollama_provider_streams_chat_response_chunks(monkeypatch):
@@ -221,7 +299,42 @@ def test_ollama_provider_falls_back_to_generate_when_chat_disconnects(monkeypatc
     assert captured["body"]["stream"] is False
     assert captured["body"]["keep_alive"] == "10m"
     assert captured["body"]["options"] == {"temperature": 0.1, "num_predict": 180}
+    assert "think" not in captured["body"]
     assert captured["body"]["prompt"] == "Summarize this change"
+
+
+def test_ollama_provider_fallback_generate_keeps_suggest_tuning(monkeypatch):
+    _clear_ollama_tuning_env(monkeypatch)
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        @staticmethod
+        def read():
+            return json.dumps({"response": "Generated suggestion"}).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        if req.full_url.endswith("/api/chat"):
+            raise client.RemoteDisconnected("remote end closed connection without response")
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr("verlato.providers.ollama.request.urlopen", fake_urlopen)
+
+    provider = OllamaProvider()
+    response = provider.summarize(
+        ProviderRequest(task="suggest", prompt="Suggest this change", evidence={"suggestion_count": 1})
+    )
+
+    assert response.content == "Generated suggestion"
+    assert captured["body"]["think"] is False
+    assert captured["body"]["options"] == {"temperature": 0.1, "num_predict": 96}
+    assert captured["body"]["prompt"] == "Suggest this change"
 
 
 def test_ollama_provider_applies_task_specific_generation_caps(monkeypatch):

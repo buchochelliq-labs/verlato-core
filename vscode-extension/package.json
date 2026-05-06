@@ -223,6 +223,13 @@
           "maximum": 5,
           "description": "Number of AI description suggestions to generate for each release item."
         },
+        "verlato.suggestionParallelism": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 8,
+          "description": "Maximum AI suggestion requests Verlato may run at once for draft suggest in VS Code."
+        },
         "verlato.suggestionTone": {
           "type": "string",
           "default": "release-note",

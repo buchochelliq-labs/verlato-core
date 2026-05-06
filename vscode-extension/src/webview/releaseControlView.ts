@@ -9,7 +9,7 @@ import {
   ModelSettings,
   RepositoryOverview,
 } from "../client/types";
-import { handleNotificationAction, showErrorNotification, showSuccessNotification } from "../notifications";
+import { type NotificationAction, handleNotificationAction, showErrorNotification, showSuccessNotification } from "../notifications";
 import { buildReleaseControlHtml } from "./releaseControlMarkup";
 import { PreviewPanel } from "./previewPanel";
 
@@ -195,26 +195,31 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       this.render();
       return;
     }
+    let successMessage: string | undefined;
     await this.runBusy(async () => {
       const document = await this.client.getDraft(this.range);
       const overview = await this.client.getRepositoryOverview();
       this.statusMessage = `Loaded ${document.item_count} draft item(s) from ${document.base_ref}..${document.head_ref}.`;
+      successMessage = `Verlato loaded ${document.item_count} draft item(s).`;
       this.suggestions = undefined;
       this.refresh(document, overview, this.client.getModelSettings());
       if (showPreview) {
         this.previewPanel.show(document);
       }
+    });
+    if (successMessage) {
       await handleNotificationAction(
         await showSuccessNotification(
-          `Verlato loaded ${document.item_count} draft item(s).`,
+          successMessage,
           showPreview ? "View Activity" : "Open Verlato",
           showPreview ? "Open Verlato" : "View Activity",
         ),
       );
-    });
+    }
   }
 
   private async refreshRepository(showToast: boolean): Promise<void> {
+    let successMessage: string | undefined;
     await this.runBusy(async () => {
       const overview = await this.client.getRepositoryOverview();
       if (this.range.base === "HEAD~10" && overview.tags[0]?.name) {
@@ -223,15 +228,12 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       this.statusMessage = `Repository activity loaded: ${overview.commits.length} recent commit(s), ${overview.branches.length} branch(es), ${overview.tags.length} tag(s).`;
       this.refresh(undefined, overview, this.client.getModelSettings());
       if (showToast) {
-        await handleNotificationAction(
-          await showSuccessNotification(
-            `Verlato found ${overview.branches.length} branch(es), ${overview.tags.length} tag(s), and ${overview.unpublishedCount} unpublished item(s).`,
-            "Open Verlato",
-            "View Activity",
-          ),
-        );
+        successMessage = `Verlato found ${overview.branches.length} branch(es), ${overview.tags.length} tag(s), and ${overview.unpublishedCount} unpublished item(s).`;
       }
     });
+    if (successMessage) {
+      await handleNotificationAction(await showSuccessNotification(successMessage, "Open Verlato", "View Activity"));
+    }
   }
 
   private async apply(target: "changelog" | "github-release"): Promise<void> {
@@ -240,14 +242,19 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       this.render();
       return;
     }
+    let resultPath: string | undefined;
     await this.runBusy(async () => {
       const result = await this.client.applyDraft(this.range, target);
+      resultPath = result.path;
+    });
+    if (resultPath) {
+      const appliedPath = resultPath;
       await handleNotificationAction(
-        await showSuccessNotification(`Updated ${result.path}`, "Open File", "Preview", "View Activity"),
+        await showSuccessNotification(`Updated ${appliedPath}`, "Open File", "Preview", "View Activity"),
         {
           "Open File": async () => {
             const folder = vscode.workspace.workspaceFolders?.[0];
-            const uri = folder ? vscode.Uri.joinPath(folder.uri, result.path) : vscode.Uri.file(result.path);
+            const uri = folder ? vscode.Uri.joinPath(folder.uri, appliedPath) : vscode.Uri.file(appliedPath);
             const document = await vscode.workspace.openTextDocument(uri);
             await vscode.window.showTextDocument(document, vscode.ViewColumn.Beside, true);
           },
@@ -257,7 +264,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
           },
         },
       );
-    });
+    }
   }
 
   private async clearWorkingState(): Promise<void> {
@@ -269,15 +276,19 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     if (confirmed !== "Clear Working State") {
       return;
     }
+    let successMessage: string | undefined;
     await this.runBusy(async () => {
       const result = await this.client.clearWorkingState();
       const document = this.hasSelectedBase() ? await this.client.getDraft(this.range) : undefined;
       const overview = await this.client.getRepositoryOverview();
       this.suggestions = undefined;
       this.statusMessage = `Cleared ${result.removed_working_items} working item(s); preserved ${result.preserved_published_items} published item(s).`;
+      successMessage = this.statusMessage;
       this.refresh(document, overview, this.client.getModelSettings());
-      await handleNotificationAction(await showSuccessNotification(this.statusMessage, "Open Verlato", "View Activity"));
     });
+    if (successMessage) {
+      await handleNotificationAction(await showSuccessNotification(successMessage, "Open Verlato", "View Activity"));
+    }
   }
 
   private async suggest(itemId?: string): Promise<void> {
@@ -286,27 +297,23 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       this.render();
       return;
     }
+    let successMessage: string | undefined;
     await this.runBusy(async () => {
-      try {
-        const suggestions = await this.client.previewDraftSuggestions(this.range, itemId);
-        this.suggestions = suggestions;
-        this.onDidRefresh?.(this.document, this.overview, this.modelSettings, this.suggestions);
-        const generatedCount = suggestions.items[0]?.suggestions.length ?? 0;
-        const batchCount = suggestions.batch_count ?? 1;
-        this.statusMessage = itemId
-          ? generatedCount === 1 ? "Generated one suggested description." : `Generated ${generatedCount} suggestions.`
-          : batchCount > 1
-            ? `Generated suggestions for ${suggestions.items.length} item(s) in ${batchCount} batch(es).`
-            : `Generated suggestions for ${suggestions.items.length} item(s).`;
-        await handleNotificationAction(
-          await showSuccessNotification(this.statusMessage, "Review Suggestions", "View Activity"),
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        this.errorMessage = message;
-        await handleNotificationAction(await showErrorNotification(message, "View Activity", "Change Model"));
-      }
-    });
+      const suggestions = await this.client.previewDraftSuggestions(this.range, itemId);
+      this.suggestions = suggestions;
+      this.onDidRefresh?.(this.document, this.overview, this.modelSettings, this.suggestions);
+      const generatedCount = suggestions.items[0]?.suggestions.length ?? 0;
+      const batchCount = suggestions.batch_count ?? 1;
+      this.statusMessage = itemId
+        ? generatedCount === 1 ? "Generated one suggested description." : `Generated ${generatedCount} suggestions.`
+        : batchCount > 1
+          ? `Generated suggestions for ${suggestions.items.length} item(s) in ${batchCount} batch(es).`
+          : `Generated suggestions for ${suggestions.items.length} item(s).`;
+      successMessage = this.statusMessage;
+    }, { errorActions: ["View Activity", "Change Model"] });
+    if (successMessage) {
+      await handleNotificationAction(await showSuccessNotification(successMessage, "Review Suggestions", "View Activity"));
+    }
   }
 
   private async applySuggestion(itemId: string, suggestionIndex: number): Promise<void> {
@@ -460,7 +467,11 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     this.render();
   }
 
-  private async runBusy(task: () => Promise<void>): Promise<void> {
+  private async runBusy(
+    task: () => Promise<void>,
+    options: { errorActions?: NotificationAction[] } = {},
+  ): Promise<void> {
+    let errorNotificationMessage: string | undefined;
     this.busy = true;
     this.errorMessage = undefined;
     this.render();
@@ -472,11 +483,15 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
         this.statusMessage = "Stopped current Verlato command.";
       } else {
         this.errorMessage = message;
-        await handleNotificationAction(await showErrorNotification(this.errorMessage, "View Activity"));
+        errorNotificationMessage = message;
       }
     } finally {
       this.busy = false;
       this.render();
+    }
+    if (errorNotificationMessage) {
+      const actions = options.errorActions ?? ["View Activity"];
+      await handleNotificationAction(await showErrorNotification(errorNotificationMessage, ...actions));
     }
   }
 

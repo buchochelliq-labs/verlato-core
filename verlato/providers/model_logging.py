@@ -4,6 +4,7 @@ import os
 import sys
 import json
 import re
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -23,6 +24,26 @@ _SENSITIVE_PATTERNS = [
     re.compile(r"\b[A-Fa-f0-9]{40,}\b"),
     re.compile(r"\b[A-Za-z0-9+/]{48,}={0,2}\b"),
 ]
+_LOG_LOCK = threading.Lock()
+
+
+def print_stderr_line(line: str) -> None:
+    with _LOG_LOCK:
+        print(line, file=sys.stderr, flush=True)
+
+
+def print_stderr_lines(lines: list[str]) -> None:
+    with _LOG_LOCK:
+        for line in lines:
+            print(line, file=sys.stderr, flush=True)
+
+
+def append_log_line(path: str | Path, line: str) -> None:
+    output_path = Path(path)
+    with _LOG_LOCK:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
 
 
 @dataclass
@@ -74,7 +95,7 @@ class NullModelLogSink(ModelLogSink):
 
 class StderrModelLogSink(ModelLogSink):
     def emit(self, record: ModelLogRecord) -> None:
-        print(f"[verlato:model] {record.body}", file=sys.stderr, flush=True)
+        print_stderr_line(f"[verlato:model] {record.body}")
 
 
 class JsonlModelLogSink(ModelLogSink):
@@ -82,9 +103,7 @@ class JsonlModelLogSink(ModelLogSink):
         self.path = Path(path)
 
     def emit(self, record: ModelLogRecord) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record.to_otel_dict(), sort_keys=True) + "\n")
+        append_log_line(self.path, json.dumps(record.to_otel_dict(), sort_keys=True))
 
 
 class CompositeModelLogSink(ModelLogSink):

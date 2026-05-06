@@ -29,6 +29,8 @@ class ProviderConfig:
     num_predict: int | None = None
     summary_num_predict: int | None = None
     classify_num_predict: int | None = None
+    suggest_num_predict: int | None = None
+    suggest_think: bool | None = False
 
 
 @dataclass
@@ -44,6 +46,7 @@ class VerlatoConfig:
     state_path: str = ".verlato_state.json"
     provider: ProviderConfig = field(default_factory=ProviderConfig)
     suggestion_count: int = 1
+    suggestion_parallelism: int = 1
     suggestion_tone: str = "release-note"
     suggestion_style: SuggestionStyleConfig = field(default_factory=SuggestionStyleConfig)
     feedback_include_text: bool = False
@@ -71,6 +74,8 @@ def load_config(cwd: str | None = None) -> VerlatoConfig:
         config.state_path = str(raw["state_path"])
     if raw.get("suggestion_count") is not None:
         config.suggestion_count = int(raw["suggestion_count"])
+    if raw.get("suggestion_parallelism") is not None:
+        config.suggestion_parallelism = int(raw["suggestion_parallelism"])
     if raw.get("suggestion_tone") is not None:
         config.suggestion_tone = str(raw["suggestion_tone"]).strip() or config.suggestion_tone
     if raw.get("feedback_include_text") is not None:
@@ -96,6 +101,8 @@ def load_config(cwd: str | None = None) -> VerlatoConfig:
         num_predict = provider.get("num_predict", config.provider.num_predict)
         summary_num_predict = provider.get("summary_num_predict", config.provider.summary_num_predict)
         classify_num_predict = provider.get("classify_num_predict", config.provider.classify_num_predict)
+        suggest_num_predict = provider.get("suggest_num_predict", config.provider.suggest_num_predict)
+        suggest_think = provider.get("suggest_think", config.provider.suggest_think)
         config.provider = ProviderConfig(
             name=name,
             model=str(model).strip() if model else None,
@@ -107,6 +114,8 @@ def load_config(cwd: str | None = None) -> VerlatoConfig:
             num_predict=int(num_predict) if num_predict is not None else None,
             summary_num_predict=int(summary_num_predict) if summary_num_predict is not None else None,
             classify_num_predict=int(classify_num_predict) if classify_num_predict is not None else None,
+            suggest_num_predict=int(suggest_num_predict) if suggest_num_predict is not None else None,
+            suggest_think=bool(suggest_think) if suggest_think is not None else None,
         )
 
     targets = raw.get("targets")

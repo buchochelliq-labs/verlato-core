@@ -62,10 +62,13 @@ The default provider is local Ollama with `gemma4:latest`. Change it from `Verla
 "verlato.modelProvider": "ollama",
 "verlato.ollamaModel": "gemma4:latest",
 "verlato.ollamaEndpoint": "http://127.0.0.1:11434/api/chat",
-"verlato.maxModelItems": 25
+"verlato.maxModelItems": 25,
+"verlato.suggestionParallelism": 2
 ```
 
 `verlato.maxModelItems` prevents a large comparison range from sending one LLM request per grouped change. Set it to `-1` only when you intentionally want no fanout guard.
+`verlato.suggestionParallelism` controls how many draft suggestion preview requests may run at once.
+If Ollama diagnostics show queue time, set server variables such as `OLLAMA_NUM_PARALLEL`, `OLLAMA_MAX_QUEUE`, and `OLLAMA_CONTEXT_LENGTH` before starting Ollama; the extension can only tune Verlato's client-side request fanout.
 
 If the launch config does not appear, open `.vscode/launch.json` from the repo root and start the `Verlato Extension` configuration from the editor's debug controls.
 

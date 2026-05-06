@@ -138,6 +138,8 @@ export class VerlatoClient implements vscode.Disposable {
       "--preview",
       "--count",
       String(settings.suggestionCount),
+      "--parallelism",
+      String(settings.suggestionParallelism),
       "--tone",
       settings.suggestionTone,
       ...(itemId ? ["--id", itemId] : ["--all-visible"]),
@@ -193,6 +195,7 @@ export class VerlatoClient implements vscode.Disposable {
       ollamaTimeoutSeconds: config.get<number>("ollamaTimeoutSeconds") ?? 120,
       maxModelItems: config.get<number>("maxModelItems") ?? 25,
       suggestionCount: config.get<number>("suggestionCount") ?? 1,
+      suggestionParallelism: config.get<number>("suggestionParallelism") ?? 2,
       suggestionTone: config.get<string>("suggestionTone") || "release-note",
       styleGuidance: config.get<string>("styleGuidance") || "",
       projectVocabulary: config.get<string[]>("projectVocabulary") ?? [],
@@ -226,6 +229,9 @@ export class VerlatoClient implements vscode.Disposable {
     }
     if (settings.suggestionCount !== undefined) {
       await config.update("suggestionCount", settings.suggestionCount, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.suggestionParallelism !== undefined) {
+      await config.update("suggestionParallelism", settings.suggestionParallelism, vscode.ConfigurationTarget.Workspace);
     }
     if (settings.suggestionTone !== undefined) {
       await config.update("suggestionTone", settings.suggestionTone, vscode.ConfigurationTarget.Workspace);
@@ -422,20 +428,22 @@ export class VerlatoClient implements vscode.Disposable {
   }
 
   private async runOptionalProcess(command: string, args: string[]): Promise<string | undefined> {
-    return new Promise((resolve) => {
-      let stdout = "";
-      const child = spawn(command, args, {
+    try {
+      const result = await this.spawnCommand({
+        command,
+        args,
         cwd: this.workspaceFolder.uri.fsPath,
         env: process.env,
-        windowsHide: true,
+        label: `${command} ${args[0] ?? ""}`.trim(),
+        optionalFailure: true,
       });
-      child.stdout.setEncoding("utf8");
-      child.stdout.on("data", (chunk: string) => {
-        stdout += chunk;
-      });
-      child.on("error", () => resolve(undefined));
-      child.on("close", (code) => resolve(code === 0 ? stdout : undefined));
-    });
+      return result.stdout;
+    } catch (error) {
+      if (error instanceof Error && error.message === "Verlato command cancelled.") {
+        throw error;
+      }
+      return undefined;
+    }
   }
 
   private async readState(): Promise<StatePayload> {
@@ -477,6 +485,7 @@ export class VerlatoClient implements vscode.Disposable {
     env: NodeJS.ProcessEnv;
     label: string;
     missingExecutableMessage?: string;
+    optionalFailure?: boolean;
   }): Promise<{ stdout: string; stderr: string }> {
     const request = this.startRequest(options.command, options.args, options.label);
     const abortController = this.trackCommandController(request.id);
@@ -517,6 +526,11 @@ export class VerlatoClient implements vscode.Disposable {
           return;
         }
         const message = error.code === "ENOENT" && options.missingExecutableMessage ? options.missingExecutableMessage : error.message;
+        if (options.optionalFailure) {
+          this.finishRequest(request.id, "completed", { error: message });
+          reject(new Error(message));
+          return;
+        }
         this.finishRequest(request.id, "failed", { error: message });
         reject(new Error(message));
       });
@@ -535,6 +549,11 @@ export class VerlatoClient implements vscode.Disposable {
         }
         if (code && code !== 0) {
           const message = stderr.trim() || `${options.command} exited with code ${code}`;
+          if (options.optionalFailure) {
+            this.finishRequest(request.id, "completed", { exitCode: code, error: message });
+            reject(new Error(message));
+            return;
+          }
           this.finishRequest(request.id, "failed", { exitCode: code, error: message });
           reject(new Error(message));
           return;
@@ -654,6 +673,7 @@ export class VerlatoClient implements vscode.Disposable {
     env.VERLATO_OLLAMA_TIMEOUT_SECONDS = String(settings.ollamaTimeoutSeconds);
     env.VERLATO_MODEL_MAX_ITEMS = String(settings.maxModelItems);
     env.VERLATO_SUGGESTION_COUNT = String(settings.suggestionCount);
+    env.VERLATO_SUGGESTION_PARALLELISM = String(settings.suggestionParallelism);
     env.VERLATO_SUGGESTION_TONE = settings.suggestionTone;
     env.VERLATO_STYLE_GUIDANCE = settings.styleGuidance;
     env.VERLATO_PROJECT_VOCABULARY = settings.projectVocabulary.join(",");
@@ -874,7 +894,7 @@ function formatModelSettings(settings: ModelSettings): string {
     ? "; style controls on"
     : "";
   const timeout = settings.provider === "ollama" ? `; timeout: ${settings.ollamaTimeoutSeconds}s` : "";
-  return `${settings.provider}${model}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; tone: ${settings.suggestionTone}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
+  return `${settings.provider}${model}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; parallelism: ${settings.suggestionParallelism}; tone: ${settings.suggestionTone}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
 }
 
 function activityCategory(line: string): "model" | "progress" | "process" {

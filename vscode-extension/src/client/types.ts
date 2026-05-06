@@ -158,6 +158,7 @@ export interface ModelSettings {
   ollamaTimeoutSeconds: number;
   maxModelItems: number;
   suggestionCount: number;
+  suggestionParallelism: number;
   suggestionTone: string;
   styleGuidance: string;
   projectVocabulary: string[];
@@ -184,7 +185,24 @@ export interface DraftSuggestionItem {
   source_evidence?: DraftSuggestionEvidence[];
   suggestion_details?: DraftSuggestionDetail[];
   rejected_candidates?: DraftRejectedSuggestion[];
+  timings?: DraftSuggestionTimings;
   suggestions: string[];
+}
+
+export interface DraftSuggestionTimings {
+  evidence_ms?: number;
+  prompt_ms?: number;
+  model_ms?: number;
+  parse_ms?: number;
+  total_ms?: number;
+  load_ms?: number;
+  prompt_eval_ms?: number;
+  eval_ms?: number;
+  ollama_total_ms?: number;
+  queue_ms?: number;
+  prompt_tokens?: number;
+  eval_tokens?: number;
+  tokens_per_second?: number;
 }
 
 export interface DraftSuggestionEvidence {
@@ -228,7 +246,17 @@ export interface DraftSuggestionPreview {
   fanout_guard?: number;
   batch_size?: number;
   batch_count?: number;
+  performance?: DraftSuggestionPerformance;
   items: DraftSuggestionItem[];
+}
+
+export interface DraftSuggestionPerformance {
+  parallelism?: number;
+  target_selection_ms?: number;
+  preparation_ms?: number;
+  model_ms?: number;
+  parse_ms?: number;
+  total_ms?: number;
 }
 
 export type ClientMode = "cli";

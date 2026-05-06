@@ -5,11 +5,12 @@ import hashlib
 import json
 import os
 import re
-import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
+from time import perf_counter
 
 from verlato.config import VerlatoConfig, load_config
 from verlato.core.adapters import NullPullRequestAdapter, PullRequestAdapter, StandardGitAdapter
@@ -22,11 +23,48 @@ from verlato.core.reconciler import Reconciler
 from verlato.github.adapter import GitHubApiAdapter
 from verlato.providers.base import ProviderRequest
 from verlato.providers.factory import build_provider
-from verlato.providers.model_logging import model_payload_redaction_enabled, redact_model_payload
+from verlato.providers.model_logging import (
+    append_log_line,
+    model_payload_redaction_enabled,
+    print_stderr_line,
+    print_stderr_lines,
+    redact_model_payload,
+)
 from verlato.state.store import StateStore
 
 MODEL_PROVIDER_CHOICES = ["stub", "mock", "ollama", "github-copilot"]
 SUGGESTION_TONE_CHOICES = ["release-note", "concise", "technical", "customer-facing"]
+MAX_SUGGESTION_PARALLELISM = 8
+
+
+@dataclass
+class _SuggestionWork:
+    order: int
+    item_number: int
+    batch: int
+    batch_total: int
+    total_targets: int
+    group: ChangeGroup
+    baseline_item: ChangeItem
+    prompt: str
+    evidence: dict[str, object]
+    source_evidence: list[dict[str, str]]
+    prompt_sha: str
+    suggestion_count: int
+    suggestion_tone: str
+    suggestion_style: dict[str, object]
+    effective_model_provider: str | None
+    evidence_ms: int
+    prompt_ms: int
+    started_at: float
+
+
+@dataclass
+class _SuggestionResult:
+    order: int
+    item: dict[str, object]
+    model_ms: int
+    parse_ms: int
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -76,6 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     draft_suggest.add_argument("--all-visible", action="store_true")
     draft_suggest.add_argument("--preview", action="store_true")
     draft_suggest.add_argument("--count", type=int)
+    draft_suggest.add_argument("--parallelism", type=int)
     draft_suggest.add_argument("--tone", choices=SUGGESTION_TONE_CHOICES)
     draft_suggest.add_argument("--reviewer")
     draft_suggest.add_argument(
@@ -187,7 +226,7 @@ def _trace_progress(
     if unit:
         event["unit"] = unit
     event.update({key: value for key, value in attributes.items() if value is not None})
-    print("[verlato:progress] json " + json.dumps(event, sort_keys=True), file=sys.stderr, flush=True)
+    print_stderr_line("[verlato:progress] json " + json.dumps(event, sort_keys=True))
 
 
 def _group_progress_detail(group: ChangeGroup) -> str:
@@ -428,6 +467,17 @@ def _resolve_suggestion_count(configured: int, requested: int | None = None) -> 
     return max(1, min(value, 5))
 
 
+def _resolve_suggestion_parallelism(configured: int, requested: int | None = None) -> int:
+    raw = str(requested) if requested is not None else os.getenv("VERLATO_SUGGESTION_PARALLELISM")
+    value = configured
+    if raw is not None:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = configured
+    return max(1, min(value, MAX_SUGGESTION_PARALLELISM))
+
+
 def _resolve_suggestion_tone(configured: str, requested: str | None = None) -> str:
     raw = requested or os.getenv("VERLATO_SUGGESTION_TONE") or configured
     tone = (raw or "release-note").strip().lower()
@@ -458,6 +508,62 @@ def _env_list(name: str) -> list[str]:
     if not raw:
         return []
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _elapsed_ms(start: float) -> int:
+    return max(0, int(round((perf_counter() - start) * 1000)))
+
+
+def _normalized_provider_timings(metadata: dict[str, object], model_ms: int) -> dict[str, object]:
+    timings: dict[str, object] = {}
+    duration_fields = {
+        "total_duration": "ollama_total_ms",
+        "load_duration": "load_ms",
+        "prompt_eval_duration": "prompt_eval_ms",
+        "eval_duration": "eval_ms",
+    }
+    for source_key, target_key in duration_fields.items():
+        duration_ms = _nanoseconds_to_ms(metadata.get(source_key))
+        if duration_ms is not None:
+            timings[target_key] = duration_ms
+    prompt_tokens = _optional_int(metadata.get("prompt_eval_count"))
+    if prompt_tokens is not None:
+        timings["prompt_tokens"] = prompt_tokens
+    eval_tokens = _optional_int(metadata.get("eval_count"))
+    if eval_tokens is not None:
+        timings["eval_tokens"] = eval_tokens
+    ollama_total_ms = timings.get("ollama_total_ms")
+    if isinstance(ollama_total_ms, int):
+        timings["queue_ms"] = max(0, model_ms - ollama_total_ms)
+    eval_duration_ms = timings.get("eval_ms")
+    if eval_tokens is not None and isinstance(eval_duration_ms, int) and eval_duration_ms > 0:
+        timings["tokens_per_second"] = round(eval_tokens / (eval_duration_ms / 1000), 1)
+    return timings
+
+
+def _nanoseconds_to_ms(value: object) -> int | None:
+    numeric = _optional_float(value)
+    if numeric is None:
+        return None
+    return max(0, int(round(numeric / 1_000_000)))
+
+
+def _optional_int(value: object) -> int | None:
+    numeric = _optional_float(value)
+    if numeric is None:
+        return None
+    return int(numeric)
+
+
+def _optional_float(value: object) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
 
 
 def _merge_review_state(items: list[ChangeItem]) -> list[ChangeItem]:
@@ -636,20 +742,24 @@ def _preview_draft_model_suggestions(
     item_id: str | None,
     all_visible: bool,
     count: int | None,
+    parallelism: int | None = None,
     model_provider: str | None = None,
     tone: str | None = None,
 ) -> dict:
     if all_visible == bool(item_id):
         raise SystemExit("Provide exactly one suggestion target: --id or --all-visible")
 
+    total_start = perf_counter()
     config = _load_config()
     suggestion_count = _resolve_suggestion_count(config.suggestion_count, requested=count)
+    suggestion_parallelism = _resolve_suggestion_parallelism(config.suggestion_parallelism, requested=parallelism)
     suggestion_tone = _resolve_suggestion_tone(config.suggestion_tone, requested=tone)
     suggestion_style = _resolve_suggestion_style(config)
     suggestion_count_source = (
         "cli" if count is not None else "env" if os.getenv("VERLATO_SUGGESTION_COUNT") else "config"
     )
     effective_model_provider = _resolve_suggest_model_provider(model_provider)
+    target_selection_start = perf_counter()
     groups = _collect_groups(base, head)
     baseline_classifier = Classifier()
     _trace_model_suggest_stage(
@@ -713,6 +823,7 @@ def _preview_draft_model_suggestions(
         )
     else:
         targets = [(group, merged_by_id.get(item.id, item)) for group, item in targets]
+    target_selection_ms = _elapsed_ms(target_selection_start)
 
     max_model_items = _resolve_max_model_items(config.provider.max_items_per_scan)
     visible_target_count = len(targets)
@@ -752,11 +863,13 @@ def _preview_draft_model_suggestions(
         suggestion_count=suggestion_count,
         suggestion_count_source=suggestion_count_source,
         provider=effective_model_provider or "configured",
+        parallelism=suggestion_parallelism,
         all_visible=all_visible,
     )
 
     if not any(target_batches):
         _trace_progress("suggestions_ready", "No model suggestions requested", current=0, total=0, unit="item")
+        total_ms = _elapsed_ms(total_start)
         return {
             "base_ref": base,
             "head_ref": head,
@@ -764,6 +877,14 @@ def _preview_draft_model_suggestions(
             "count": suggestion_count,
             "tone": suggestion_tone,
             "style_profile": suggestion_style,
+            "performance": {
+                "parallelism": suggestion_parallelism,
+                "target_selection_ms": target_selection_ms,
+                "preparation_ms": 0,
+                "model_ms": 0,
+                "parse_ms": 0,
+                "total_ms": total_ms,
+            },
             "visible_item_count": visible_target_count,
             "fanout_guard": max_model_items,
             "batch_size": batch_size,
@@ -780,7 +901,130 @@ def _preview_draft_model_suggestions(
         banned_phrases=list(suggestion_style["banned_phrases"]),
     )
 
-    items = []
+    items: list[dict[str, object]] = []
+    completed_count = 0
+    preparation_ms = 0
+    model_ms = 0
+    parse_ms = 0
+
+    def prepare_work(order: int, group: ChangeGroup, baseline_item: ChangeItem, batch_index: int) -> _SuggestionWork:
+        nonlocal preparation_ms
+        item_number = order + 1
+        item_start = perf_counter()
+        _trace_progress(
+            "suggestion_evidence",
+            f"Building suggestion evidence for {baseline_item.id}",
+            current=item_number,
+            total=total_targets,
+            unit="item",
+            item_id=baseline_item.id,
+            batch=batch_index,
+            batch_total=len(target_batches),
+        )
+        evidence_start = perf_counter()
+        diff = provider_classifier.diff_builder.build(group.pr.files if group.pr else group.files)
+        evidence_ms = _elapsed_ms(evidence_start)
+        hunk_count = sum(len(hunks) for hunks in diff.representative_hunks.values())
+        file_count = len(diff.file_statuses)
+        _trace_model_suggest_stage(
+            "evidence-built",
+            f"item_id={baseline_item.id} files={file_count} hunks={hunk_count}",
+        )
+        _trace_progress(
+            "suggestion_prompt",
+            f"Building model prompt for {baseline_item.id}",
+            current=item_number,
+            total=total_targets,
+            unit="item",
+            item_id=baseline_item.id,
+            batch=batch_index,
+            batch_total=len(target_batches),
+            elapsed_ms=_elapsed_ms(item_start),
+        )
+        prompt_start = perf_counter()
+        prompt_result = provider_classifier._build_summary_prompt_with_budget(
+            title=baseline_item.content.title,
+            labels=[label.lower() for label in (group.pr.labels if group.pr else [])],
+            pr_body=group.pr.body if group.pr else "",
+            diff=diff,
+            commits=group.commits,
+            suggestion_count=suggestion_count,
+            kind=baseline_item.classification.kind,
+            audience=baseline_item.classification.audience,
+            tone=suggestion_tone,
+            style_guidance=str(suggestion_style["guidance"]),
+            project_vocabulary=list(suggestion_style["project_vocabulary"]),
+            banned_phrases=list(suggestion_style["banned_phrases"]),
+        )
+        prompt = prompt_result.prompt
+        evidence = {
+            "title": baseline_item.content.title,
+            "item_id": baseline_item.id,
+            "suggestion_count": suggestion_count,
+            "tone": suggestion_tone,
+            "style_profile": suggestion_style,
+            "diff_summary": diff.summary,
+            "representative_hunks": diff.representative_hunks,
+            "file_count": file_count,
+            "hunk_count": hunk_count,
+        }
+        source_evidence = _build_suggestion_source_evidence(diff, group)
+        prompt_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12]
+        prompt_ms = _elapsed_ms(prompt_start)
+        preparation_ms += _elapsed_ms(item_start)
+        _trace_model_suggest_stage(
+            "evidence-detail",
+            f"item_id={baseline_item.id} files={','.join(list(diff.file_statuses)[:8]) or 'none'} "
+            f"source_entries={len(source_evidence)}",
+        )
+        _trace_model_suggest_stage(
+            "prompt-built",
+            f"item_id={baseline_item.id} prompt_chars={len(prompt)} prompt_sha={prompt_sha}",
+        )
+        _trace_model_prompt_budget(prompt_result.budget)
+        _trace_model_payload("prompt-preview", prompt)
+        return _SuggestionWork(
+            order=order,
+            item_number=item_number,
+            batch=batch_index,
+            batch_total=len(target_batches),
+            total_targets=total_targets,
+            group=group,
+            baseline_item=baseline_item,
+            prompt=prompt,
+            evidence=evidence,
+            source_evidence=source_evidence,
+            prompt_sha=prompt_sha,
+            suggestion_count=suggestion_count,
+            suggestion_tone=suggestion_tone,
+            suggestion_style=suggestion_style,
+            effective_model_provider=effective_model_provider,
+            evidence_ms=evidence_ms,
+            prompt_ms=prompt_ms,
+            started_at=item_start,
+        )
+
+    def record_result(result: _SuggestionResult) -> None:
+        nonlocal completed_count, model_ms, parse_ms
+        completed_count += 1
+        model_ms += result.model_ms
+        parse_ms += result.parse_ms
+        timings = result.item.get("timings")
+        elapsed = timings.get("total_ms") if isinstance(timings, dict) else None
+        _trace_progress(
+            "suggestion_item_done",
+            f"Generated suggestion for {result.item['item_id']}",
+            current=completed_count,
+            total=total_targets,
+            unit="item",
+            item_id=result.item["item_id"],
+            batch=result.item.get("batch"),
+            batch_total=len(target_batches),
+            elapsed_ms=elapsed,
+            model_ms=result.model_ms,
+            queue_ms=timings.get("queue_ms") if isinstance(timings, dict) else None,
+        )
+
     for batch_index, batch in enumerate(target_batches, start=1):
         _trace_progress(
             "suggestion_batch",
@@ -797,153 +1041,46 @@ def _preview_draft_model_suggestions(
                 "batch-start",
                 f"batch={batch_index}/{len(target_batches)} targets={len(batch)} fanout_guard={max_model_items}",
             )
-        for group, baseline_item in batch:
-            item_number = len(items) + 1
-            _trace_progress(
-                "suggestion_evidence",
-                f"Building suggestion evidence for {baseline_item.id}",
-                current=item_number,
-                total=total_targets,
-                unit="item",
-                item_id=baseline_item.id,
-                batch=batch_index,
-                batch_total=len(target_batches),
-            )
-            diff = provider_classifier.diff_builder.build(group.pr.files if group.pr else group.files)
-            hunk_count = sum(len(hunks) for hunks in diff.representative_hunks.values())
-            file_count = len(diff.file_statuses)
-            _trace_model_suggest_stage(
-                "evidence-built",
-                f"item_id={baseline_item.id} files={file_count} hunks={hunk_count}",
-            )
-            _trace_progress(
-                "suggestion_prompt",
-                f"Building model prompt for {baseline_item.id}",
-                current=item_number,
-                total=total_targets,
-                unit="item",
-                item_id=baseline_item.id,
-                batch=batch_index,
-                batch_total=len(target_batches),
-            )
-            prompt_result = provider_classifier._build_summary_prompt_with_budget(
-                title=baseline_item.content.title,
-                labels=[label.lower() for label in (group.pr.labels if group.pr else [])],
-                pr_body=group.pr.body if group.pr else "",
-                diff=diff,
-                commits=group.commits,
-                suggestion_count=suggestion_count,
-                kind=baseline_item.classification.kind,
-                audience=baseline_item.classification.audience,
-                tone=suggestion_tone,
-                style_guidance=str(suggestion_style["guidance"]),
-                project_vocabulary=list(suggestion_style["project_vocabulary"]),
-                banned_phrases=list(suggestion_style["banned_phrases"]),
-            )
-            prompt = prompt_result.prompt
-            evidence = {
-                "title": baseline_item.content.title,
-                "item_id": baseline_item.id,
-                "suggestion_count": suggestion_count,
-                "tone": suggestion_tone,
-                "style_profile": suggestion_style,
-                "diff_summary": diff.summary,
-                "representative_hunks": diff.representative_hunks,
-                "file_count": file_count,
-                "hunk_count": hunk_count,
-            }
-            source_evidence = _build_suggestion_source_evidence(diff, group)
-            prompt_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12]
-            _trace_model_suggest_stage(
-                "evidence-detail",
-                f"item_id={baseline_item.id} files={','.join(list(diff.file_statuses)[:8]) or 'none'} "
-                f"source_entries={len(source_evidence)}",
-            )
-            _trace_model_suggest_stage(
-                "prompt-built",
-                f"item_id={baseline_item.id} prompt_chars={len(prompt)} prompt_sha={prompt_sha}",
-            )
-            _trace_model_prompt_budget(prompt_result.budget)
-            _trace_model_payload("prompt-preview", prompt)
-            _trace_model_call_start("suggest", baseline_item.content.title, effective_model_provider or "configured")
-            _trace_progress(
-                "suggestion_model_request",
-                f"Prompting model for {baseline_item.id}",
-                current=item_number,
-                total=total_targets,
-                unit="item",
-                item_id=baseline_item.id,
-                batch=batch_index,
-                batch_total=len(target_batches),
-            )
-            response = provider.summarize(ProviderRequest(task="suggest", prompt=prompt, evidence=evidence))
-            _trace_model_call_result("suggest", baseline_item.content.title, response.model, response.confidence)
-            _trace_model_response_detail(response.model, response.content, response.metadata, response.reasoning)
-            _trace_progress(
-                "suggestion_model_response",
-                f"Reading model response for {baseline_item.id}",
-                current=item_number,
-                total=total_targets,
-                unit="item",
-                item_id=baseline_item.id,
-                batch=batch_index,
-                batch_total=len(target_batches),
-            )
-            provider_reasoning = response.reasoning if _trace_model_reasoning_payloads_enabled() else ""
-            if provider_classifier._is_provider_error(response.content):
-                raise SystemExit(
-                    f"No model suggestions were produced for draft item {baseline_item.id}: {response.content}"
-                )
-            suggestion_details, rejected_candidates = _parse_suggestion_variants(
-                response.content,
-                suggestion_count,
-                baseline_item,
-                group,
-                trace_title=baseline_item.content.title,
-                trace_model=response.model,
-                banned_phrases=list(suggestion_style["banned_phrases"]),
-                specificity_floor=float(suggestion_style["specificity_floor"]),
-            )
-            _trace_model_suggestion_decision(
-                title=baseline_item.content.title,
-                model=response.model,
-                parsed_count=len(suggestion_details),
-                requested_count=suggestion_count,
-                accepted=_suggestions_preview(suggestion_details),
-                rejected_count=len(rejected_candidates),
-            )
-            if not suggestion_details:
-                raise SystemExit(f"No model suggestions were produced for draft item {baseline_item.id}.")
-            suggestions = [detail["summary"] for detail in suggestion_details]
-            items.append(
-                {
-                    "item_id": baseline_item.id,
-                    "title": baseline_item.content.title,
-                    "current_summary": baseline_item.edited_summary or baseline_item.content.summary,
-                    "provider": response.model,
-                    "prompt_sha": prompt_sha,
-                    "tone": suggestion_tone,
-                    "style_profile": suggestion_style,
-                    "provider_metadata": response.metadata,
-                    "provider_reasoning": provider_reasoning,
-                    "source_evidence": source_evidence,
-                    "suggestion_details": suggestion_details,
-                    "rejected_candidates": rejected_candidates,
-                    "suggestions": suggestions,
-                }
-            )
-            _trace_progress(
-                "suggestion_item_done",
-                f"Generated suggestion for {baseline_item.id}",
-                current=len(items),
-                total=total_targets,
-                unit="item",
-                item_id=baseline_item.id,
-                batch=batch_index,
-                batch_total=len(target_batches),
-            )
+        batch_results: dict[int, _SuggestionResult] = {}
+        if suggestion_parallelism <= 1 or len(batch) <= 1:
+            for batch_offset, (group, baseline_item) in enumerate(batch):
+                order = len(items) + batch_offset
+                work = prepare_work(order, group, baseline_item, batch_index)
+                result = _run_suggestion_model_work(provider, provider_classifier, work)
+                batch_results[result.order] = result
+                record_result(result)
+        else:
+            workers = min(suggestion_parallelism, len(batch))
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="verlato-suggest") as executor:
+                future_to_work = {}
+                for batch_offset, (group, baseline_item) in enumerate(batch):
+                    order = len(items) + batch_offset
+                    work = prepare_work(order, group, baseline_item, batch_index)
+                    future_to_work[executor.submit(_run_suggestion_model_work, provider, provider_classifier, work)] = work
+                try:
+                    for future in as_completed(future_to_work):
+                        result = future.result()
+                        batch_results[result.order] = result
+                        record_result(result)
+                except BaseException:
+                    for pending in future_to_work:
+                        pending.cancel()
+                    raise
+        for order in sorted(batch_results):
+            result_item = dict(batch_results[order].item)
+            result_item.pop("batch", None)
+            items.append(result_item)
 
-    _trace_progress("suggestions_ready", "Generated suggestions", current=len(items), total=total_targets, unit="item")
+    total_ms = _elapsed_ms(total_start)
+    _trace_progress(
+        "suggestions_ready",
+        "Generated suggestions",
+        current=len(items),
+        total=total_targets,
+        unit="item",
+        elapsed_ms=total_ms,
+        model_ms=model_ms,
+    )
     return {
         "base_ref": base,
         "head_ref": head,
@@ -951,12 +1088,112 @@ def _preview_draft_model_suggestions(
         "count": suggestion_count,
         "tone": suggestion_tone,
         "style_profile": suggestion_style,
+        "performance": {
+            "parallelism": suggestion_parallelism,
+            "target_selection_ms": target_selection_ms,
+            "preparation_ms": preparation_ms,
+            "model_ms": model_ms,
+            "parse_ms": parse_ms,
+            "total_ms": total_ms,
+        },
         "visible_item_count": visible_target_count,
         "fanout_guard": max_model_items,
         "batch_size": batch_size,
         "batch_count": len(target_batches),
         "items": items,
     }
+
+
+def _run_suggestion_model_work(provider, provider_classifier: Classifier, work: _SuggestionWork) -> _SuggestionResult:
+    baseline_item = work.baseline_item
+    provider_name = work.effective_model_provider or "configured"
+    _trace_model_call_start("suggest", baseline_item.content.title, provider_name)
+    _trace_progress(
+        "suggestion_model_request",
+        f"Prompting model for {baseline_item.id}",
+        current=work.item_number,
+        total=work.total_targets,
+        unit="item",
+        item_id=baseline_item.id,
+        batch=work.batch,
+        batch_total=work.batch_total,
+        elapsed_ms=_elapsed_ms(work.started_at),
+    )
+    model_start = perf_counter()
+    response = provider.summarize(ProviderRequest(task="suggest", prompt=work.prompt, evidence=work.evidence))
+    model_ms = _elapsed_ms(model_start)
+    provider_timings = _normalized_provider_timings(response.metadata, model_ms)
+    _trace_model_call_result("suggest", baseline_item.content.title, response.model, response.confidence)
+    _trace_model_response_detail(response.model, response.content, response.metadata, response.reasoning)
+    _trace_progress(
+        "suggestion_model_response",
+        f"Reading model response for {baseline_item.id}",
+        current=work.item_number,
+        total=work.total_targets,
+        unit="item",
+        item_id=baseline_item.id,
+        batch=work.batch,
+        batch_total=work.batch_total,
+        elapsed_ms=_elapsed_ms(work.started_at),
+        model_ms=model_ms,
+        queue_ms=provider_timings.get("queue_ms"),
+        ollama_total_ms=provider_timings.get("ollama_total_ms"),
+        prompt_eval_ms=provider_timings.get("prompt_eval_ms"),
+        eval_ms=provider_timings.get("eval_ms"),
+    )
+    provider_reasoning = response.reasoning if _trace_model_reasoning_payloads_enabled() else ""
+    if provider_classifier._is_provider_error(response.content):
+        raise SystemExit(
+            f"No model suggestions were produced for draft item {baseline_item.id}: {response.content}"
+        )
+    parse_start = perf_counter()
+    suggestion_details, rejected_candidates = _parse_suggestion_variants(
+        response.content,
+        work.suggestion_count,
+        baseline_item,
+        work.group,
+        trace_title=baseline_item.content.title,
+        trace_model=response.model,
+        banned_phrases=list(work.suggestion_style["banned_phrases"]),
+        specificity_floor=float(work.suggestion_style["specificity_floor"]),
+    )
+    parse_ms = _elapsed_ms(parse_start)
+    _trace_model_suggestion_decision(
+        title=baseline_item.content.title,
+        model=response.model,
+        parsed_count=len(suggestion_details),
+        requested_count=work.suggestion_count,
+        accepted=_suggestions_preview(suggestion_details),
+        rejected_count=len(rejected_candidates),
+    )
+    if not suggestion_details:
+        raise SystemExit(f"No model suggestions were produced for draft item {baseline_item.id}.")
+    suggestions = [detail["summary"] for detail in suggestion_details]
+    item = {
+        "item_id": baseline_item.id,
+        "title": baseline_item.content.title,
+        "current_summary": baseline_item.edited_summary or baseline_item.content.summary,
+        "provider": response.model,
+        "prompt_sha": work.prompt_sha,
+        "tone": work.suggestion_tone,
+        "style_profile": work.suggestion_style,
+        "provider_metadata": response.metadata,
+        "provider_reasoning": provider_reasoning,
+        "source_evidence": work.source_evidence,
+        "suggestion_details": suggestion_details,
+        "rejected_candidates": rejected_candidates,
+        "suggestions": suggestions,
+        "timings": {
+            "evidence_ms": work.evidence_ms,
+            "prompt_ms": work.prompt_ms,
+            "model_ms": model_ms,
+            "parse_ms": parse_ms,
+            "total_ms": _elapsed_ms(work.started_at),
+            **provider_timings,
+        },
+        "batch": work.batch,
+    }
+    return _SuggestionResult(order=work.order, item=item, model_ms=model_ms, parse_ms=parse_ms)
 
 
 def _parse_suggestion_variants(
@@ -1181,6 +1418,7 @@ def _trace_model_suggest_plan(
     suggestion_count: int,
     suggestion_count_source: str,
     provider: str,
+    parallelism: int,
     all_visible: bool,
 ) -> None:
     if not _trace_model_enabled():
@@ -1188,7 +1426,8 @@ def _trace_model_suggest_plan(
     scope = "all-visible" if all_visible else "single-item"
     _trace_model_line(
         f"[verlato:model] planning suggest provider={provider} scope={scope} base={base} head={head} "
-        f"targets={target_count} suggestions_per_target={suggestion_count} count_source={suggestion_count_source}",
+        f"targets={target_count} suggestions_per_target={suggestion_count} "
+        f"parallelism={parallelism} count_source={suggestion_count_source}",
         event="suggestion_plan",
         attributes={
             "provider": provider,
@@ -1197,6 +1436,7 @@ def _trace_model_suggest_plan(
             "head": head,
             "targets": target_count,
             "suggestions_per_target": suggestion_count,
+            "parallelism": parallelism,
             "count_source": suggestion_count_source,
         },
     )
@@ -1316,11 +1556,11 @@ def _trace_model_line(
     payload: str | None = None,
 ) -> None:
     line = message if message.startswith("[verlato:model]") else f"[verlato:model] {message}"
-    print(line, file=sys.stderr, flush=True)
+    lines = [line]
     if payload is not None:
         safe_payload, redacted = _safe_model_payload(payload)
         safe_attributes = {**(attributes or {}), "redacted": redacted}
-        print(
+        lines.append(
             "[verlato:model] json "
             + json.dumps(
                 {
@@ -1330,10 +1570,9 @@ def _trace_model_line(
                     "payload": safe_payload,
                 },
                 sort_keys=True,
-            ),
-            file=sys.stderr,
-            flush=True,
+            )
         )
+    print_stderr_lines(lines)
     _write_model_debug_event(event=event, message=line, attributes=attributes, payload=payload)
 
 
@@ -1356,10 +1595,7 @@ def _write_model_debug_event(
         safe_payload, redacted = _safe_model_payload(payload)
         record["payload"] = safe_payload
         record["attributes"]["redacted"] = redacted
-    output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, sort_keys=True) + "\n")
+    append_log_line(path, json.dumps(record, sort_keys=True))
 
 
 def _safe_model_payload(payload: str) -> tuple[str, bool]:
@@ -2103,6 +2339,7 @@ def main(argv: list[str] | None = None) -> int:
                     item_id=args.id,
                     all_visible=args.all_visible,
                     count=args.count,
+                    parallelism=args.parallelism,
                     model_provider=args.model_provider,
                     tone=args.tone,
                 )

@@ -56,6 +56,7 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets
   const visibleItemCount = countVisibleItems(state.document);
   const hiddenItemCount = countHiddenItems(state.document);
   const draftCommitCount = countDraftCommits(state.document);
+  const hasRunningRequest = (state.requests ?? []).some((request) => request.status === "running");
   const progress = activeOperationProgress(state);
   const modelBusy = Boolean(progress?.isModelWork);
   const commitsBySha = commitLookup(state.overview);
@@ -77,7 +78,7 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets
       <button class="icon" data-action="suggestAll" title="Infer intent for visible diffs" aria-label="Infer intent for visible diffs">${renderIcon("intent")}</button>
       <button class="icon" data-action="preview" title="Preview release notes" aria-label="Preview release notes">${renderIcon("document")}</button>
       <button class="icon" data-action="refresh" title="Analyze repository" aria-label="Analyze repository">${renderIcon("refresh")}</button>
-      ${state.busy ? `<button class="stop" data-action="cancel" title="Stop current request">Stop</button>` : ""}
+      ${hasRunningRequest ? `<button class="stop" data-action="cancel" title="Stop current request">Stop</button>` : ""}
       ${renderModelBadge(state.modelSettings)}
     </div>
 
@@ -524,7 +525,7 @@ function renderEmptyState(icon: VerlatoIconName, title: string, detail: string):
 
 function activeOperationProgress(state: ReleaseControlRenderState): ActiveOperationProgress | undefined {
   const running = (state.requests ?? []).find((request) => request.status === "running");
-  if (!running && !state.busy) {
+  if (!running) {
     return undefined;
   }
   const args = running?.args ?? [];
@@ -535,7 +536,7 @@ function activeOperationProgress(state: ReleaseControlRenderState): ActiveOperat
   const isPreview = commandKey === "draft preview";
   const isDraftJson = commandKey === "draft json";
   const isApply = commandKey === "draft apply";
-  const isRefresh = commandKey.startsWith("state") || running?.command === "git";
+  const isRefresh = commandKey.startsWith("state") || running?.command === "git" || running?.command === "gh";
   const liveProgress = running ? activeRequestProgress(running) : {};
   if (isSuggest) {
     const scope = itemId ? `item ${itemId}` : "all rendered release-note items";
@@ -633,6 +634,11 @@ function formatProgressText(entry: NonNullable<CommandRequestSnapshot["activity"
   const unit = stringAttr(attrs, "unit") ?? "step";
   const batch = optionalNumberAttr(attrs, "batch");
   const batchTotal = optionalNumberAttr(attrs, "batch_total");
+  const elapsed = optionalNumberAttr(attrs, "elapsed_ms");
+  const model = optionalNumberAttr(attrs, "model_ms");
+  const queue = optionalNumberAttr(attrs, "queue_ms");
+  const promptEval = optionalNumberAttr(attrs, "prompt_eval_ms");
+  const evalMs = optionalNumberAttr(attrs, "eval_ms");
   const parts: string[] = [];
   if (current !== undefined && total !== undefined) {
     parts.push(`${unit} ${current}/${total}`);
@@ -640,7 +646,32 @@ function formatProgressText(entry: NonNullable<CommandRequestSnapshot["activity"
   if (unit !== "batch" && batch !== undefined && batchTotal !== undefined) {
     parts.push(`batch ${batch}/${batchTotal}`);
   }
+  if (elapsed !== undefined) {
+    parts.push(`elapsed ${formatDurationMs(elapsed)}`);
+  }
+  if (model !== undefined) {
+    parts.push(`model ${formatDurationMs(model)}`);
+  }
+  if (queue !== undefined && queue > 0) {
+    parts.push(`queue ${formatDurationMs(queue)}`);
+  }
+  if (promptEval !== undefined) {
+    parts.push(`prompt ${formatDurationMs(promptEval)}`);
+  }
+  if (evalMs !== undefined) {
+    parts.push(`gen ${formatDurationMs(evalMs)}`);
+  }
   return parts.length ? parts.join(" | ") : undefined;
+}
+
+function formatDurationMs(value: number): string {
+  if (value < 1000) {
+    return `${Math.max(0, Math.round(value))}ms`;
+  }
+  if (value < 60000) {
+    return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)}s`;
+  }
+  return `${(value / 60000).toFixed(1)}m`;
 }
 
 function progressValue(entry: NonNullable<CommandRequestSnapshot["activity"]>[number]): { value: number; max: number } | undefined {
@@ -1080,6 +1111,7 @@ function modelDetail(settings: ModelSettings): string {
     `Model: ${providerDetail}`,
     `Tone: ${settings.suggestionTone}`,
     `Suggestions: ${settings.suggestionCount}`,
+    `Parallelism: ${settings.suggestionParallelism}`,
     `Streaming: ${settings.ollamaStreamResponses ? "on" : "off"}`,
     `Prompt payloads: ${settings.includePromptPayloads ? "on" : "off"}`,
     `Reasoning payloads: ${settings.includeReasoningPayloads ? "on" : "off"}`,
@@ -1093,12 +1125,14 @@ function renderSuggestions(preview: DraftSuggestionPreview | undefined, modelBus
   }
   return `<section class="sub-panel suggestions">
     <div class="section-title">${renderIcon("intent")}<span>INTENT INFERENCE</span><button class="inline-action model-action" data-action="regenerateAll"${modelBusy ? " disabled" : ""}>Regenerate</button></div>
+    ${renderOllamaQueueWarning(preview)}
     ${preview.items.map((item) => `<article class="suggestion">
       <div class="item-head">
         <span class="name">${escapeHtml(item.title)}</span>
         <span class="badge">${escapeHtml(item.provider)}</span>
         ${item.tone ? `<span class="badge">${escapeHtml(item.tone)}</span>` : ""}
       </div>
+      ${renderSuggestionDiagnostics(item)}
       ${renderSuggestionComparison(item)}
       ${renderProviderReasoning(item)}
       ${renderSuggestionEvidence(item)}
@@ -1117,6 +1151,44 @@ function renderSuggestions(preview: DraftSuggestionPreview | undefined, modelBus
       </div>
     </article>`).join("")}
   </section>`;
+}
+
+function renderOllamaQueueWarning(preview: DraftSuggestionPreview): string {
+  const parallelism = preview.performance?.parallelism ?? 1;
+  if (parallelism <= 1) {
+    return "";
+  }
+  const queued = preview.items.some((item) => {
+    const queueMs = item.timings?.queue_ms ?? 0;
+    const modelMs = item.timings?.model_ms ?? 0;
+    return item.provider.startsWith("ollama:") && queueMs >= 250 && (modelMs <= 0 || queueMs / modelMs >= 0.2);
+  });
+  if (!queued) {
+    return "";
+  }
+  return `<div class="model-diagnostic">${renderIcon("intent")}<span>Ollama queue time detected with parallelism ${parallelism}; the server may be serializing requests.</span></div>`;
+}
+
+function renderSuggestionDiagnostics(item: DraftSuggestionItem): string {
+  const timings = item.timings;
+  if (!timings || !item.provider.startsWith("ollama:")) {
+    return "";
+  }
+  const candidates = [
+    { label: "queue", value: timings.queue_ms },
+    { label: "load", value: timings.load_ms },
+    { label: "prompt eval", value: timings.prompt_eval_ms },
+    { label: "generation", value: timings.eval_ms },
+  ].filter((entry): entry is { label: string; value: number } => typeof entry.value === "number" && entry.value > 0);
+  if (!candidates.length) {
+    return "";
+  }
+  const dominant = candidates.reduce((best, entry) => entry.value > best.value ? entry : best, candidates[0]);
+  const tokenRate = typeof timings.tokens_per_second === "number" ? ` | ${timings.tokens_per_second.toFixed(1)} tok/s` : "";
+  const tokenCounts = typeof timings.prompt_tokens === "number" || typeof timings.eval_tokens === "number"
+    ? ` | ${timings.prompt_tokens ?? 0}/${timings.eval_tokens ?? 0} tok`
+    : "";
+  return `<small class="suggestion-diagnostics">Ollama bottleneck: ${escapeHtml(dominant.label)} ${formatDurationMs(dominant.value)}${tokenRate}${tokenCounts}</small>`;
 }
 
 function renderReleasesPanel(state: ReleaseReleasesRenderState, modelBusy = false): string {
@@ -1737,7 +1809,7 @@ function renderNotice(state: ReleaseControlRenderState): string {
     if (progress) {
       return "";
     }
-    return `<div class="notice">${renderIcon("diff")}<span>Processing diffs for ${escapeHtml(state.range.base)}..${escapeHtml(state.range.head ?? "HEAD")}...</span></div>`;
+    return "";
   }
   if (state.statusMessage) {
     return `<div class="notice">${renderIcon("document")}<span>${escapeHtml(state.statusMessage)}</span></div>`;
@@ -2836,6 +2908,25 @@ function styles(): string {
     .compare span { line-height: 1.35; overflow-wrap: anywhere; }
     .evidence, .rejected, .reasoning { margin-top: 4px; }
     .evidence summary, .rejected summary, .reasoning summary { color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 400; text-transform: none; }
+    .model-diagnostic {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      margin: 4px 0;
+      padding: 4px 5px;
+      color: var(--vscode-descriptionForeground);
+      background: color-mix(in srgb, var(--verlato-purple) 10%, transparent);
+      border-left: 2px solid var(--verlato-purple);
+      font-size: 10px;
+      line-height: 1.35;
+    }
+    .model-diagnostic .verlato-icon { width: 13px; height: 13px; flex: 0 0 auto; }
+    .suggestion-diagnostics {
+      display: block;
+      margin-top: 3px;
+      color: var(--vscode-descriptionForeground);
+      font-variant-numeric: tabular-nums;
+    }
     .reasoning pre, .payload pre {
       max-height: 180px;
       overflow: auto;

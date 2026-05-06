@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 
-from verlato.cli.main import main
+from verlato.cli.main import _normalized_provider_timings, _resolve_suggestion_parallelism, main
 from verlato.config import load_config
 from verlato.core.classifier import Classifier
 from verlato.core.drafts import DraftService, normalize_remote_url
@@ -155,6 +157,8 @@ def test_load_config_reads_ollama_tuning(monkeypatch, tmp_path: Path):
                     "num_ctx": 4096,
                     "summary_num_predict": 96,
                     "classify_num_predict": 12,
+                    "suggest_num_predict": 120,
+                    "suggest_think": True,
                 }
             }
         )
@@ -167,6 +171,8 @@ def test_load_config_reads_ollama_tuning(monkeypatch, tmp_path: Path):
     assert config.provider.num_ctx == 4096
     assert config.provider.summary_num_predict == 96
     assert config.provider.classify_num_predict == 12
+    assert config.provider.suggest_num_predict == 120
+    assert config.provider.suggest_think is True
 
 
 def test_load_config_reads_suggestion_count(monkeypatch, tmp_path: Path):
@@ -177,6 +183,52 @@ def test_load_config_reads_suggestion_count(monkeypatch, tmp_path: Path):
     config = load_config()
 
     assert config.suggestion_count == 4
+
+
+def test_load_config_reads_suggestion_parallelism(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "verlato.json"
+    config_path.write_text(json.dumps({"suggestion_parallelism": 3}))
+    monkeypatch.chdir(tmp_path)
+
+    config = load_config()
+
+    assert config.suggestion_parallelism == 3
+
+
+def test_resolve_suggestion_parallelism_clamps_cli_env_and_config(monkeypatch):
+    monkeypatch.setenv("VERLATO_SUGGESTION_PARALLELISM", "6")
+
+    assert _resolve_suggestion_parallelism(1) == 6
+    assert _resolve_suggestion_parallelism(1, requested=99) == 8
+    assert _resolve_suggestion_parallelism(3, requested=0) == 1
+
+    monkeypatch.setenv("VERLATO_SUGGESTION_PARALLELISM", "not-an-int")
+    assert _resolve_suggestion_parallelism(4) == 4
+
+
+def test_normalized_provider_timings_converts_ollama_metadata():
+    timings = _normalized_provider_timings(
+        {
+            "total_duration": 2_000_000_000,
+            "load_duration": 100_000_000,
+            "prompt_eval_duration": 700_000_000,
+            "eval_duration": 800_000_000,
+            "prompt_eval_count": 20,
+            "eval_count": 40,
+        },
+        model_ms=2500,
+    )
+
+    assert timings == {
+        "ollama_total_ms": 2000,
+        "load_ms": 100,
+        "prompt_eval_ms": 700,
+        "eval_ms": 800,
+        "prompt_tokens": 20,
+        "eval_tokens": 40,
+        "queue_ms": 500,
+        "tokens_per_second": 50.0,
+    }
 
 
 def test_load_config_reads_suggestion_tone(monkeypatch, tmp_path: Path):
@@ -1220,6 +1272,13 @@ def test_draft_suggest_all_visible_batches_large_model_fanout(monkeypatch, tmp_p
                 content="Adds a focused model-written suggestion for this release note.",
                 confidence=0.9,
                 model="mock-local",
+                metadata={
+                    "total_duration": 50_000_000,
+                    "prompt_eval_duration": 20_000_000,
+                    "eval_duration": 30_000_000,
+                    "prompt_eval_count": 8,
+                    "eval_count": 6,
+                },
             )
 
         def classify(self, request: ProviderRequest) -> ProviderResponse:
@@ -1247,6 +1306,102 @@ def test_draft_suggest_all_visible_batches_large_model_fanout(monkeypatch, tmp_p
     assert len(preview["items"]) == 2
 
 
+def test_draft_suggest_parallelism_overlaps_model_calls(monkeypatch, tmp_path: Path, capsys):
+    class BlockingProvider:
+        def __init__(self):
+            self.barrier = threading.Barrier(2, timeout=2)
+            self.lock = threading.Lock()
+            self.active = 0
+            self.max_active = 0
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            with self.lock:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            try:
+                self.barrier.wait()
+                time.sleep(0.02)
+                return ProviderResponse(
+                    content="Clarifies release-note behavior for reviewers without delaying workflow.",
+                    confidence=0.9,
+                    model="mock-local",
+                )
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="mock-local")
+
+    provider = BlockingProvider()
+    groups = [
+        _mk_group(number=1, title="First change", commit_sha="a1", commit_message="first"),
+        _mk_group(number=2, title="Second change", commit_sha="b2", commit_message="second"),
+    ]
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
+
+    rc = main([
+        "draft",
+        "suggest",
+        "--base",
+        "v1.0.0",
+        "--all-visible",
+        "--preview",
+        "--parallelism",
+        "2",
+        "--model-provider",
+        "mock",
+    ])
+    preview = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert provider.max_active == 2
+    assert preview["performance"]["parallelism"] == 2
+
+
+def test_draft_suggest_parallelism_preserves_target_order(monkeypatch, tmp_path: Path, capsys):
+    class StaggeredProvider:
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            if request.evidence["title"] == "First change":
+                time.sleep(0.05)
+            return ProviderResponse(
+                content="Clarifies release-note behavior for reviewers without delaying workflow.",
+                confidence=0.9,
+                model="mock-local",
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="mock-local")
+
+    groups = [
+        _mk_group(number=1, title="First change", commit_sha="a1", commit_message="first"),
+        _mk_group(number=2, title="Second change", commit_sha="b2", commit_message="second"),
+    ]
+    expected_ids = [Classifier().classify(group, "v1.0.0", "HEAD")[0].id for group in groups]
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: StaggeredProvider())
+
+    rc = main([
+        "draft",
+        "suggest",
+        "--base",
+        "v1.0.0",
+        "--all-visible",
+        "--preview",
+        "--parallelism",
+        "2",
+        "--model-provider",
+        "mock",
+    ])
+    preview = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert [item["item_id"] for item in preview["items"]] == expected_ids
+
+
 def test_draft_suggest_progress_reports_item_and_batch_counts(monkeypatch, tmp_path: Path, capsys):
     class CountingProvider:
         def summarize(self, request: ProviderRequest) -> ProviderResponse:
@@ -1254,6 +1409,13 @@ def test_draft_suggest_progress_reports_item_and_batch_counts(monkeypatch, tmp_p
                 content="Adds a focused model-written suggestion for this release note.",
                 confidence=0.9,
                 model="mock-local",
+                metadata={
+                    "total_duration": 50_000_000,
+                    "prompt_eval_duration": 20_000_000,
+                    "eval_duration": 30_000_000,
+                    "prompt_eval_count": 8,
+                    "eval_count": 6,
+                },
             )
 
         def classify(self, request: ProviderRequest) -> ProviderResponse:
@@ -1275,7 +1437,25 @@ def test_draft_suggest_progress_reports_item_and_batch_counts(monkeypatch, tmp_p
 
     assert rc == 0
     assert "[verlato:progress]" not in captured.out
-    assert json.loads(captured.out)["batch_count"] == 2
+    preview = json.loads(captured.out)
+    assert preview["batch_count"] == 2
+    assert preview["performance"]["parallelism"] == 1
+    assert preview["performance"]["target_selection_ms"] >= 0
+    assert preview["performance"]["preparation_ms"] >= 0
+    assert preview["performance"]["model_ms"] >= 0
+    assert preview["performance"]["parse_ms"] >= 0
+    assert preview["performance"]["total_ms"] >= 0
+    assert preview["items"][0]["timings"]["evidence_ms"] >= 0
+    assert preview["items"][0]["timings"]["prompt_ms"] >= 0
+    assert preview["items"][0]["timings"]["model_ms"] >= 0
+    assert preview["items"][0]["timings"]["parse_ms"] >= 0
+    assert preview["items"][0]["timings"]["total_ms"] >= 0
+    assert preview["items"][0]["timings"]["ollama_total_ms"] == 50
+    assert preview["items"][0]["timings"]["prompt_eval_ms"] == 20
+    assert preview["items"][0]["timings"]["eval_ms"] == 30
+    assert preview["items"][0]["timings"]["prompt_tokens"] == 8
+    assert preview["items"][0]["timings"]["eval_tokens"] == 6
+    assert preview["items"][0]["timings"]["tokens_per_second"] == 200.0
     assert any(
         event["stage"] == "suggestion_model_request"
         and event["current"] == 2
@@ -1283,6 +1463,12 @@ def test_draft_suggest_progress_reports_item_and_batch_counts(monkeypatch, tmp_p
         and event["unit"] == "item"
         and event["batch"] == 2
         and event["batch_total"] == 2
+        for event in events
+    )
+    assert any(
+        event["stage"] == "suggestions_ready"
+        and event["elapsed_ms"] >= 0
+        and event["model_ms"] >= 0
         for event in events
     )
 
@@ -1307,6 +1493,8 @@ def test_draft_suggest_all_visible_zero_fanout_returns_no_suggestions(monkeypatc
     assert preview["fanout_guard"] == 0
     assert preview["batch_size"] == 0
     assert preview["batch_count"] == 0
+    assert preview["performance"]["parallelism"] == 1
+    assert preview["performance"]["model_ms"] == 0
     assert preview["items"] == []
 
 

@@ -2,6 +2,7 @@
   "state_path": ".verlato_state.json",
   "feedback_include_text": false,
   "suggestion_count": 1,
+  "suggestion_parallelism": 1,
   "suggestion_tone": "release-note",
   "suggestion_style": {
     "guidance": "Prefer concrete user workflow language.",
@@ -25,6 +26,8 @@
     "keep_alive": "10m",
     "summary_num_predict": 180,
     "classify_num_predict": 24,
+    "suggest_num_predict": null,
+    "suggest_think": false,
     "max_items_per_scan": 25
   },
   "targets": {
