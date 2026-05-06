@@ -183,9 +183,51 @@ test("preview suggestions passes configured parallelism to the CLI and environme
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_PARALLELISM, "4");
 });
 
-test("preview suggestions streams partial items before final stdout resolves", async () => {
+test("preview suggestions can refresh the persistent suggestion cache", async () => {
   const spawnCalls = [];
   const child = makeChild(556);
+  const client = makeClient((command, args, options) => {
+    spawnCalls.push({ command, args, options });
+    return child;
+  });
+
+  const pending = client.previewDraftSuggestions({ base: "v1.0.0", head: "HEAD" }, undefined, undefined, "refresh-cache");
+  await waitForSpawn(spawnCalls);
+  child.stdout.emit("data", JSON.stringify({
+    base_ref: "v1.0.0",
+    head_ref: "HEAD",
+    provider: "mock",
+    count: 1,
+    items: [],
+  }));
+  child.emit("close", 0);
+  await pending;
+
+  assert.ok(spawnCalls[0].args.includes("--refresh-cache"));
+  assert.ok(!spawnCalls[0].args.includes("--no-cache"));
+});
+
+test("clear suggestion cache invokes the state command", async () => {
+  const spawnCalls = [];
+  const child = makeChild(557);
+  const client = makeClient((command, args, options) => {
+    spawnCalls.push({ command, args, options });
+    return child;
+  });
+
+  const pending = client.clearSuggestionCache();
+  await waitForSpawn(spawnCalls);
+  child.stdout.emit("data", JSON.stringify({ removed_entries: 2, path: ".verlato_suggestion_cache.json" }));
+  child.emit("close", 0);
+  const result = await pending;
+
+  assert.deepEqual(spawnCalls[0].args, ["state", "clear-suggestion-cache"]);
+  assert.equal(result.removed_entries, 2);
+});
+
+test("preview suggestions streams partial items before final stdout resolves", async () => {
+  const spawnCalls = [];
+  const child = makeChild(558);
   const client = makeClient((command, args, options) => {
     spawnCalls.push({ command, args, options });
     return child;

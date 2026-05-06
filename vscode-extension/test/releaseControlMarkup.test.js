@@ -750,6 +750,7 @@ test("renders Ollama timing diagnostics and queue warning for suggestions", () =
             hunks_total: 7,
             hunks_skipped: 5,
           },
+          cache: { hit: true, age_seconds: 90 },
           suggestions: ["Make API responses easier to inspect"],
         },
       ],
@@ -759,6 +760,7 @@ test("renders Ollama timing diagnostics and queue warning for suggestions", () =
   const html = buildReleaseReleasesHtml(state);
 
   assert.match(html, /Ollama queue time detected with parallelism 2/);
+  assert.match(html, /cached 2m/);
   assert.match(html, /Ollama bottleneck: prompt eval 1\.4s \| 16\.7 tok\/s \| 30\/15 tok \| prompt 1\.7k chars \| files 8\/14 \| hunks 2\/7 \| skipped 6 files, 5 hunks/);
 });
 

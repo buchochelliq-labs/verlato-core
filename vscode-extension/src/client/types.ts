@@ -64,6 +64,11 @@ export interface ClearWorkingStateResult {
   preserved_published_items: number;
 }
 
+export interface ClearSuggestionCacheResult {
+  removed_entries: number;
+  path: string;
+}
+
 export interface DraftRangeRequest {
   base: string;
   head?: string;
@@ -187,7 +192,14 @@ export interface DraftSuggestionItem {
   suggestion_details?: DraftSuggestionDetail[];
   rejected_candidates?: DraftRejectedSuggestion[];
   timings?: DraftSuggestionTimings;
+  cache?: DraftSuggestionCache;
   suggestions: string[];
+}
+
+export interface DraftSuggestionCache {
+  hit: boolean;
+  key?: string;
+  age_seconds?: number;
 }
 
 export interface DraftPromptBudget {

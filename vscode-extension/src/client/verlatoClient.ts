@@ -6,6 +6,7 @@ import { ExecutableResolution, resolveVerlatoExecutable } from "./cliResolution"
 import { resolveCommandModelProvider, shouldAttachGithubToken } from "./modelEnvironment";
 import {
   ApplyResult,
+  ClearSuggestionCacheResult,
   ClearWorkingStateResult,
   ClientStatus,
   CommandLogEntry,
@@ -27,6 +28,7 @@ import {
 
 type CommandActivityHandler = (entry: CommandLogEntry) => void;
 type SuggestionPartialHandler = (preview: DraftSuggestionPreview) => void;
+export type SuggestionCacheMode = "default" | "no-cache" | "refresh-cache";
 
 export class VerlatoClient implements vscode.Disposable {
   private readonly onDidChangeStatusEmitter = new vscode.EventEmitter<ClientStatus>();
@@ -135,9 +137,15 @@ export class VerlatoClient implements vscode.Disposable {
     request: DraftRangeRequest,
     itemId?: string,
     onPartial?: SuggestionPartialHandler,
+    cacheMode: SuggestionCacheMode = "default",
   ): Promise<DraftSuggestionPreview> {
     const settings = this.getModelSettings();
     const partialState = createSuggestionPartialState(request, settings);
+    const cacheArgs = cacheMode === "refresh-cache"
+      ? ["--refresh-cache"]
+      : cacheMode === "no-cache"
+        ? ["--no-cache"]
+        : [];
     const onActivity = onPartial
       ? (entry: CommandLogEntry) => {
         const preview = mergeSuggestionActivity(partialState, entry);
@@ -160,6 +168,7 @@ export class VerlatoClient implements vscode.Disposable {
       String(settings.suggestionParallelism),
       "--tone",
       settings.suggestionTone,
+      ...cacheArgs,
       ...(itemId ? ["--id", itemId] : ["--all-visible"]),
     ], { onActivity });
   }
@@ -179,6 +188,10 @@ export class VerlatoClient implements vscode.Disposable {
 
   async clearWorkingState(): Promise<ClearWorkingStateResult> {
     return this.runJsonCommand<ClearWorkingStateResult>(["state", "clear-working"]);
+  }
+
+  async clearSuggestionCache(): Promise<ClearSuggestionCacheResult> {
+    return this.runJsonCommand<ClearSuggestionCacheResult>(["state", "clear-suggestion-cache"]);
   }
 
   async getRepositoryOverview(): Promise<RepositoryOverview> {

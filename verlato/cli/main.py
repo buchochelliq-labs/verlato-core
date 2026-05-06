@@ -30,11 +30,13 @@ from verlato.providers.model_logging import (
     print_stderr_lines,
     redact_model_payload,
 )
+from verlato.state.suggestion_cache import CachedSuggestion, SuggestionCacheBackend, build_suggestion_cache_backend
 from verlato.state.store import StateStore
 
 MODEL_PROVIDER_CHOICES = ["stub", "mock", "ollama", "github-copilot"]
 SUGGESTION_TONE_CHOICES = ["release-note", "concise", "technical", "customer-facing"]
 MAX_SUGGESTION_PARALLELISM = 8
+SUGGESTION_CACHE_PROMPT_PROFILE = "suggestion-conservative"
 
 
 @dataclass
@@ -51,6 +53,7 @@ class _SuggestionWork:
     source_evidence: list[dict[str, str]]
     prompt_sha: str
     prompt_budget: dict[str, object]
+    cache_key: str
     suggestion_count: int
     suggestion_tone: str
     suggestion_style: dict[str, object]
@@ -116,6 +119,8 @@ def build_parser() -> argparse.ArgumentParser:
     draft_suggest.add_argument("--preview", action="store_true")
     draft_suggest.add_argument("--count", type=int)
     draft_suggest.add_argument("--parallelism", type=int)
+    draft_suggest.add_argument("--no-cache", action="store_true")
+    draft_suggest.add_argument("--refresh-cache", action="store_true")
     draft_suggest.add_argument("--tone", choices=SUGGESTION_TONE_CHOICES)
     draft_suggest.add_argument("--reviewer")
     draft_suggest.add_argument(
@@ -173,6 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
     state_sub = state.add_subparsers(dest="state_command", required=True)
     state_sub.add_parser("show")
     state_sub.add_parser("clear-working")
+    state_sub.add_parser("clear-suggestion-cache")
 
     mark_published = state_sub.add_parser("mark-published")
     mark_published.add_argument("--version", required=True)
@@ -186,6 +192,14 @@ def _build_store() -> StateStore:
     config = _load_config()
     path = os.getenv("VERLATO_STATE_PATH", config.state_path)
     return StateStore(path=path)
+
+
+def _build_suggestion_cache_store(config: VerlatoConfig | None = None) -> SuggestionCacheBackend:
+    config = config or _load_config()
+    backend = _resolve_suggestion_cache_backend(config.suggestion_cache_backend)
+    path = os.getenv("VERLATO_SUGGESTION_CACHE_PATH", config.suggestion_cache_path)
+    ttl_days = _resolve_suggestion_cache_ttl_days(config.suggestion_cache_ttl_days)
+    return build_suggestion_cache_backend(backend=backend, path=path, ttl_days=ttl_days)
 
 
 def _build_adapter() -> PullRequestAdapter:
@@ -487,6 +501,22 @@ def _resolve_suggestion_parallelism(configured: int, requested: int | None = Non
     return max(1, min(value, MAX_SUGGESTION_PARALLELISM))
 
 
+def _resolve_suggestion_cache_backend(configured: str) -> str:
+    raw = os.getenv("VERLATO_SUGGESTION_CACHE_BACKEND") or configured or "json"
+    return raw.strip().lower() or "json"
+
+
+def _resolve_suggestion_cache_ttl_days(configured: int) -> int:
+    raw = os.getenv("VERLATO_SUGGESTION_CACHE_TTL_DAYS")
+    value = configured
+    if raw is not None:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = configured
+    return max(0, value)
+
+
 def _resolve_suggestion_tone(configured: str, requested: str | None = None) -> str:
     raw = requested or os.getenv("VERLATO_SUGGESTION_TONE") or configured
     tone = (raw or "release-note").strip().lower()
@@ -754,9 +784,13 @@ def _preview_draft_model_suggestions(
     parallelism: int | None = None,
     model_provider: str | None = None,
     tone: str | None = None,
+    no_cache: bool = False,
+    refresh_cache: bool = False,
 ) -> dict:
     if all_visible == bool(item_id):
         raise SystemExit("Provide exactly one suggestion target: --id or --all-visible")
+    if no_cache and refresh_cache:
+        raise SystemExit("Use --no-cache or --refresh-cache, not both")
 
     total_start = perf_counter()
     config = _load_config()
@@ -764,6 +798,9 @@ def _preview_draft_model_suggestions(
     suggestion_parallelism = _resolve_suggestion_parallelism(config.suggestion_parallelism, requested=parallelism)
     suggestion_tone = _resolve_suggestion_tone(config.suggestion_tone, requested=tone)
     suggestion_style = _resolve_suggestion_style(config)
+    cache_read_enabled = not no_cache and not refresh_cache
+    cache_write_enabled = not no_cache
+    suggestion_cache = _build_suggestion_cache_store(config) if (cache_read_enabled or cache_write_enabled) else None
     suggestion_count_source = (
         "cli" if count is not None else "env" if os.getenv("VERLATO_SUGGESTION_COUNT") else "config"
     )
@@ -907,6 +944,8 @@ def _preview_draft_model_suggestions(
 
     if not any(target_batches):
         _trace_progress("suggestions_ready", "No model suggestions requested", current=0, total=0, unit="item")
+        if suggestion_cache is not None and suggestion_cache.dirty:
+            suggestion_cache.save()
         total_ms = _elapsed_ms(total_start)
         return {
             "base_ref": base,
@@ -932,6 +971,8 @@ def _preview_draft_model_suggestions(
         }
 
     provider = build_provider(config.provider, mode=effective_model_provider)
+    cache_provider_mode = effective_model_provider or "configured"
+    cache_model_id = _provider_cache_model_id(provider, cache_provider_mode)
     provider_classifier = Classifier(
         provider=provider,
         summary_tone=suggestion_tone,
@@ -1013,6 +1054,16 @@ def _preview_draft_model_suggestions(
         }
         source_evidence = _build_suggestion_source_evidence(diff, group)
         prompt_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12]
+        cache_key = _suggestion_cache_key(
+            item=baseline_item,
+            prompt_sha=prompt_sha,
+            provider_mode=cache_provider_mode,
+            model_id=cache_model_id,
+            tone=suggestion_tone,
+            style_profile=suggestion_style,
+            suggestion_count=suggestion_count,
+            prompt_profile=str(prompt_budget.get("profile") or SUGGESTION_CACHE_PROMPT_PROFILE),
+        )
         prompt_ms = _elapsed_ms(prompt_start)
         preparation_ms += _elapsed_ms(item_start)
         _trace_model_suggest_stage(
@@ -1039,6 +1090,7 @@ def _preview_draft_model_suggestions(
             source_evidence=source_evidence,
             prompt_sha=prompt_sha,
             prompt_budget=prompt_budget,
+            cache_key=cache_key,
             suggestion_count=suggestion_count,
             suggestion_tone=suggestion_tone,
             suggestion_style=suggestion_style,
@@ -1080,6 +1132,15 @@ def _preview_draft_model_suggestions(
             batch_total=len(target_batches),
             item=event_item,
         )
+        cache_info = result.item.get("cache")
+        if (
+            cache_write_enabled
+            and suggestion_cache is not None
+            and isinstance(cache_info, dict)
+            and cache_info.get("hit") is False
+            and isinstance(cache_info.get("key"), str)
+        ):
+            suggestion_cache.put(cache_info["key"], _suggestion_cache_stored_item(result.item))
 
     def record_failure(work: _SuggestionWork, exc: BaseException) -> None:
         code = exc.code if isinstance(exc, SystemExit) else exc
@@ -1094,6 +1155,14 @@ def _preview_draft_model_suggestions(
             batch=work.batch,
             batch_total=len(target_batches),
         )
+
+    def cached_result_for_work(work: _SuggestionWork) -> _SuggestionResult | None:
+        if not cache_read_enabled or suggestion_cache is None:
+            return None
+        cached = suggestion_cache.get(work.cache_key)
+        if cached is None:
+            return None
+        return _cached_suggestion_result(work, cached)
 
     for batch_index, batch in enumerate(target_batches, start=1):
         _trace_progress(
@@ -1116,11 +1185,13 @@ def _preview_draft_model_suggestions(
             for batch_offset, (group, baseline_item) in enumerate(batch):
                 order = len(items) + batch_offset
                 work = prepare_work(order, group, baseline_item, batch_index)
-                try:
-                    result = _run_suggestion_model_work(provider, provider_classifier, work)
-                except (Exception, SystemExit) as exc:
-                    record_failure(work, exc)
-                    raise
+                result = cached_result_for_work(work)
+                if result is None:
+                    try:
+                        result = _run_suggestion_model_work(provider, provider_classifier, work)
+                    except (Exception, SystemExit) as exc:
+                        record_failure(work, exc)
+                        raise
                 batch_results[result.order] = result
                 record_result(result)
         else:
@@ -1130,6 +1201,11 @@ def _preview_draft_model_suggestions(
                 for batch_offset, (group, baseline_item) in enumerate(batch):
                     order = len(items) + batch_offset
                     work = prepare_work(order, group, baseline_item, batch_index)
+                    result = cached_result_for_work(work)
+                    if result is not None:
+                        batch_results[result.order] = result
+                        record_result(result)
+                        continue
                     future_to_work[executor.submit(_run_suggestion_model_work, provider, provider_classifier, work)] = work
                 try:
                     for future in as_completed(future_to_work):
@@ -1149,6 +1225,8 @@ def _preview_draft_model_suggestions(
             result_item.pop("batch", None)
             items.append(result_item)
 
+    if suggestion_cache is not None and suggestion_cache.dirty:
+        suggestion_cache.save()
     total_ms = _elapsed_ms(total_start)
     _trace_progress(
         "suggestions_ready",
@@ -1181,6 +1259,132 @@ def _preview_draft_model_suggestions(
         "batch_count": len(target_batches),
         "items": items,
     }
+
+
+def _provider_cache_model_id(provider: object, provider_mode: str) -> str:
+    normalized_mode = (provider_mode or "configured").strip().lower()
+    raw_model = getattr(provider, "model", None)
+    model = str(raw_model).strip() if raw_model is not None else ""
+    if normalized_mode in {"ollama", "local"}:
+        return f"ollama:{model or 'default'}"
+    if normalized_mode in {"github-copilot", "github", "copilot"}:
+        return f"github-copilot:{model or 'default'}"
+    if normalized_mode == "mock":
+        return "mock-local"
+    if normalized_mode == "stub":
+        return "stub"
+    return model or provider.__class__.__name__
+
+
+def _suggestion_cache_key(
+    *,
+    item: ChangeItem,
+    prompt_sha: str,
+    provider_mode: str,
+    model_id: str,
+    tone: str,
+    style_profile: dict[str, object],
+    suggestion_count: int,
+    prompt_profile: str,
+) -> str:
+    current_summary = item.edited_summary or item.content.summary
+    payload = {
+        "schema": "v1",
+        "item_id": item.id,
+        "checksum_version": item.checksum_version,
+        "checksum": item.checksum,
+        "current_summary_sha": hashlib.sha256(current_summary.encode("utf-8")).hexdigest()[:12],
+        "prompt_sha": prompt_sha,
+        "provider_mode": provider_mode,
+        "model_id": model_id,
+        "tone": tone,
+        "style_profile_sha": _stable_json_sha(style_profile),
+        "suggestion_count": suggestion_count,
+        "prompt_profile": prompt_profile,
+    }
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return "suggestion-v1:" + hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _stable_json_sha(value: object) -> str:
+    serialized = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:12]
+
+
+def _suggestion_cache_stored_item(item: dict[str, object]) -> dict[str, object]:
+    transient = {"batch", "cache", "provider_metadata", "provider_reasoning", "timings"}
+    return {key: value for key, value in item.items() if key not in transient}
+
+
+def _cached_suggestion_result(work: _SuggestionWork, cached: CachedSuggestion) -> _SuggestionResult | None:
+    cached_item = dict(cached.item)
+    raw_suggestions = cached_item.get("suggestions")
+    if not isinstance(raw_suggestions, list):
+        return None
+    suggestions = [suggestion for suggestion in raw_suggestions if isinstance(suggestion, str) and suggestion.strip()]
+    if not suggestions:
+        return None
+    current_summary = work.baseline_item.edited_summary or work.baseline_item.content.summary
+    cached_item.pop("provider_metadata", None)
+    cached_item.pop("provider_reasoning", None)
+    cached_item.pop("timings", None)
+    cached_item.pop("cache", None)
+    cached_item.pop("batch", None)
+    item = {
+        **cached_item,
+        "item_id": work.baseline_item.id,
+        "title": work.baseline_item.content.title,
+        "current_summary": current_summary,
+        "provider": cached_item.get("provider") if isinstance(cached_item.get("provider"), str) else work.effective_model_provider or "configured",
+        "prompt_sha": work.prompt_sha,
+        "tone": work.suggestion_tone,
+        "style_profile": work.suggestion_style,
+        "source_evidence": work.source_evidence,
+        "prompt_budget": work.prompt_budget,
+        "suggestion_details": _cached_suggestion_details(cached_item, suggestions, work, current_summary),
+        "rejected_candidates": cached_item.get("rejected_candidates") if isinstance(cached_item.get("rejected_candidates"), list) else [],
+        "suggestions": suggestions,
+        "cache": {
+            "hit": True,
+            "key": work.cache_key,
+            "age_seconds": cached.age_seconds,
+        },
+        "timings": {
+            "evidence_ms": work.evidence_ms,
+            "prompt_ms": work.prompt_ms,
+            "model_ms": 0,
+            "parse_ms": 0,
+            "total_ms": _elapsed_ms(work.started_at),
+        },
+        "batch": work.batch,
+    }
+    return _SuggestionResult(order=work.order, item=item, model_ms=0, parse_ms=0)
+
+
+def _cached_suggestion_details(
+    cached_item: dict[str, object],
+    suggestions: list[str],
+    work: _SuggestionWork,
+    current_summary: str,
+) -> list[dict[str, object]]:
+    raw_details = cached_item.get("suggestion_details")
+    details_by_summary = {}
+    if isinstance(raw_details, list):
+        for detail in raw_details:
+            if isinstance(detail, dict) and isinstance(detail.get("summary"), str):
+                details_by_summary[detail["summary"]] = detail
+    details: list[dict[str, object]] = []
+    for suggestion in suggestions:
+        detail = dict(details_by_summary.get(suggestion) or {})
+        detail["summary"] = suggestion
+        detail["similarity_to_current"] = _summary_similarity(suggestion, current_summary)
+        detail["specificity_score"] = _summary_specificity(suggestion, work.group)
+        detail["comparison"] = {
+            "current": current_summary,
+            "suggested": suggestion,
+        }
+        details.append(detail)
+    return details
 
 
 def _run_suggestion_model_work(provider, provider_classifier: Classifier, work: _SuggestionWork) -> _SuggestionResult:
@@ -1263,6 +1467,10 @@ def _run_suggestion_model_work(provider, provider_classifier: Classifier, work: 
         "suggestion_details": suggestion_details,
         "rejected_candidates": rejected_candidates,
         "suggestions": suggestions,
+        "cache": {
+            "hit": False,
+            "key": work.cache_key,
+        },
         "timings": {
             "evidence_ms": work.evidence_ms,
             "prompt_ms": work.prompt_ms,
@@ -2340,6 +2548,28 @@ def _run_clear_working_state() -> int:
     return 0
 
 
+def _run_clear_suggestion_cache() -> int:
+    config = _load_config()
+    backend = _resolve_suggestion_cache_backend(config.suggestion_cache_backend)
+    path = os.getenv("VERLATO_SUGGESTION_CACHE_PATH", config.suggestion_cache_path)
+    cache = build_suggestion_cache_backend(
+        backend=backend,
+        path=path,
+        ttl_days=_resolve_suggestion_cache_ttl_days(config.suggestion_cache_ttl_days),
+    )
+    removed_count = cache.clear()
+    print(
+        json.dumps(
+            {
+                "removed_entries": removed_count,
+                "path": str(cache.path),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -2424,6 +2654,8 @@ def main(argv: list[str] | None = None) -> int:
                     parallelism=args.parallelism,
                     model_provider=args.model_provider,
                     tone=args.tone,
+                    no_cache=args.no_cache,
+                    refresh_cache=args.refresh_cache,
                 )
                 print(json.dumps(suggestions, indent=2))
                 return 0
@@ -2508,6 +2740,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "state" and args.state_command == "clear-working":
         return _run_clear_working_state()
+
+    if args.command == "state" and args.state_command == "clear-suggestion-cache":
+        return _run_clear_suggestion_cache()
 
     if args.command == "state" and args.state_command == "mark-published":
         if not args.all_unpublished and not args.ids:

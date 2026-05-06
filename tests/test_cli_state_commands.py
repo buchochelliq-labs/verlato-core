@@ -74,6 +74,31 @@ def test_state_clear_working_preserves_published_releases(monkeypatch, tmp_path:
     assert loaded.feedback_events == [{"event": "release_note_kept", "item_id": "ci_published"}]
 
 
+def test_state_clear_suggestion_cache_deletes_cache_file(monkeypatch, tmp_path: Path, capsys):
+    cache_path = tmp_path / "suggestions.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "created_at": "2026-05-06T12:00:00Z",
+                "updated_at": "2026-05-06T12:00:00Z",
+                "entries": {"key-1": {"item": {"item_id": "ci_1", "suggestions": ["Improves release notes"]}}},
+            }
+        )
+    )
+
+    monkeypatch.setenv("VERLATO_SUGGESTION_CACHE_PATH", str(cache_path))
+    rc = main(["state", "clear-suggestion-cache"])
+
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out == {
+        "removed_entries": 1,
+        "path": str(cache_path),
+    }
+    assert not cache_path.exists()
+
+
 def test_reconcile_command_outputs_count(monkeypatch, tmp_path: Path, capsys):
     monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
     monkeypatch.setattr("verlato.cli.main.run_scan", lambda base, head, persist: [{"id": "ci_1"}])

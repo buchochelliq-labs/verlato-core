@@ -44,6 +44,9 @@ class SuggestionStyleConfig:
 @dataclass
 class VerlatoConfig:
     state_path: str = ".verlato_state.json"
+    suggestion_cache_backend: str = "json"
+    suggestion_cache_path: str = ".verlato_suggestion_cache.json"
+    suggestion_cache_ttl_days: int = 30
     provider: ProviderConfig = field(default_factory=ProviderConfig)
     suggestion_count: int = 1
     suggestion_parallelism: int = 1
@@ -72,6 +75,12 @@ def load_config(cwd: str | None = None) -> VerlatoConfig:
     config = VerlatoConfig(raw=raw)
     if raw.get("state_path"):
         config.state_path = str(raw["state_path"])
+    if raw.get("suggestion_cache_backend"):
+        config.suggestion_cache_backend = str(raw["suggestion_cache_backend"]).strip() or config.suggestion_cache_backend
+    if raw.get("suggestion_cache_path"):
+        config.suggestion_cache_path = str(raw["suggestion_cache_path"])
+    if raw.get("suggestion_cache_ttl_days") is not None:
+        config.suggestion_cache_ttl_days = int(raw["suggestion_cache_ttl_days"])
     if raw.get("suggestion_count") is not None:
         config.suggestion_count = int(raw["suggestion_count"])
     if raw.get("suggestion_parallelism") is not None:

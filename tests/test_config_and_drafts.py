@@ -5,7 +5,13 @@ import threading
 import time
 from pathlib import Path
 
-from verlato.cli.main import _normalized_provider_timings, _resolve_suggestion_parallelism, main
+from verlato.cli.main import (
+    _normalized_provider_timings,
+    _resolve_suggestion_cache_backend,
+    _resolve_suggestion_cache_ttl_days,
+    _resolve_suggestion_parallelism,
+    main,
+)
 from verlato.config import load_config
 from verlato.core.classifier import Classifier
 from verlato.core.drafts import DraftService, normalize_remote_url
@@ -22,6 +28,12 @@ from verlato.core.models import (
 )
 from verlato.providers.base import ProviderRequest, ProviderResponse
 from verlato.providers.stub import StubProvider
+from verlato.state.suggestion_cache import (
+    CachedSuggestion,
+    SuggestionCacheError,
+    build_suggestion_cache_backend,
+    register_suggestion_cache_backend,
+)
 from verlato.state.store import StateData, StateStore
 
 
@@ -88,6 +100,9 @@ def test_load_config_defaults_without_file(monkeypatch, tmp_path: Path):
     config = load_config()
 
     assert config.state_path == ".verlato_state.json"
+    assert config.suggestion_cache_backend == "json"
+    assert config.suggestion_cache_path == ".verlato_suggestion_cache.json"
+    assert config.suggestion_cache_ttl_days == 30
     assert config.targets["changelog"].path == "CHANGELOG.md"
     assert config.targets["github-release"].path == ".github/release.md"
 
@@ -202,6 +217,56 @@ def test_load_config_reads_suggestion_parallelism(monkeypatch, tmp_path: Path):
     config = load_config()
 
     assert config.suggestion_parallelism == 3
+
+
+def test_load_config_reads_suggestion_cache_settings(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "verlato.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "suggestion_cache_backend": "json",
+                "suggestion_cache_path": ".cache/suggestions.json",
+                "suggestion_cache_ttl_days": 7,
+            }
+        )
+    )
+    monkeypatch.chdir(tmp_path)
+
+    config = load_config()
+
+    assert config.suggestion_cache_backend == "json"
+    assert config.suggestion_cache_path == ".cache/suggestions.json"
+    assert config.suggestion_cache_ttl_days == 7
+
+
+def test_resolve_suggestion_cache_backend_reads_env(monkeypatch):
+    monkeypatch.setenv("VERLATO_SUGGESTION_CACHE_BACKEND", " JSON ")
+    assert _resolve_suggestion_cache_backend("custom") == "json"
+
+    monkeypatch.delenv("VERLATO_SUGGESTION_CACHE_BACKEND")
+    assert _resolve_suggestion_cache_backend("custom-backend") == "custom-backend"
+    assert _resolve_suggestion_cache_backend("") == "json"
+
+
+def test_resolve_suggestion_cache_ttl_days_reads_env(monkeypatch):
+    monkeypatch.setenv("VERLATO_SUGGESTION_CACHE_TTL_DAYS", "14")
+    assert _resolve_suggestion_cache_ttl_days(30) == 14
+
+    monkeypatch.setenv("VERLATO_SUGGESTION_CACHE_TTL_DAYS", "not-an-int")
+    assert _resolve_suggestion_cache_ttl_days(30) == 30
+
+    monkeypatch.setenv("VERLATO_SUGGESTION_CACHE_TTL_DAYS", "-5")
+    assert _resolve_suggestion_cache_ttl_days(30) == 0
+
+
+def test_suggestion_cache_backend_registry_rejects_unknown_backend():
+    try:
+        build_suggestion_cache_backend(backend="missing-test-backend")
+    except SuggestionCacheError as exc:
+        assert "missing-test-backend" in str(exc)
+        assert "json" in str(exc)
+    else:
+        raise AssertionError("Expected unknown suggestion cache backend to fail")
 
 
 def test_resolve_suggestion_parallelism_clamps_cli_env_and_config(monkeypatch):
@@ -840,6 +905,299 @@ def test_draft_suggest_preview_defaults_to_one_suggestion(monkeypatch, tmp_path:
     assert preview["count"] == 1
     assert preview["items"][0]["suggestions"] == ["Clarifies login guidance for users"]
     assert "[verlato:suggestion]" not in captured.err
+
+
+def test_draft_suggest_cache_hit_skips_provider_call(monkeypatch, tmp_path: Path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
+    group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
+    target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
+    calls = {"count": 0}
+
+    class CacheWritingProvider:
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            calls["count"] += 1
+            return ProviderResponse(
+                content="Clarifies login recovery guidance for reviewers",
+                confidence=0.9,
+                model="mock-local",
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="mock-local")
+
+    class FailingProvider:
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            raise AssertionError("cache hit should skip provider summarize")
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="mock-local")
+
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: CacheWritingProvider())
+
+    rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"])
+    first = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert calls["count"] == 1
+    assert first["items"][0]["cache"]["hit"] is False
+    assert (tmp_path / ".verlato_suggestion_cache.json").exists()
+
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: FailingProvider())
+    rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"])
+    second = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert second["items"][0]["suggestions"] == ["Clarifies login recovery guidance for reviewers"]
+    assert second["items"][0]["cache"]["hit"] is True
+    assert second["items"][0]["cache"]["age_seconds"] >= 0
+    assert second["items"][0]["timings"]["model_ms"] == 0
+    assert second["items"][0]["timings"]["parse_ms"] == 0
+
+
+def test_draft_suggest_can_use_registered_cache_backend(monkeypatch, tmp_path: Path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setenv("VERLATO_SUGGESTION_CACHE_BACKEND", "unit-test-hit")
+    group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
+    target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
+    backend_calls = {"load": 0, "get": 0}
+
+    class AlwaysHitBackend:
+        def __init__(self, path: str, ttl_days: int) -> None:
+            self.path = Path(path)
+            self.ttl_days = ttl_days
+            self.dirty = False
+
+        def load(self):
+            backend_calls["load"] += 1
+            return self
+
+        def get(self, key: str) -> CachedSuggestion:
+            backend_calls["get"] += 1
+            return CachedSuggestion(
+                key=key,
+                item={
+                    "item_id": target_item.id,
+                    "title": target_item.content.title,
+                    "current_summary": target_item.content.summary,
+                    "provider": "custom-cache",
+                    "suggestion_details": [],
+                    "rejected_candidates": [],
+                    "suggestions": ["Clarifies cached login recovery guidance for reviewers"],
+                },
+                created_at="2026-05-06T12:00:00Z",
+                updated_at="2026-05-06T12:00:00Z",
+                age_seconds=42,
+            )
+
+        def put(self, key: str, item: dict) -> None:
+            raise AssertionError("cache hit should not write")
+
+        def save(self) -> None:
+            raise AssertionError("clean cache should not save")
+
+        def clear(self) -> int:
+            return 0
+
+    class FailingProvider:
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            raise AssertionError("registered cache backend should skip provider summarize")
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="mock-local")
+
+    register_suggestion_cache_backend("unit-test-hit", lambda path, ttl_days: AlwaysHitBackend(path, ttl_days))
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: FailingProvider())
+
+    rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"])
+    preview = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert backend_calls == {"load": 1, "get": 1}
+    assert preview["items"][0]["provider"] == "custom-cache"
+    assert preview["items"][0]["cache"]["hit"] is True
+    assert preview["items"][0]["cache"]["age_seconds"] == 42
+    assert not (tmp_path / ".verlato_suggestion_cache.json").exists()
+
+
+def test_draft_suggest_refresh_cache_bypasses_read_and_overwrites(monkeypatch, tmp_path: Path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
+    group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
+    target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
+    responses = [
+        "Clarifies login recovery guidance for reviewers",
+        "Clarifies refreshed login recovery guidance for reviewers",
+    ]
+
+    class RefreshProvider:
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content=responses.pop(0), confidence=0.9, model="mock-local")
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="mock-local")
+
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: RefreshProvider())
+
+    assert main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"]) == 0
+    capsys.readouterr()
+    rc = main(
+        [
+            "draft",
+            "suggest",
+            "--base",
+            "v1.0.0",
+            "--id",
+            target_item.id,
+            "--preview",
+            "--refresh-cache",
+            "--model-provider",
+            "mock",
+        ]
+    )
+    refreshed = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert refreshed["items"][0]["suggestions"] == ["Clarifies refreshed login recovery guidance for reviewers"]
+    assert refreshed["items"][0]["cache"]["hit"] is False
+    assert responses == []
+
+    class FailingProvider:
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            raise AssertionError("refreshed cache should satisfy the next run")
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="mock-local")
+
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: FailingProvider())
+    assert main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"]) == 0
+    cached = json.loads(capsys.readouterr().out)
+    assert cached["items"][0]["suggestions"] == ["Clarifies refreshed login recovery guidance for reviewers"]
+    assert cached["items"][0]["cache"]["hit"] is True
+
+
+def test_draft_suggest_no_cache_neither_reads_nor_writes(monkeypatch, tmp_path: Path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
+    group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
+    target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
+    calls = {"count": 0}
+
+    class NoCacheProvider:
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            calls["count"] += 1
+            return ProviderResponse(
+                content="Clarifies login recovery guidance for reviewers",
+                confidence=0.9,
+                model="mock-local",
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="mock-local")
+
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: NoCacheProvider())
+
+    for _ in range(2):
+        rc = main(
+            [
+                "draft",
+                "suggest",
+                "--base",
+                "v1.0.0",
+                "--id",
+                target_item.id,
+                "--preview",
+                "--no-cache",
+                "--model-provider",
+                "mock",
+            ]
+        )
+        preview = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert preview["items"][0]["cache"]["hit"] is False
+
+    assert calls["count"] == 2
+    assert not (tmp_path / ".verlato_suggestion_cache.json").exists()
+
+
+def test_draft_suggest_cache_key_changes_with_count(monkeypatch, tmp_path: Path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
+    group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
+    target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
+    calls = {"count": 0}
+
+    class CountingProvider:
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            calls["count"] += 1
+            return ProviderResponse(
+                content=(
+                    "1. Clarifies login recovery guidance for reviewers\n"
+                    "2. Documents login recovery guidance for support teams"
+                ),
+                confidence=0.9,
+                model="mock-local",
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="mock-local")
+
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: CountingProvider())
+
+    assert main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--count", "1", "--model-provider", "mock"]) == 0
+    capsys.readouterr()
+    assert main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--count", "2", "--model-provider", "mock"]) == 0
+    second = json.loads(capsys.readouterr().out)
+
+    assert calls["count"] == 2
+    assert second["items"][0]["cache"]["hit"] is False
+    assert second["items"][0]["suggestions"] == [
+        "Clarifies login recovery guidance for reviewers",
+        "Documents login recovery guidance for support teams",
+    ]
+
+
+def test_draft_suggest_expired_cache_entry_is_ignored_and_compacted(monkeypatch, tmp_path: Path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
+    group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
+    target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
+    responses = [
+        "Clarifies login recovery guidance for reviewers",
+        "Clarifies login recovery guidance after cache expiry",
+    ]
+
+    class ExpiringProvider:
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content=responses.pop(0), confidence=0.9, model="mock-local")
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="mock-local")
+
+    cache_path = tmp_path / ".verlato_suggestion_cache.json"
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: ExpiringProvider())
+
+    assert main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"]) == 0
+    capsys.readouterr()
+    cache_data = json.loads(cache_path.read_text())
+    cache_key = next(iter(cache_data["entries"]))
+    cache_data["entries"][cache_key]["updated_at"] = "2000-01-01T00:00:00Z"
+    cache_path.write_text(json.dumps(cache_data))
+
+    assert main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"]) == 0
+    preview = json.loads(capsys.readouterr().out)
+    refreshed_cache = json.loads(cache_path.read_text())
+
+    assert responses == []
+    assert preview["items"][0]["suggestions"] == ["Clarifies login recovery guidance after cache expiry"]
+    assert preview["items"][0]["cache"]["hit"] is False
+    assert refreshed_cache["entries"][cache_key]["updated_at"] != "2000-01-01T00:00:00Z"
 
 
 def test_draft_suggest_streams_suggestion_events_when_traced(monkeypatch, tmp_path: Path, capsys):

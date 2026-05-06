@@ -132,7 +132,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     }
     if (message.type === "regenerateAll") {
       this.suggestions?.items.forEach((item) => this.recordFeedback("suggestion_regenerated", item.item_id, { scope: "all-visible" }));
-      await this.suggest();
+      await this.suggest(undefined, "refresh-cache");
     }
     if (message.type === "feedbackPositive" && message.itemId) {
       this.recordFeedback("suggestion_marked_useful", message.itemId);
@@ -156,6 +156,9 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     }
     if (message.type === "clearWorkingState") {
       await this.clearWorkingState();
+    }
+    if (message.type === "clearSuggestionCache") {
+      await this.clearSuggestionCache();
     }
     if (message.type === "openSources") {
       await vscode.commands.executeCommand("verlato.sources.focus");
@@ -291,7 +294,29 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async suggest(itemId?: string): Promise<void> {
+  private async clearSuggestionCache(): Promise<void> {
+    const confirmed = await vscode.window.showWarningMessage(
+      "Clear cached Verlato suggestions for this workspace?",
+      { modal: true },
+      "Clear Suggestion Cache",
+    );
+    if (confirmed !== "Clear Suggestion Cache") {
+      return;
+    }
+    let successMessage: string | undefined;
+    await this.runBusy(async () => {
+      const result = await this.client.clearSuggestionCache();
+      this.statusMessage = `Cleared ${result.removed_entries} cached suggestion entr${result.removed_entries === 1 ? "y" : "ies"}.`;
+      successMessage = this.statusMessage;
+      this.suggestions = undefined;
+      this.refresh(undefined, undefined, this.client.getModelSettings());
+    });
+    if (successMessage) {
+      await handleNotificationAction(await showSuccessNotification(successMessage, "Open Verlato", "View Activity"));
+    }
+  }
+
+  private async suggest(itemId?: string, cacheMode: "default" | "refresh-cache" = "default"): Promise<void> {
     if (!this.hasSelectedBase()) {
       this.statusMessage = "No base refs selected.";
       this.render();
@@ -310,7 +335,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
         }
         this.render();
         this.onDidRefresh?.(this.document, this.overview, this.modelSettings, this.suggestions);
-      });
+      }, cacheMode);
       this.suggestions = suggestions;
       this.onDidRefresh?.(this.document, this.overview, this.modelSettings, this.suggestions);
       const generatedCount = suggestions.items[0]?.suggestions.length ?? 0;
@@ -381,7 +406,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
 
   private async regenerateSuggestion(itemId: string): Promise<void> {
     this.recordFeedback("suggestion_regenerated", itemId, { scope: "item" });
-    await this.suggest(itemId);
+    await this.suggest(itemId, "refresh-cache");
   }
 
   private recordFeedback(event: string, itemId: string, metadata: Record<string, unknown> = {}): void {

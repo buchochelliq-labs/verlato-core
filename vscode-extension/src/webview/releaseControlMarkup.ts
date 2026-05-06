@@ -204,6 +204,7 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets
       if (action === 'preview') vscode.postMessage({ type: 'preview' });
       if (action === 'refresh') vscode.postMessage({ type: 'refresh' });
       if (action === 'clearWorkingState') vscode.postMessage({ type: 'clearWorkingState' });
+      if (action === 'clearSuggestionCache') vscode.postMessage({ type: 'clearSuggestionCache' });
       if (action === 'openSources') vscode.postMessage({ type: 'openSources' });
       if (action === 'closeSources') {
         const picker = document.getElementById('source-picker');
@@ -674,6 +675,20 @@ function formatDurationMs(value: number): string {
   return `${(value / 60000).toFixed(1)}m`;
 }
 
+function formatCacheAge(seconds: number): string {
+  const safeSeconds = Math.max(0, Math.round(seconds));
+  if (safeSeconds < 60) {
+    return `${safeSeconds}s`;
+  }
+  if (safeSeconds < 3600) {
+    return `${Math.round(safeSeconds / 60)}m`;
+  }
+  if (safeSeconds < 86400) {
+    return `${Math.round(safeSeconds / 3600)}h`;
+  }
+  return `${Math.round(safeSeconds / 86400)}d`;
+}
+
 function progressValue(entry: NonNullable<CommandRequestSnapshot["activity"]>[number]): { value: number; max: number } | undefined {
   const attrs = entry.attributes ?? {};
   const current = optionalNumberAttr(attrs, "current");
@@ -1086,6 +1101,10 @@ function renderModelPanel(state: ReleaseControlRenderState): string {
       <span>Payload redaction</span>
       <small>${state.modelSettings.redactPayloads ? "On" : "Off"}</small>
     </button>
+    <button class="telemetry-toggle" data-action="clearSuggestionCache">
+      <span>Suggestion cache</span>
+      <small>Clear</small>
+    </button>
   </details>`;
 }
 
@@ -1131,6 +1150,7 @@ function renderSuggestions(preview: DraftSuggestionPreview | undefined, modelBus
         <span class="name">${escapeHtml(item.title)}</span>
         <span class="badge">${escapeHtml(item.provider)}</span>
         ${item.tone ? `<span class="badge">${escapeHtml(item.tone)}</span>` : ""}
+        ${renderSuggestionCacheBadge(item)}
       </div>
       ${renderSuggestionDiagnostics(item)}
       ${renderSuggestionComparison(item)}
@@ -1167,6 +1187,14 @@ function renderOllamaQueueWarning(preview: DraftSuggestionPreview): string {
     return "";
   }
   return `<div class="model-diagnostic">${renderIcon("intent")}<span>Ollama queue time detected with parallelism ${parallelism}; the server may be serializing requests.</span></div>`;
+}
+
+function renderSuggestionCacheBadge(item: DraftSuggestionItem): string {
+  if (!item.cache?.hit) {
+    return "";
+  }
+  const age = typeof item.cache.age_seconds === "number" ? ` ${formatCacheAge(item.cache.age_seconds)}` : "";
+  return `<span class="badge cached">cached${escapeHtml(age)}</span>`;
 }
 
 function renderSuggestionDiagnostics(item: DraftSuggestionItem): string {
@@ -2730,6 +2758,15 @@ function styles(): string {
     .item .badge.hidden {
       color: var(--vscode-descriptionForeground);
       background: var(--vscode-button-secondaryBackground, #2a2d2e);
+    }
+    .suggestion .badge {
+      padding: 1px 5px;
+      border-radius: 999px;
+      background: var(--vscode-badge-background, var(--vscode-button-secondaryBackground));
+    }
+    .suggestion .badge.cached {
+      color: var(--vscode-editor-background);
+      background: var(--verlato-green);
     }
     .request .badge {
       display: inline-flex;

@@ -138,6 +138,12 @@ function makeClient(overrides = {}) {
         items: [],
       });
     },
+    recordFeedback() {
+      return Promise.resolve(undefined);
+    },
+    clearSuggestionCache() {
+      return Promise.resolve({ removed_entries: 0, path: ".verlato_suggestion_cache.json" });
+    },
     ...overrides,
   };
 }
@@ -293,6 +299,47 @@ test("control view renders partial suggestions while the request is running", as
   await suggestPromise;
 
   assert.match(htmlSnapshots.at(-1), /Final suggestion/);
+});
+
+test("control view refreshes cache for regenerate requests", async () => {
+  let receivedMode;
+  const { ReleaseControlViewProvider } = loadControlViewWithVscodeMock(makeVscodeMock());
+  const client = makeClient({
+    previewDraftSuggestions(_request, _itemId, _onPartial, cacheMode) {
+      receivedMode = cacheMode;
+      return Promise.resolve(suggestionPreview("Refreshed suggestion"));
+    },
+  });
+  const { provider } = makeProvider(ReleaseControlViewProvider, client);
+
+  await provider.handleMessage({ type: "regenerateAll" });
+
+  assert.equal(receivedMode, "refresh-cache");
+});
+
+test("control view clears the persistent suggestion cache", async () => {
+  const vscodeMock = makeVscodeMock({
+    window: {
+      ...makeVscodeMock().window,
+      showWarningMessage() {
+        return Promise.resolve("Clear Suggestion Cache");
+      },
+    },
+  });
+  let clearCalls = 0;
+  const { ReleaseControlViewProvider } = loadControlViewWithVscodeMock(vscodeMock);
+  const client = makeClient({
+    clearSuggestionCache() {
+      clearCalls += 1;
+      return Promise.resolve({ removed_entries: 3, path: ".verlato_suggestion_cache.json" });
+    },
+  });
+  const { provider, htmlSnapshots } = makeProvider(ReleaseControlViewProvider, client);
+
+  await provider.handleMessage({ type: "clearSuggestionCache" });
+
+  assert.equal(clearCalls, 1);
+  assert.match(htmlSnapshots.at(-1), /Cleared 3 cached suggestion entries/);
 });
 
 test("control view keeps partial suggestions visible when a later item fails", async () => {
