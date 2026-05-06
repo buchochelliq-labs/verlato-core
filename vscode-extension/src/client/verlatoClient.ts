@@ -197,6 +197,7 @@ export class VerlatoClient implements vscode.Disposable {
       "doctor",
       "ollama",
       ...(settings.suggestionParallelism > 1 ? ["--parallel-probe"] : []),
+      ...(settings.suggestionAdaptiveRecommendations ? ["--adaptive-recommendations"] : []),
     ]);
   }
 
@@ -239,6 +240,8 @@ export class VerlatoClient implements vscode.Disposable {
       suggestionParallelism: config.get<number>("suggestionParallelism") ?? 2,
       suggestionBatchSize: config.get<number>("suggestionBatchSize") ?? 2,
       suggestionAutoWarmCache: config.get<boolean>("suggestionAutoWarmCache") ?? true,
+      suggestionPromptProfile: config.get<string>("suggestionPromptProfile") || "conservative",
+      suggestionAdaptiveRecommendations: config.get<boolean>("suggestionAdaptiveRecommendations") ?? false,
       suggestionTone: config.get<string>("suggestionTone") || "release-note",
       styleGuidance: config.get<string>("styleGuidance") || "",
       projectVocabulary: config.get<string[]>("projectVocabulary") ?? [],
@@ -281,6 +284,12 @@ export class VerlatoClient implements vscode.Disposable {
     }
     if (settings.suggestionAutoWarmCache !== undefined) {
       await config.update("suggestionAutoWarmCache", settings.suggestionAutoWarmCache, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.suggestionPromptProfile !== undefined) {
+      await config.update("suggestionPromptProfile", settings.suggestionPromptProfile, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.suggestionAdaptiveRecommendations !== undefined) {
+      await config.update("suggestionAdaptiveRecommendations", settings.suggestionAdaptiveRecommendations, vscode.ConfigurationTarget.Workspace);
     }
     if (settings.suggestionTone !== undefined) {
       await config.update("suggestionTone", settings.suggestionTone, vscode.ConfigurationTarget.Workspace);
@@ -747,6 +756,8 @@ export class VerlatoClient implements vscode.Disposable {
     env.VERLATO_SUGGESTION_COUNT = String(settings.suggestionCount);
     env.VERLATO_SUGGESTION_PARALLELISM = String(settings.suggestionParallelism);
     env.VERLATO_SUGGESTION_BATCH_SIZE = String(settings.suggestionBatchSize);
+    env.VERLATO_SUGGESTION_PROMPT_PROFILE = settings.suggestionPromptProfile;
+    env.VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS = settings.suggestionAdaptiveRecommendations ? "1" : "0";
     env.VERLATO_SUGGESTION_TONE = settings.suggestionTone;
     env.VERLATO_STYLE_GUIDANCE = settings.styleGuidance;
     env.VERLATO_PROJECT_VOCABULARY = settings.projectVocabulary.join(",");
@@ -968,7 +979,8 @@ function formatModelSettings(settings: ModelSettings): string {
     : "";
   const timeout = settings.provider === "ollama" ? `; timeout: ${settings.ollamaTimeoutSeconds}s` : "";
   const warm = settings.provider === "ollama" ? `; cache warm: ${settings.suggestionAutoWarmCache ? "on" : "off"}` : "";
-  return `${settings.provider}${model}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; parallelism: ${settings.suggestionParallelism}; batch size: ${settings.suggestionBatchSize}; tone: ${settings.suggestionTone}${warm}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
+  const adaptive = settings.suggestionAdaptiveRecommendations ? "; adaptive advice on" : "";
+  return `${settings.provider}${model}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; parallelism: ${settings.suggestionParallelism}; batch size: ${settings.suggestionBatchSize}; prompt profile: ${settings.suggestionPromptProfile}; tone: ${settings.suggestionTone}${warm}${adaptive}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
 }
 
 function draftSuggestionPreviewArgs(request: DraftRangeRequest, settings: ModelSettings): string[] {
@@ -986,8 +998,11 @@ function draftSuggestionPreviewArgs(request: DraftRangeRequest, settings: ModelS
     String(settings.suggestionParallelism),
     "--batch-size",
     String(settings.suggestionBatchSize),
+    "--prompt-profile",
+    settings.suggestionPromptProfile,
     "--tone",
     settings.suggestionTone,
+    ...(settings.suggestionAdaptiveRecommendations ? ["--adaptive-recommendations"] : []),
   ];
 }
 
@@ -1008,6 +1023,7 @@ function createSuggestionPartialState(
       provider: settings.provider,
       count: settings.suggestionCount,
       tone: settings.suggestionTone,
+      prompt_profile: settings.suggestionPromptProfile,
       performance: {
         parallelism: settings.suggestionParallelism,
         batch_size: settings.suggestionBatchSize,
@@ -1076,6 +1092,7 @@ function coerceSuggestionPreview(
     head_ref: typeof value.head_ref === "string" ? value.head_ref : fallback.head_ref,
     provider: typeof value.provider === "string" ? value.provider : fallback.provider,
     count: typeof value.count === "number" ? value.count : fallback.count,
+    prompt_profile: typeof value.prompt_profile === "string" ? value.prompt_profile : fallback.prompt_profile,
     tone: typeof value.tone === "string" ? value.tone : fallback.tone,
     style_profile: isRecord(value.style_profile)
       ? value.style_profile as DraftSuggestionPreview["style_profile"]
@@ -1087,6 +1104,9 @@ function coerceSuggestionPreview(
     performance: isRecord(value.performance)
       ? value.performance as DraftSuggestionPreview["performance"]
       : fallback.performance,
+    adaptive_recommendations: isRecord(value.adaptive_recommendations)
+      ? value.adaptive_recommendations as unknown as DraftSuggestionPreview["adaptive_recommendations"]
+      : fallback.adaptive_recommendations,
     items,
   };
 }

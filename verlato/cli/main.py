@@ -7,13 +7,14 @@ import os
 import re
 import shutil
 import subprocess
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 from time import perf_counter
-from urllib import error as urlerror, request as urlrequest
+from urllib import error as urlerror
+from urllib import request as urlrequest
 
 from verlato.config import VerlatoConfig, load_config
 from verlato.core.adapters import NullPullRequestAdapter, PullRequestAdapter, StandardGitAdapter
@@ -33,11 +34,12 @@ from verlato.providers.model_logging import (
     print_stderr_lines,
     redact_model_payload,
 )
-from verlato.state.suggestion_cache import CachedSuggestion, SuggestionCacheBackend, build_suggestion_cache_backend
 from verlato.state.store import StateStore
+from verlato.state.suggestion_cache import CachedSuggestion, SuggestionCacheBackend, build_suggestion_cache_backend
 
 MODEL_PROVIDER_CHOICES = ["stub", "mock", "ollama", "github-copilot"]
 SUGGESTION_TONE_CHOICES = ["release-note", "concise", "technical", "customer-facing"]
+SUGGESTION_PROMPT_PROFILE_CHOICES = ["conservative", "lean", "minimal"]
 MAX_SUGGESTION_PARALLELISM = 8
 MAX_SUGGESTION_BATCH_SIZE = 2
 SUGGESTION_CACHE_PROMPT_PROFILE = "suggestion-conservative"
@@ -166,6 +168,8 @@ def build_parser() -> argparse.ArgumentParser:
     draft_suggest.add_argument("--count", type=int)
     draft_suggest.add_argument("--parallelism", type=int)
     draft_suggest.add_argument("--batch-size", type=int)
+    draft_suggest.add_argument("--prompt-profile", choices=SUGGESTION_PROMPT_PROFILE_CHOICES)
+    draft_suggest.add_argument("--adaptive-recommendations", action="store_true")
     draft_suggest.add_argument("--no-cache", action="store_true")
     draft_suggest.add_argument("--refresh-cache", action="store_true")
     draft_suggest.add_argument("--tone", choices=SUGGESTION_TONE_CHOICES)
@@ -209,6 +213,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--warmup",
         action="store_true",
         help="Run a tiny suggestion-style warmup request before measuring Ollama health.",
+    )
+    doctor_ollama.add_argument(
+        "--adaptive-recommendations",
+        action="store_true",
+        help="Include opt-in adaptive suggestion tuning recommendations in the JSON output.",
     )
 
     model_logs = sub.add_parser("model-logs")
@@ -577,6 +586,21 @@ def _resolve_suggestion_batch_size(configured: int, requested: int | None = None
     return max(1, min(value, MAX_SUGGESTION_BATCH_SIZE))
 
 
+def _resolve_suggestion_prompt_profile(configured: str, requested: str | None = None) -> str:
+    raw = requested or os.getenv("VERLATO_SUGGESTION_PROMPT_PROFILE") or configured or "conservative"
+    profile = str(raw).strip().lower()
+    return profile if profile in SUGGESTION_PROMPT_PROFILE_CHOICES else "conservative"
+
+
+def _resolve_suggestion_adaptive_recommendations(configured: bool, requested: bool = False) -> bool:
+    if requested:
+        return True
+    raw = os.getenv("VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS")
+    if raw is None:
+        return bool(configured)
+    return _parse_bool(raw, default=bool(configured))
+
+
 def _resolve_suggestion_cache_backend(configured: str) -> str:
     raw = os.getenv("VERLATO_SUGGESTION_CACHE_BACKEND") or configured or "json"
     return raw.strip().lower() or "json"
@@ -597,6 +621,15 @@ def _resolve_suggestion_tone(configured: str, requested: str | None = None) -> s
     raw = requested or os.getenv("VERLATO_SUGGESTION_TONE") or configured
     tone = (raw or "release-note").strip().lower()
     return tone if tone in SUGGESTION_TONE_CHOICES else "release-note"
+
+
+def _parse_bool(value: object, *, default: bool = False) -> bool:
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def _resolve_suggestion_style(config: VerlatoConfig) -> dict[str, object]:
@@ -663,9 +696,19 @@ def _ollama_doctor_prompt() -> str:
     )
 
 
-def _run_ollama_doctor(*, parallel_probe: bool = False, warmup: bool = False) -> dict[str, object]:
+def _run_ollama_doctor(
+    *,
+    parallel_probe: bool = False,
+    warmup: bool = False,
+    adaptive_recommendations: bool = False,
+) -> dict[str, object]:
     config = _load_config()
     suggestion_parallelism = _resolve_suggestion_parallelism(config.suggestion_parallelism)
+    suggestion_prompt_profile = _resolve_suggestion_prompt_profile(config.suggestion_prompt_profile)
+    adaptive_enabled = _resolve_suggestion_adaptive_recommendations(
+        config.suggestion_adaptive_recommendations,
+        requested=adaptive_recommendations,
+    )
     provider = build_provider(config.provider, mode="ollama")
     prompt = _ollama_doctor_prompt()
     request = ProviderRequest(
@@ -693,7 +736,7 @@ def _run_ollama_doctor(*, parallel_probe: bool = False, warmup: bool = False) ->
         parallel_start = 2 if warmup else 1
         probes[parallel_start:] = sorted(probes[parallel_start:], key=lambda probe: str(probe.get("name") or ""))
     runtime = _collect_ollama_runtime(provider, config_snapshot)
-    return {
+    result = {
         "schema": "ollama_doctor.v1",
         "provider": "ollama",
         "config": config_snapshot,
@@ -701,6 +744,24 @@ def _run_ollama_doctor(*, parallel_probe: bool = False, warmup: bool = False) ->
         "probes": probes,
         "summary": _summarize_ollama_doctor(probes, config_snapshot, runtime=runtime, warmup_requested=warmup),
     }
+    if adaptive_enabled:
+        result["adaptive_recommendations"] = _build_suggestion_adaptive_recommendations(
+            current={
+                "provider": "ollama",
+                "prompt_profile": suggestion_prompt_profile,
+                "suggestion_count": _resolve_suggestion_count(config.suggestion_count),
+                "suggestion_parallelism": suggestion_parallelism,
+                "suggestion_batch_size": _resolve_suggestion_batch_size(config.suggestion_batch_size),
+                "cache_warming": None,
+            },
+            timing_sources=probes,
+            feedback_events=_build_store().load().feedback_events,
+            cache_hit_count=0,
+            item_count=0,
+            prompt_chars=sum(int(probe.get("prompt_chars") or 0) for probe in probes),
+            source="doctor",
+        )
+    return result
 
 
 def _ollama_doctor_config(provider: object, request: ProviderRequest, suggestion_parallelism: int) -> dict[str, object]:
@@ -1228,6 +1289,265 @@ def _timing_ratio(value: int, total: int) -> float:
     return value / total
 
 
+def _suggestion_adaptive_current_settings(
+    *,
+    provider: str,
+    prompt_profile: str,
+    suggestion_count: int,
+    suggestion_parallelism: int,
+    suggestion_batch_size: int,
+    cache_warming: bool | None,
+) -> dict[str, object]:
+    return {
+        "provider": provider,
+        "prompt_profile": prompt_profile,
+        "suggestion_count": suggestion_count,
+        "suggestion_parallelism": suggestion_parallelism,
+        "suggestion_batch_size": suggestion_batch_size,
+        "cache_warming": cache_warming,
+    }
+
+
+def _build_suggestion_adaptive_recommendations(
+    *,
+    current: dict[str, object],
+    timing_sources: list[dict[str, object]],
+    feedback_events: list[dict],
+    cache_hit_count: int,
+    item_count: int,
+    prompt_chars: int,
+    source: str,
+) -> dict[str, object]:
+    timing_signals = _adaptive_timing_signals(timing_sources)
+    feedback_signals = _adaptive_feedback_signals(feedback_events)
+    cache_hit_rate = round(cache_hit_count / item_count, 3) if item_count else None
+    signals: dict[str, object] = {
+        "source": source,
+        "item_count": item_count,
+        "prompt_chars": prompt_chars,
+        "average_prompt_chars": round(prompt_chars / item_count) if item_count else None,
+        "cache_hit_count": cache_hit_count,
+        "cache_hit_rate": cache_hit_rate,
+        **timing_signals,
+        "feedback": feedback_signals,
+    }
+    recommendations = _adaptive_recommendation_items(current=current, signals=signals)
+    return {
+        "schema_version": "verlato.suggestion_adaptive.v1",
+        "current": current,
+        "signals": signals,
+        "recommendations": recommendations,
+    }
+
+
+def _adaptive_timing_signals(sources: list[dict[str, object]]) -> dict[str, object]:
+    totals = {
+        "model_ms": 0,
+        "queue_ms": 0,
+        "load_ms": 0,
+        "prompt_eval_ms": 0,
+        "eval_ms": 0,
+    }
+    token_rates: list[float] = []
+    for source in sources:
+        timings = source.get("timings") if isinstance(source, dict) else None
+        if not isinstance(timings, dict):
+            continue
+        for key in totals:
+            value = timings.get(key)
+            if isinstance(value, (int, float)):
+                totals[key] += int(value)
+        rate = timings.get("tokens_per_second")
+        if isinstance(rate, (int, float)) and rate > 0:
+            token_rates.append(float(rate))
+    component_total_ms = totals["queue_ms"] + totals["load_ms"] + totals["prompt_eval_ms"] + totals["eval_ms"]
+    model_ms = max(totals["model_ms"], component_total_ms)
+    totals["model_ms"] = model_ms
+    shares = {
+        "queue_share": round(_timing_ratio(totals["queue_ms"], model_ms), 3),
+        "load_share": round(_timing_ratio(totals["load_ms"], model_ms), 3),
+        "prompt_eval_share": round(_timing_ratio(totals["prompt_eval_ms"], model_ms), 3),
+        "generation_share": round(_timing_ratio(totals["eval_ms"], model_ms), 3),
+    }
+    candidates = {
+        "queue": totals["queue_ms"],
+        "load": totals["load_ms"],
+        "prompt_eval": totals["prompt_eval_ms"],
+        "generation": totals["eval_ms"],
+    }
+    dominant = max(candidates.items(), key=lambda item: item[1])[0] if any(candidates.values()) else "unknown"
+    return {
+        **totals,
+        **shares,
+        "dominant_bottleneck": dominant,
+        "average_tokens_per_second": round(sum(token_rates) / len(token_rates), 1) if token_rates else None,
+    }
+
+
+def _adaptive_feedback_signals(events: list[dict]) -> dict[str, object]:
+    safe_events = [event for event in events if isinstance(event, dict)]
+    event_counts = Counter(str(event.get("event") or "unknown") for event in safe_events)
+    positive_count = (
+        event_counts["suggestion_applied"]
+        + event_counts["summary_edited"]
+        + event_counts["suggestion_marked_useful"]
+    )
+    negative_names = {
+        "suggestion_skipped",
+        "suggestion_rejected",
+        "suggestion_not_useful",
+        "suggestion_marked_not_useful",
+        "suggestion_regenerated",
+    }
+    negative_count = sum(event_counts[name] for name in negative_names)
+    return {
+        "event_count": len(safe_events),
+        "event_counts": dict(sorted(event_counts.items())),
+        "positive_count": positive_count,
+        "negative_count": negative_count,
+        "regenerated_count": event_counts["suggestion_regenerated"],
+    }
+
+
+def _adaptive_recommendation_items(current: dict[str, object], signals: dict[str, object]) -> list[dict[str, object]]:
+    recommendations: list[dict[str, object]] = []
+    prompt_profile = str(current.get("prompt_profile") or "conservative")
+    parallelism = current.get("suggestion_parallelism")
+    suggestion_count = current.get("suggestion_count")
+    feedback = signals.get("feedback") if isinstance(signals.get("feedback"), dict) else {}
+    positive_count = _optional_int(feedback.get("positive_count")) or 0
+    negative_count = _optional_int(feedback.get("negative_count")) or 0
+    event_count = _optional_int(feedback.get("event_count")) or 0
+    negative_dominates = negative_count >= max(3, positive_count)
+
+    if negative_dominates:
+        recommendations.append(
+            {
+                "kind": "tune-style-before-slimming",
+                "title": "Tune style before stronger prompt slimming",
+                "detail": (
+                    f"{negative_count} negative/regenerate event(s) versus {positive_count} positive event(s) "
+                    "suggest wording quality needs attention before cutting more evidence."
+                ),
+                "confidence": "medium",
+                "suggested_config": {
+                    "suggestion_style": {
+                        "guidance": (
+                            "Describe the user-visible outcome first, then include the concrete changed area."
+                        )
+                    }
+                },
+            }
+        )
+
+    prompt_eval_ms = _optional_int(signals.get("prompt_eval_ms")) or 0
+    prompt_eval_share = _optional_float(signals.get("prompt_eval_share")) or 0.0
+    if prompt_eval_ms >= 500 and prompt_eval_share >= 0.35:
+        if prompt_profile == "conservative":
+            recommendations.append(
+                {
+                    "kind": "use-lean-prompt-profile",
+                    "title": "Try the lean suggestion prompt profile",
+                    "detail": (
+                        "Prompt evaluation dominates suggestion time; "
+                        "lean keeps core evidence while trimming prompt budget."
+                    ),
+                    "confidence": "medium" if not negative_dominates else "low",
+                    "suggested_config": {"suggestion_prompt_profile": "lean"},
+                }
+            )
+        elif prompt_profile == "lean" and not negative_dominates:
+            recommendations.append(
+                {
+                    "kind": "use-minimal-prompt-profile",
+                    "title": "Consider the minimal suggestion prompt profile",
+                    "detail": "Lean prompts still spend most model time on prompt evaluation.",
+                    "confidence": "low" if event_count < 3 else "medium",
+                    "suggested_config": {"suggestion_prompt_profile": "minimal"},
+                }
+            )
+        elif prompt_profile == "minimal":
+            recommendations.append(
+                {
+                    "kind": "prompt-profile-at-minimum",
+                    "title": "Prompt profile is already minimal",
+                    "detail": (
+                        "Prompt evaluation is still high, so the next lever is a faster model "
+                        "or server/runtime tuning."
+                    ),
+                    "confidence": "medium",
+                }
+            )
+
+    queue_ms = _optional_int(signals.get("queue_ms")) or 0
+    queue_share = _optional_float(signals.get("queue_share")) or 0.0
+    if queue_ms >= 250 and queue_share >= 0.2:
+        suggested_config: dict[str, object] = {}
+        if isinstance(parallelism, int) and parallelism > 1:
+            suggested_config["suggestion_parallelism"] = 1
+        recommendations.append(
+            {
+                "kind": "reduce-queueing",
+                "title": "Reduce Ollama queueing",
+                "detail": (
+                    "Queue time suggests Ollama is serializing or overloaded; lower client parallelism "
+                    "or configure OLLAMA_NUM_PARALLEL before starting Ollama."
+                ),
+                "confidence": "medium",
+                "suggested_config": suggested_config,
+            }
+        )
+
+    eval_ms = _optional_int(signals.get("eval_ms")) or 0
+    generation_share = _optional_float(signals.get("generation_share")) or 0.0
+    if eval_ms >= 500 and generation_share >= 0.35:
+        suggested_config = {"provider": {"suggest_num_predict": 96}}
+        if isinstance(suggestion_count, int) and suggestion_count > 1:
+            suggested_config["suggestion_count"] = 1
+        recommendations.append(
+            {
+                "kind": "reduce-generation-cost",
+                "title": "Reduce generation cost",
+                "detail": (
+                    "Generation dominates suggestion time; lower the suggestion output cap/count "
+                    "or use a faster suggestion model."
+                ),
+                "confidence": "medium",
+                "suggested_config": suggested_config,
+            }
+        )
+
+    cache_hit_rate = signals.get("cache_hit_rate")
+    item_count = _optional_int(signals.get("item_count")) or 0
+    if isinstance(cache_hit_rate, (int, float)) and item_count >= 2 and cache_hit_rate < 0.5:
+        recommendations.append(
+            {
+                "kind": "improve-cache-hit-rate",
+                "title": "Improve suggestion cache hit rate",
+                "detail": (
+                    "Most visible suggestions were fresh model calls; "
+                    "keep VS Code background cache warming enabled for Ollama."
+                ),
+                "confidence": "medium",
+                "suggested_config": {"verlato.suggestionAutoWarmCache": True},
+            }
+        )
+
+    if not recommendations:
+        recommendations.append(
+            {
+                "kind": "keep-current-settings",
+                "title": "Keep current suggestion settings",
+                "detail": (
+                    "Timing and feedback signals do not show a strong reason "
+                    "to change profiles or request settings."
+                ),
+                "confidence": "medium",
+            }
+        )
+    return recommendations
+
+
 def _nanoseconds_to_ms(value: object) -> int | None:
     numeric = _optional_float(value)
     if numeric is None:
@@ -1431,10 +1751,12 @@ def _preview_draft_model_suggestions(
     count: int | None,
     parallelism: int | None = None,
     batch_size: int | None = None,
+    prompt_profile: str | None = None,
     model_provider: str | None = None,
     tone: str | None = None,
     no_cache: bool = False,
     refresh_cache: bool = False,
+    adaptive_recommendations: bool = False,
 ) -> dict:
     if all_visible == bool(item_id):
         raise SystemExit("Provide exactly one suggestion target: --id or --all-visible")
@@ -1446,6 +1768,14 @@ def _preview_draft_model_suggestions(
     suggestion_count = _resolve_suggestion_count(config.suggestion_count, requested=count)
     suggestion_parallelism = _resolve_suggestion_parallelism(config.suggestion_parallelism, requested=parallelism)
     requested_suggestion_batch_size = _resolve_suggestion_batch_size(config.suggestion_batch_size, requested=batch_size)
+    suggestion_prompt_profile = _resolve_suggestion_prompt_profile(
+        config.suggestion_prompt_profile,
+        requested=prompt_profile,
+    )
+    adaptive_enabled = _resolve_suggestion_adaptive_recommendations(
+        config.suggestion_adaptive_recommendations,
+        requested=adaptive_recommendations,
+    )
     suggestion_tone = _resolve_suggestion_tone(config.suggestion_tone, requested=tone)
     suggestion_style = _resolve_suggestion_style(config)
     cache_read_enabled = not no_cache and not refresh_cache
@@ -1574,6 +1904,7 @@ def _preview_draft_model_suggestions(
             "head_ref": head,
             "provider": effective_model_provider or "configured",
             "count": suggestion_count,
+            "prompt_profile": suggestion_prompt_profile,
             "tone": suggestion_tone,
             "style_profile": suggestion_style,
             "performance": {
@@ -1607,11 +1938,12 @@ def _preview_draft_model_suggestions(
         if suggestion_cache is not None and suggestion_cache.dirty:
             suggestion_cache.save()
         total_ms = _elapsed_ms(total_start)
-        return {
+        result = {
             "base_ref": base,
             "head_ref": head,
             "provider": effective_model_provider or "configured",
             "count": suggestion_count,
+            "prompt_profile": suggestion_prompt_profile,
             "tone": suggestion_tone,
             "style_profile": suggestion_style,
             "performance": {
@@ -1634,6 +1966,24 @@ def _preview_draft_model_suggestions(
             "batch_count": len(target_batches),
             "items": [],
         }
+        if adaptive_enabled:
+            result["adaptive_recommendations"] = _build_suggestion_adaptive_recommendations(
+                current=_suggestion_adaptive_current_settings(
+                    provider=effective_model_provider or "configured",
+                    prompt_profile=suggestion_prompt_profile,
+                    suggestion_count=suggestion_count,
+                    suggestion_parallelism=suggestion_parallelism,
+                    suggestion_batch_size=effective_suggestion_batch_size,
+                    cache_warming=None,
+                ),
+                timing_sources=[],
+                feedback_events=_build_store().load().feedback_events,
+                cache_hit_count=0,
+                item_count=0,
+                prompt_chars=0,
+                source="preview",
+            )
+        return result
 
     provider = build_provider(config.provider, mode=effective_model_provider)
     cache_provider_mode = effective_model_provider or "configured"
@@ -1705,7 +2055,7 @@ def _preview_draft_model_suggestions(
             style_guidance=str(suggestion_style["guidance"]),
             project_vocabulary=list(suggestion_style["project_vocabulary"]),
             banned_phrases=list(suggestion_style["banned_phrases"]),
-            prompt_profile="suggestion",
+            prompt_profile=suggestion_prompt_profile,
         )
         prompt = prompt_result.prompt
         prompt_budget = dict(prompt_result.budget)
@@ -1931,11 +2281,12 @@ def _preview_draft_model_suggestions(
         elapsed_ms=total_ms,
         model_ms=model_ms,
     )
-    return {
+    result = {
         "base_ref": base,
         "head_ref": head,
         "provider": effective_model_provider or "configured",
         "count": suggestion_count,
+        "prompt_profile": suggestion_prompt_profile,
         "tone": suggestion_tone,
         "style_profile": suggestion_style,
         "performance": {
@@ -1958,6 +2309,28 @@ def _preview_draft_model_suggestions(
         "batch_count": len(target_batches),
         "items": items,
     }
+    if adaptive_enabled:
+        result["adaptive_recommendations"] = _build_suggestion_adaptive_recommendations(
+            current=_suggestion_adaptive_current_settings(
+                provider=effective_model_provider or "configured",
+                prompt_profile=suggestion_prompt_profile,
+                suggestion_count=suggestion_count,
+                suggestion_parallelism=suggestion_parallelism,
+                suggestion_batch_size=effective_suggestion_batch_size,
+                cache_warming=None,
+            ),
+            timing_sources=items,
+            feedback_events=_build_store().load().feedback_events,
+            cache_hit_count=sum(
+                1
+                for item in items
+                if isinstance(cache_info := item.get("cache"), dict) and cache_info.get("hit") is True
+            ),
+            item_count=len(items),
+            prompt_chars=prompt_chars,
+            source="preview",
+        )
+    return result
 
 
 def _provider_cache_model_id(provider: object, provider_mode: str) -> str:
@@ -3622,7 +3995,16 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(str(exc)) from exc
 
     if args.command == "doctor" and args.doctor_command == "ollama":
-        print(json.dumps(_run_ollama_doctor(parallel_probe=args.parallel_probe, warmup=args.warmup), indent=2))
+        print(
+            json.dumps(
+                _run_ollama_doctor(
+                    parallel_probe=args.parallel_probe,
+                    warmup=args.warmup,
+                    adaptive_recommendations=args.adaptive_recommendations,
+                ),
+                indent=2,
+            )
+        )
         return 0
 
     if args.command == "model-logs" and args.model_logs_command == "export":
@@ -3667,10 +4049,12 @@ def main(argv: list[str] | None = None) -> int:
                     count=args.count,
                     parallelism=args.parallelism,
                     batch_size=args.batch_size,
+                    prompt_profile=args.prompt_profile,
                     model_provider=args.model_provider,
                     tone=args.tone,
                     no_cache=args.no_cache,
                     refresh_cache=args.refresh_cache,
+                    adaptive_recommendations=args.adaptive_recommendations,
                 )
                 print(json.dumps(suggestions, indent=2))
                 return 0

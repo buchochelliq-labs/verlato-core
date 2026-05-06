@@ -242,6 +242,21 @@
           "default": true,
           "description": "Warm the local suggestion cache in the background after loading a draft when using Ollama."
         },
+        "verlato.suggestionPromptProfile": {
+          "type": "string",
+          "default": "conservative",
+          "enum": [
+            "conservative",
+            "lean",
+            "minimal"
+          ],
+          "description": "Prompt budget profile used for AI suggestion prompts."
+        },
+        "verlato.suggestionAdaptiveRecommendations": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show opt-in adaptive suggestion performance recommendations without applying them."
+        },
         "verlato.suggestionTone": {
           "type": "string",
           "default": "release-note",

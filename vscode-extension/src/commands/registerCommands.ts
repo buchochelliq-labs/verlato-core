@@ -455,6 +455,26 @@ async function changeModelSettings(
   if (suggestionBatchSizeRaw === undefined) {
     return;
   }
+  const suggestionPromptProfile = await vscode.window.showQuickPick(
+    ["conservative", "lean", "minimal"],
+    {
+      title: "Suggestion prompt profile",
+      placeHolder: "Choose how much evidence to send for suggestion prompts",
+    },
+  );
+  if (!suggestionPromptProfile) {
+    return;
+  }
+  const adaptiveChoice = await vscode.window.showQuickPick(
+    ["disabled", "enabled"],
+    {
+      title: "Adaptive suggestion recommendations",
+      placeHolder: "Show opt-in performance recommendations without applying them",
+    },
+  );
+  if (!adaptiveChoice) {
+    return;
+  }
   const suggestionTone = await vscode.window.showQuickPick(
     ["release-note", "concise", "technical", "customer-facing"],
     {
@@ -475,6 +495,8 @@ async function changeModelSettings(
     suggestionCount: Number(suggestionCountRaw),
     suggestionParallelism: Number(suggestionParallelismRaw),
     suggestionBatchSize: Number(suggestionBatchSizeRaw),
+    suggestionPromptProfile,
+    suggestionAdaptiveRecommendations: adaptiveChoice === "enabled",
     suggestionTone,
   });
   await client.initialize();

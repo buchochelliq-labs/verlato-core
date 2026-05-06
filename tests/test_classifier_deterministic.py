@@ -355,6 +355,66 @@ def test_suggestion_prompt_profile_uses_conservative_budget():
     assert "src/module_08.py" not in result.prompt
 
 
+def test_suggestion_prompt_profiles_offer_lean_and_minimal_budgets():
+    files = [
+        ChangedFile(
+            path=f"src/module_{index:02}.py",
+            status="modified",
+            patch=(
+                "@@ -1,2 +1,2 @@\n"
+                f"-old behavior {index}\n"
+                f"+new behavior {index}\n"
+            ),
+        )
+        for index in range(10)
+    ]
+    group = ChangeGroup(
+        pr=PullRequest(number=8, title="Improve modules", body="body " * 200, files=files),
+        commits=[
+            Commit(sha="a", message="update one"),
+            Commit(sha="b", message="update two"),
+            Commit(sha="c", message="update three"),
+            Commit(sha="d", message="update four"),
+        ],
+    )
+    classifier = Classifier()
+    diff = classifier.diff_builder.build(group.pr.files)
+
+    conservative = classifier._build_summary_prompt_with_budget(
+        title="Improve modules",
+        labels=["backend"],
+        pr_body=group.pr.body,
+        diff=diff,
+        commits=group.commits,
+        prompt_profile="conservative",
+    )
+    lean = classifier._build_summary_prompt_with_budget(
+        title="Improve modules",
+        labels=["backend"],
+        pr_body=group.pr.body,
+        diff=diff,
+        commits=group.commits,
+        prompt_profile="lean",
+    )
+    minimal = classifier._build_summary_prompt_with_budget(
+        title="Improve modules",
+        labels=["backend"],
+        pr_body=group.pr.body,
+        diff=diff,
+        commits=group.commits,
+        prompt_profile="minimal",
+    )
+
+    assert lean.budget["profile"] == "suggestion-lean"
+    assert minimal.budget["profile"] == "suggestion-minimal"
+    assert conservative.budget["files_included"] == 8
+    assert lean.budget["files_included"] == 5
+    assert minimal.budget["files_included"] == 3
+    assert lean.budget["prompt_chars"] < conservative.budget["prompt_chars"]
+    assert minimal.budget["prompt_chars"] < lean.budget["prompt_chars"]
+    assert minimal.budget["pr_body_chars_included"] <= lean.budget["pr_body_chars_included"]
+
+
 def test_classifier_rejects_low_value_provider_summary():
     provider = _CapturingProvider("Improve search")
     group = ChangeGroup(

@@ -12,6 +12,8 @@ const modelSettings = {
   suggestionParallelism: 2,
   suggestionBatchSize: 2,
   suggestionAutoWarmCache: true,
+  suggestionPromptProfile: "conservative",
+  suggestionAdaptiveRecommendations: false,
   suggestionTone: "release-note",
   styleGuidance: "",
   projectVocabulary: [],

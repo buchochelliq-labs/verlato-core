@@ -178,12 +178,16 @@ test("preview suggestions passes configured parallelism and batch size to the CL
     "4",
     "--batch-size",
     "2",
+    "--prompt-profile",
+    "conservative",
     "--tone",
     "release-note",
     "--all-visible",
   ]);
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_PARALLELISM, "4");
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_BATCH_SIZE, "2");
+  assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_PROMPT_PROFILE, "conservative");
+  assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS, "0");
 });
 
 test("preview suggestions can refresh the persistent suggestion cache", async () => {
@@ -208,6 +212,37 @@ test("preview suggestions can refresh the persistent suggestion cache", async ()
 
   assert.ok(spawnCalls[0].args.includes("--refresh-cache"));
   assert.ok(!spawnCalls[0].args.includes("--no-cache"));
+});
+
+test("preview suggestions passes prompt profile and adaptive recommendation settings", async () => {
+  const spawnCalls = [];
+  const child = makeChild(562);
+  const client = makeClient((command, args, options) => {
+    spawnCalls.push({ command, args, options });
+    return child;
+  }, { suggestionPromptProfile: "lean", suggestionAdaptiveRecommendations: true });
+
+  const pending = client.previewDraftSuggestions({ base: "v1.0.0", head: "HEAD" });
+  await waitForSpawn(spawnCalls);
+  child.stdout.emit("data", JSON.stringify({
+    base_ref: "v1.0.0",
+    head_ref: "HEAD",
+    provider: "mock",
+    count: 1,
+    adaptive_recommendations: {
+      schema_version: "verlato.suggestion_adaptive.v1",
+      recommendations: [],
+    },
+    items: [],
+  }));
+  child.emit("close", 0);
+  await pending;
+
+  assert.ok(spawnCalls[0].args.includes("--prompt-profile"));
+  assert.equal(spawnCalls[0].args[spawnCalls[0].args.indexOf("--prompt-profile") + 1], "lean");
+  assert.ok(spawnCalls[0].args.includes("--adaptive-recommendations"));
+  assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_PROMPT_PROFILE, "lean");
+  assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS, "1");
 });
 
 test("warm suggestion cache invokes all-visible preview without changing visible state", async () => {
@@ -244,6 +279,8 @@ test("warm suggestion cache invokes all-visible preview without changing visible
     "3",
     "--batch-size",
     "2",
+    "--prompt-profile",
+    "conservative",
     "--tone",
     "release-note",
     "--all-visible",

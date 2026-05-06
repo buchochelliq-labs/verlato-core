@@ -705,6 +705,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       count: settings.suggestionCount,
       parallelism: settings.suggestionParallelism,
       batchSize: settings.suggestionBatchSize,
+      promptProfile: settings.suggestionPromptProfile,
       tone: settings.suggestionTone,
       styleGuidance: settings.styleGuidance,
       projectVocabulary: settings.projectVocabulary,

@@ -1146,6 +1146,8 @@ function modelDetail(settings: ModelSettings): string {
     `Parallelism: ${settings.suggestionParallelism}`,
     `Batch size: ${settings.suggestionBatchSize}`,
     `Auto-warm cache: ${settings.suggestionAutoWarmCache ? "on" : "off"}`,
+    `Prompt profile: ${settings.suggestionPromptProfile}`,
+    `Adaptive advice: ${settings.suggestionAdaptiveRecommendations ? "on" : "off"}`,
     `Streaming: ${settings.ollamaStreamResponses ? "on" : "off"}`,
     `Prompt payloads: ${settings.includePromptPayloads ? "on" : "off"}`,
     `Reasoning payloads: ${settings.includeReasoningPayloads ? "on" : "off"}`,
@@ -1176,6 +1178,7 @@ function renderOllamaDoctor(result: OllamaDoctorResult | undefined): string {
     ${runtime ? `<small>${escapeHtml(runtime)}</small>` : ""}
     ${diagnostics.map((diagnostic) => `<small>${escapeHtml(diagnostic)}</small>`).join("")}
     ${settings ? `<small>${escapeHtml(settings)}</small>` : ""}
+    ${renderAdaptiveRecommendations(result.adaptive_recommendations)}
     ${recommendations.length ? `<ul>${recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
   </div>`;
 }
@@ -1257,6 +1260,7 @@ function renderSuggestions(preview: DraftSuggestionPreview | undefined, modelBus
     <div class="section-title">${renderIcon("intent")}<span>INTENT INFERENCE</span><button class="inline-action model-action" data-action="regenerateAll"${modelBusy ? " disabled" : ""}>Regenerate</button></div>
     ${renderOllamaQueueWarning(preview)}
     ${renderSuggestionBatching(preview)}
+    ${renderAdaptiveRecommendations(preview.adaptive_recommendations)}
     ${preview.items.map((item) => `<article class="suggestion">
       <div class="item-head">
         <span class="name">${escapeHtml(item.title)}</span>
@@ -1314,6 +1318,19 @@ function renderSuggestionBatching(preview: DraftSuggestionPreview): string {
     batchedCalls > 0 ? `${batchedCalls} batch call${batchedCalls === 1 ? "" : "s"}` : "",
   ].filter(Boolean);
   return parts.length ? `<div class="model-diagnostic">${renderIcon("intent")}<span>${escapeHtml(parts.join(" | "))}</span></div>` : "";
+}
+
+function renderAdaptiveRecommendations(
+  adaptive: DraftSuggestionPreview["adaptive_recommendations"] | OllamaDoctorResult["adaptive_recommendations"],
+): string {
+  const recommendations = adaptive?.recommendations?.slice(0, 2) ?? [];
+  if (!recommendations.length) {
+    return "";
+  }
+  const text = recommendations
+    .map((item) => `${item.title}${item.confidence ? ` (${item.confidence})` : ""}: ${item.detail}`)
+    .join(" | ");
+  return `<div class="model-diagnostic">${renderIcon("intent")}<span>Adaptive advice: ${escapeHtml(text)}</span></div>`;
 }
 
 function renderSuggestionCacheBadge(item: DraftSuggestionItem): string {

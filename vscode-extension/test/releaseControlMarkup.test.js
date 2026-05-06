@@ -14,6 +14,8 @@ const modelSettings = {
   suggestionParallelism: 2,
   suggestionBatchSize: 2,
   suggestionAutoWarmCache: true,
+  suggestionPromptProfile: "conservative",
+  suggestionAdaptiveRecommendations: false,
   suggestionTone: "release-note",
   styleGuidance: "",
   projectVocabulary: [],
@@ -726,6 +728,17 @@ test("renders Ollama timing diagnostics and queue warning for suggestions", () =
       provider: "ollama",
       count: 1,
       performance: { parallelism: 2, batch_size: 2, batched_model_calls: 1, model_calls_saved: 3 },
+      adaptive_recommendations: {
+        schema_version: "verlato.suggestion_adaptive.v1",
+        recommendations: [
+          {
+            kind: "use-lean-prompt-profile",
+            title: "Try the lean suggestion prompt profile",
+            detail: "Prompt evaluation dominates suggestion time.",
+            confidence: "medium",
+          },
+        ],
+      },
       items: [
         {
           item_id: "ci_1",
@@ -763,6 +776,7 @@ test("renders Ollama timing diagnostics and queue warning for suggestions", () =
 
   assert.match(html, /Ollama queue time detected with parallelism 2/);
   assert.match(html, /batched 2\/item \| saved 3 calls \| 1 batch call/);
+  assert.match(html, /Adaptive advice: Try the lean suggestion prompt profile \(medium\): Prompt evaluation dominates suggestion time/);
   assert.match(html, /cached 2m/);
   assert.match(html, /Ollama bottleneck: prompt eval 1\.4s \| 16\.7 tok\/s \| 30\/15 tok \| prompt 1\.7k chars \| files 8\/14 \| hunks 2\/7 \| skipped 6 files, 5 hunks/);
 });
@@ -810,6 +824,17 @@ test("renders Ollama doctor health recommendations", () => {
         recommendations: ["Set OLLAMA_NUM_PARALLEL before starting Ollama if your hardware has memory for parallel requests."],
         recommended_settings: { suggestion_parallelism: 1 },
       },
+      adaptive_recommendations: {
+        schema_version: "verlato.suggestion_adaptive.v1",
+        recommendations: [
+          {
+            kind: "reduce-queueing",
+            title: "Reduce Ollama queueing",
+            detail: "Queue time suggests Ollama is serializing.",
+            confidence: "medium",
+          },
+        ],
+      },
     },
   });
 
@@ -819,6 +844,7 @@ test("renders Ollama doctor health recommendations", () => {
   assert.match(html, /queue 700ms/);
   assert.match(html, /Runtime: gemma4:latest loaded \| ctx 8192 \| vram 4\.0GB \| 100% GPU \| expires in/);
   assert.match(html, /try parallelism 1/);
+  assert.match(html, /Adaptive advice: Reduce Ollama queueing \(medium\): Queue time suggests Ollama is serializing/);
   assert.match(html, /OLLAMA_NUM_PARALLEL/);
 });
 
@@ -1155,6 +1181,8 @@ test("contributes focused Verlato views and optional walkthrough", () => {
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionBatchSize"].default, 2);
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionBatchSize"].maximum, 2);
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionAutoWarmCache"].default, true);
+  assert.equal(manifest.contributes.configuration.properties["verlato.suggestionPromptProfile"].default, "conservative");
+  assert.equal(manifest.contributes.configuration.properties["verlato.suggestionAdaptiveRecommendations"].default, false);
   assert.equal(manifest.contributes.walkthroughs[0].title, "Get started with Verlato");
   assert.match(manifest.contributes.walkthroughs[0].description, /Optional shortcuts/);
   assert.deepEqual(

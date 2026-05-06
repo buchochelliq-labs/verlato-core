@@ -6,21 +6,23 @@ import time
 from pathlib import Path
 
 from verlato.cli.main import (
-    _ollama_api_ps_url,
+    _build_suggestion_adaptive_recommendations,
     _normalized_provider_timings,
-    _run_ollama_doctor,
+    _ollama_api_ps_url,
+    _resolve_suggestion_batch_size,
     _resolve_suggestion_cache_backend,
     _resolve_suggestion_cache_ttl_days,
-    _resolve_suggestion_batch_size,
     _resolve_suggestion_parallelism,
+    _resolve_suggestion_prompt_profile,
+    _run_ollama_doctor,
     main,
 )
 from verlato.config import load_config
 from verlato.core.classifier import Classifier
 from verlato.core.drafts import DraftService, normalize_remote_url
 from verlato.core.models import (
-    ChangeGroup,
     ChangedFile,
+    ChangeGroup,
     ChangeItem,
     Classification,
     Commit,
@@ -31,6 +33,7 @@ from verlato.core.models import (
 )
 from verlato.providers.base import ProviderRequest, ProviderResponse
 from verlato.providers.stub import StubProvider
+from verlato.state.store import StateData, StateStore
 from verlato.state.suggestion_cache import (
     CachedSuggestion,
     JsonSuggestionCacheStore,
@@ -38,7 +41,6 @@ from verlato.state.suggestion_cache import (
     build_suggestion_cache_backend,
     register_suggestion_cache_backend,
 )
-from verlato.state.store import StateData, StateStore
 
 
 def _mk_item(
@@ -107,6 +109,8 @@ def test_load_config_defaults_without_file(monkeypatch, tmp_path: Path):
     assert config.suggestion_cache_backend == "json"
     assert config.suggestion_cache_path == ".verlato_suggestion_cache.json"
     assert config.suggestion_cache_ttl_days == 30
+    assert config.suggestion_prompt_profile == "conservative"
+    assert config.suggestion_adaptive_recommendations is False
     assert config.targets["changelog"].path == "CHANGELOG.md"
     assert config.targets["github-release"].path == ".github/release.md"
 
@@ -233,6 +237,24 @@ def test_load_config_reads_suggestion_batch_size(monkeypatch, tmp_path: Path):
     assert config.suggestion_batch_size == 2
 
 
+def test_load_config_reads_suggestion_prompt_profile_and_adaptive_flag(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "verlato.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "suggestion_prompt_profile": "lean",
+                "suggestion_adaptive_recommendations": True,
+            }
+        )
+    )
+    monkeypatch.chdir(tmp_path)
+
+    config = load_config()
+
+    assert config.suggestion_prompt_profile == "lean"
+    assert config.suggestion_adaptive_recommendations is True
+
+
 def test_load_config_reads_suggestion_cache_settings(monkeypatch, tmp_path: Path):
     config_path = tmp_path / "verlato.json"
     config_path.write_text(
@@ -305,6 +327,17 @@ def test_resolve_suggestion_batch_size_clamps_cli_env_and_config(monkeypatch):
     assert _resolve_suggestion_batch_size(2) == 2
 
 
+def test_resolve_suggestion_prompt_profile_cli_env_and_config(monkeypatch):
+    monkeypatch.setenv("VERLATO_SUGGESTION_PROMPT_PROFILE", "minimal")
+
+    assert _resolve_suggestion_prompt_profile("conservative") == "minimal"
+    assert _resolve_suggestion_prompt_profile("conservative", requested="lean") == "lean"
+    assert _resolve_suggestion_prompt_profile("lean", requested="invalid") == "conservative"
+
+    monkeypatch.delenv("VERLATO_SUGGESTION_PROMPT_PROFILE")
+    assert _resolve_suggestion_prompt_profile("lean") == "lean"
+
+
 def test_normalized_provider_timings_converts_ollama_metadata():
     timings = _normalized_provider_timings(
         {
@@ -328,6 +361,89 @@ def test_normalized_provider_timings_converts_ollama_metadata():
         "queue_ms": 500,
         "tokens_per_second": 50.0,
     }
+
+
+def test_adaptive_recommendations_classify_prompt_queue_generation_cache_and_feedback():
+    prompt = _build_suggestion_adaptive_recommendations(
+        current={
+            "provider": "ollama",
+            "prompt_profile": "conservative",
+            "suggestion_count": 1,
+            "suggestion_parallelism": 2,
+            "suggestion_batch_size": 2,
+            "cache_warming": None,
+        },
+        timing_sources=[{"timings": {"model_ms": 2000, "prompt_eval_ms": 1200}}],
+        feedback_events=[],
+        cache_hit_count=0,
+        item_count=2,
+        prompt_chars=4000,
+        source="preview",
+    )
+    assert prompt["schema_version"] == "verlato.suggestion_adaptive.v1"
+    assert any(item["kind"] == "use-lean-prompt-profile" for item in prompt["recommendations"])
+    assert any(item["kind"] == "improve-cache-hit-rate" for item in prompt["recommendations"])
+
+    queue = _build_suggestion_adaptive_recommendations(
+        current={
+            "provider": "ollama",
+            "prompt_profile": "conservative",
+            "suggestion_count": 1,
+            "suggestion_parallelism": 4,
+            "suggestion_batch_size": 2,
+            "cache_warming": None,
+        },
+        timing_sources=[{"timings": {"model_ms": 1200, "queue_ms": 600}}],
+        feedback_events=[],
+        cache_hit_count=1,
+        item_count=1,
+        prompt_chars=1000,
+        source="preview",
+    )
+    queue_rec = next(item for item in queue["recommendations"] if item["kind"] == "reduce-queueing")
+    assert queue_rec["suggested_config"]["suggestion_parallelism"] == 1
+
+    generation = _build_suggestion_adaptive_recommendations(
+        current={
+            "provider": "ollama",
+            "prompt_profile": "lean",
+            "suggestion_count": 2,
+            "suggestion_parallelism": 1,
+            "suggestion_batch_size": 1,
+            "cache_warming": None,
+        },
+        timing_sources=[{"timings": {"model_ms": 2000, "eval_ms": 1100}}],
+        feedback_events=[],
+        cache_hit_count=1,
+        item_count=1,
+        prompt_chars=1000,
+        source="preview",
+    )
+    generation_rec = next(item for item in generation["recommendations"] if item["kind"] == "reduce-generation-cost")
+    assert generation_rec["suggested_config"]["suggestion_count"] == 1
+
+    feedback = _build_suggestion_adaptive_recommendations(
+        current={
+            "provider": "ollama",
+            "prompt_profile": "lean",
+            "suggestion_count": 1,
+            "suggestion_parallelism": 1,
+            "suggestion_batch_size": 1,
+            "cache_warming": None,
+        },
+        timing_sources=[{"timings": {"model_ms": 2000, "prompt_eval_ms": 1200}}],
+        feedback_events=[
+            {"event": "suggestion_marked_not_useful"},
+            {"event": "suggestion_regenerated"},
+            {"event": "suggestion_skipped"},
+        ],
+        cache_hit_count=1,
+        item_count=1,
+        prompt_chars=1000,
+        source="preview",
+    )
+    assert any(item["kind"] == "tune-style-before-slimming" for item in feedback["recommendations"])
+    assert not any(item["kind"] == "use-minimal-prompt-profile" for item in feedback["recommendations"])
 
 
 def test_ollama_doctor_command_emits_json(monkeypatch, tmp_path: Path, capsys):
@@ -374,6 +490,52 @@ def test_ollama_doctor_command_emits_json(monkeypatch, tmp_path: Path, capsys):
     assert result["config"]["suggest_num_predict_effective"] == 96
     assert result["probes"][0]["ok"] is True
     assert result["summary"]["bottleneck"] == "healthy"
+    assert "adaptive_recommendations" not in result
+
+
+def test_ollama_doctor_adaptive_recommendations_are_opt_in(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+
+    class FakeOllamaProvider:
+        model = "gemma4:latest"
+        endpoint = "http://127.0.0.1:11434/api/chat"
+        timeout_seconds = 15
+        stream = False
+        keep_alive = "10m"
+        num_ctx = None
+        num_predict = None
+        suggest_num_predict = None
+        suggest_think = False
+
+        def _options_for_task(self, task: str, *, request_data: ProviderRequest):
+            return {"num_predict": 96}
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(
+                content="Adds model health suggestions.",
+                confidence=0.9,
+                model="ollama:gemma4:latest",
+                metadata={
+                    "total_duration": 2_000_000_000,
+                    "prompt_eval_duration": 1_200_000_000,
+                    "eval_duration": 200_000_000,
+                },
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:gemma4:latest")
+
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: FakeOllamaProvider())
+    monkeypatch.setattr(
+        "verlato.cli.main._collect_ollama_runtime",
+        lambda provider, snapshot: {"api_ps": {"ok": True, "models": []}, "selected_model": {"loaded": False}},
+    )
+
+    result = _run_ollama_doctor(adaptive_recommendations=True)
+
+    assert result["adaptive_recommendations"]["schema_version"] == "verlato.suggestion_adaptive.v1"
+    assert result["adaptive_recommendations"]["current"]["prompt_profile"] == "conservative"
+    assert result["adaptive_recommendations"]["recommendations"]
 
 
 def test_ollama_doctor_runtime_resolves_api_ps_urls():
@@ -1323,6 +1485,8 @@ def test_draft_suggest_preview_returns_variants_without_persisting(monkeypatch, 
     assert rc == 0
     preview = json.loads(capsys.readouterr().out)
     assert preview["count"] == 3
+    assert preview["prompt_profile"] == "conservative"
+    assert "adaptive_recommendations" not in preview
     assert preview["tone"] == "technical"
     assert preview["items"][0]["item_id"] == target_item.id
     assert preview["items"][0]["tone"] == "technical"
@@ -1342,6 +1506,63 @@ def test_draft_suggest_preview_returns_variants_without_persisting(monkeypatch, 
     assert rc == 0
     state = json.loads(capsys.readouterr().out)
     assert state["items"] == []
+
+
+def test_draft_suggest_prompt_profile_and_adaptive_recommendations_are_opt_in(monkeypatch, tmp_path: Path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
+    group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
+    target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
+    prompts: list[str] = []
+
+    class AdaptiveProvider:
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            prompts.append(request.prompt)
+            return ProviderResponse(
+                content="Clarifies login recovery guidance for reviewers",
+                confidence=0.9,
+                model="mock-local",
+                metadata={
+                    "total_duration": 2_000_000_000,
+                    "prompt_eval_duration": 1_200_000_000,
+                    "eval_duration": 200_000_000,
+                },
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="mock-local")
+
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: AdaptiveProvider())
+
+    rc = main(
+        [
+            "draft",
+            "suggest",
+            "--base",
+            "v1.0.0",
+            "--id",
+            target_item.id,
+            "--preview",
+            "--prompt-profile",
+            "lean",
+            "--adaptive-recommendations",
+            "--model-provider",
+            "mock",
+        ]
+    )
+    preview = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert preview["prompt_profile"] == "lean"
+    assert preview["items"][0]["prompt_budget"]["profile"] == "suggestion-lean"
+    assert preview["adaptive_recommendations"]["schema_version"] == "verlato.suggestion_adaptive.v1"
+    assert preview["adaptive_recommendations"]["current"]["prompt_profile"] == "lean"
+    assert any(
+        recommendation["kind"] in {"use-minimal-prompt-profile", "keep-current-settings"}
+        for recommendation in preview["adaptive_recommendations"]["recommendations"]
+    )
+    assert prompts
 
 
 def test_draft_suggest_applies_style_controls_to_prompt_and_rejections(monkeypatch, tmp_path: Path, capsys):

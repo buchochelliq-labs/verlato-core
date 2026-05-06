@@ -33,6 +33,20 @@ SUGGEST_PROMPT_DIFF_SUMMARY_CHARS = 420
 SUGGEST_PROMPT_HUNK_FILES = 2
 SUGGEST_PROMPT_HUNKS_PER_FILE = 1
 SUGGEST_PROMPT_HUNK_CHARS = 160
+LEAN_SUGGEST_PROMPT_CHANGED_FILES = 5
+LEAN_SUGGEST_PROMPT_COMMITS = 1
+LEAN_SUGGEST_PROMPT_PR_BODY_CHARS = 160
+LEAN_SUGGEST_PROMPT_DIFF_SUMMARY_CHARS = 280
+LEAN_SUGGEST_PROMPT_HUNK_FILES = 1
+LEAN_SUGGEST_PROMPT_HUNKS_PER_FILE = 1
+LEAN_SUGGEST_PROMPT_HUNK_CHARS = 120
+MINIMAL_SUGGEST_PROMPT_CHANGED_FILES = 3
+MINIMAL_SUGGEST_PROMPT_COMMITS = 1
+MINIMAL_SUGGEST_PROMPT_PR_BODY_CHARS = 80
+MINIMAL_SUGGEST_PROMPT_DIFF_SUMMARY_CHARS = 180
+MINIMAL_SUGGEST_PROMPT_HUNK_FILES = 1
+MINIMAL_SUGGEST_PROMPT_HUNKS_PER_FILE = 1
+MINIMAL_SUGGEST_PROMPT_HUNK_CHARS = 80
 
 
 @dataclass(frozen=True)
@@ -73,6 +87,26 @@ SUGGESTION_PROMPT_PROFILE = PromptBudgetProfile(
     hunks_per_file=SUGGEST_PROMPT_HUNKS_PER_FILE,
     hunk_chars=SUGGEST_PROMPT_HUNK_CHARS,
 )
+LEAN_SUGGESTION_PROMPT_PROFILE = PromptBudgetProfile(
+    name="suggestion-lean",
+    changed_files=LEAN_SUGGEST_PROMPT_CHANGED_FILES,
+    commits=LEAN_SUGGEST_PROMPT_COMMITS,
+    pr_body_chars=LEAN_SUGGEST_PROMPT_PR_BODY_CHARS,
+    diff_summary_chars=LEAN_SUGGEST_PROMPT_DIFF_SUMMARY_CHARS,
+    hunk_files=LEAN_SUGGEST_PROMPT_HUNK_FILES,
+    hunks_per_file=LEAN_SUGGEST_PROMPT_HUNKS_PER_FILE,
+    hunk_chars=LEAN_SUGGEST_PROMPT_HUNK_CHARS,
+)
+MINIMAL_SUGGESTION_PROMPT_PROFILE = PromptBudgetProfile(
+    name="suggestion-minimal",
+    changed_files=MINIMAL_SUGGEST_PROMPT_CHANGED_FILES,
+    commits=MINIMAL_SUGGEST_PROMPT_COMMITS,
+    pr_body_chars=MINIMAL_SUGGEST_PROMPT_PR_BODY_CHARS,
+    diff_summary_chars=MINIMAL_SUGGEST_PROMPT_DIFF_SUMMARY_CHARS,
+    hunk_files=MINIMAL_SUGGEST_PROMPT_HUNK_FILES,
+    hunks_per_file=MINIMAL_SUGGEST_PROMPT_HUNKS_PER_FILE,
+    hunk_chars=MINIMAL_SUGGEST_PROMPT_HUNK_CHARS,
+)
 
 
 def _summary_tone_instruction(tone: str) -> str:
@@ -88,8 +122,12 @@ def _summary_tone_instruction(tone: str) -> str:
 
 def _prompt_budget_profile(name: str) -> PromptBudgetProfile:
     normalized = (name or "summary").strip().lower()
-    if normalized in {"suggest", "suggestion", "suggestion-conservative"}:
+    if normalized in {"suggest", "suggestion", "conservative", "suggestion-conservative"}:
         return SUGGESTION_PROMPT_PROFILE
+    if normalized in {"lean", "suggestion-lean"}:
+        return LEAN_SUGGESTION_PROMPT_PROFILE
+    if normalized in {"minimal", "suggestion-minimal"}:
+        return MINIMAL_SUGGESTION_PROMPT_PROFILE
     return SUMMARY_PROMPT_PROFILE
 
 

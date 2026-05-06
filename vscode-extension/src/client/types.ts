@@ -166,6 +166,8 @@ export interface ModelSettings {
   suggestionParallelism: number;
   suggestionBatchSize: number;
   suggestionAutoWarmCache: boolean;
+  suggestionPromptProfile: "conservative" | "lean" | "minimal" | string;
+  suggestionAdaptiveRecommendations: boolean;
   suggestionTone: string;
   styleGuidance: string;
   projectVocabulary: string[];
@@ -283,6 +285,7 @@ export interface DraftSuggestionPreview {
   head_ref: string;
   provider: string;
   count: number;
+  prompt_profile?: string;
   tone?: string;
   style_profile?: SuggestionStyleProfile;
   visible_item_count?: number;
@@ -290,6 +293,7 @@ export interface DraftSuggestionPreview {
   batch_size?: number;
   batch_count?: number;
   performance?: DraftSuggestionPerformance;
+  adaptive_recommendations?: SuggestionAdaptiveRecommendations;
   items: DraftSuggestionItem[];
 }
 
@@ -308,6 +312,21 @@ export interface DraftSuggestionPerformance {
   model_calls_saved?: number;
 }
 
+export interface SuggestionAdaptiveRecommendations {
+  schema_version: "verlato.suggestion_adaptive.v1";
+  current?: Record<string, unknown>;
+  signals?: Record<string, unknown>;
+  recommendations: SuggestionAdaptiveRecommendation[];
+}
+
+export interface SuggestionAdaptiveRecommendation {
+  kind: string;
+  title: string;
+  detail: string;
+  confidence?: "low" | "medium" | "high" | string;
+  suggested_config?: Record<string, unknown>;
+}
+
 export interface OllamaDoctorResult {
   schema: "ollama_doctor.v1";
   provider: "ollama";
@@ -315,6 +334,7 @@ export interface OllamaDoctorResult {
   runtime?: OllamaDoctorRuntime;
   probes: OllamaDoctorProbe[];
   summary: OllamaDoctorSummary;
+  adaptive_recommendations?: SuggestionAdaptiveRecommendations;
 }
 
 export interface OllamaDoctorConfig {
