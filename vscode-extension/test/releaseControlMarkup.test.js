@@ -26,17 +26,63 @@ const modelSettings = {
 
 const range = { base: "v1.0.0", head: "HEAD", version: "Unreleased" };
 
-test("renders scan progress inside the release control view", () => {
+test("renders sticky scan progress inside the release control view", () => {
   const html = buildReleaseControlHtml({
     modelSettings,
     range,
     busy: true,
+    requests: [
+      {
+        id: 7,
+        command: "verlato",
+        args: ["draft", "json", "--base", "v1.0.0"],
+        label: "draft json",
+        status: "running",
+        startedAt: "2026-05-03T12:00:00.000Z",
+        stdout: "",
+        stderr: "",
+      },
+    ],
   });
 
-  assert.match(html, /Scanning v1\.0\.0\.\.HEAD/);
-  assert.match(html, /Scanning\.\.\./);
+  assert.match(html, /class="progress-strip scan"/);
+  assert.match(html, /<vscode-progress-bar long-running-threshold="1000"><\/vscode-progress-bar>/);
+  assert.match(html, /Processing diffs/);
+  assert.match(html, /class="process-rail"/);
+  assert.match(html, /Diffs/);
+  assert.match(html, /Conventional commits/);
+  assert.match(html, /Intent inference/);
+  assert.match(html, /Release notes/);
   assert.match(html, /data-action="cancel"/);
+  assert.match(html, /data-action="cancelRequest" data-request="7"/);
   assert.match(html, /Stop/);
+});
+
+test("renders model suggestion progress without generic scan copy", () => {
+  const html = buildReleaseControlHtml({
+    modelSettings: { ...modelSettings, provider: "ollama", model: "gemma4:latest" },
+    range,
+    busy: true,
+    requests: [
+      {
+        id: 11,
+        command: "verlato",
+        args: ["draft", "suggest", "--preview", "--all-visible"],
+        label: "draft suggest",
+        status: "running",
+        startedAt: "2026-05-03T12:00:00.000Z",
+        stdout: "",
+        stderr: "",
+      },
+    ],
+  });
+
+  assert.match(html, /data-model-busy="true"/);
+  assert.match(html, /class="progress-strip suggest model-work"/);
+  assert.match(html, /Generating suggestions/);
+  assert.match(html, /Inferring intent from all rendered release-note items with gemma4:latest/);
+  assert.doesNotMatch(html, /Scanning v1\.0\.0\.\.HEAD/);
+  assert.match(html, /body\[data-model-busy="true"\] button\[data-action="suggestAll"\]/);
 });
 
 test("renders prompt payload telemetry toggle in the model panel", () => {
@@ -70,7 +116,7 @@ test("renders current model as a clickable hover badge", () => {
   });
 
   assert.match(html, /class="model-badge" data-action="changeModel"/);
-  assert.match(html, /<span class="model-mark">AI<\/span>/);
+  assert.match(html, /<span class="model-mark"><svg class="verlato-icon intent"/);
   assert.match(html, /<span class="model-name">gemma4:latest<\/span>/);
   assert.match(html, /Provider: ollama/);
   assert.match(html, /Suggestions: 3/);
@@ -102,7 +148,7 @@ test("renders repository sources as clickable data in the release control view",
 
   assert.match(html, /Repository activity loaded: 1 recent commit/);
   assert.match(html, /<details class="section tree-section sources-panel" id="sources-panel">/);
-  assert.match(html, /SOURCE SELECTION/);
+  assert.match(html, /CONVENTIONAL COMMITS/);
   assert.match(html, /data-action="openSources"/);
   assert.match(html, /<details class="source-dropdown" id="source-picker">/);
   assert.doesNotMatch(html, /<details class="source-dropdown" id="source-picker" open>/);
@@ -152,29 +198,69 @@ test("renders draft range refs as selections and excludes released commits", () 
     range: { base: "v1.0.0", head: "HEAD", version: "Unreleased" },
     busy: false,
     overview: {
-      branches: [{ name: "main", detail: "abc1234" }],
+      branches: [{ name: "main", detail: "abc1234" }, { name: "maintenance", detail: "ccc3333" }],
       tags: [{ name: "v1.0.0", detail: "2026-05-01" }],
       commits: [
+        { sha: "cls1111", subject: "Closed without merge", author: "drew", prNumber: 13, release: null },
         { sha: "abc1234", subject: "Unreleased work", author: "alice", prNumber: 12, release: null },
         { sha: "bbb2222", subject: "Earlier unreleased work", author: "alice", prNumber: 12, release: null },
+        { sha: "opn1111", subject: "Open PR work", author: "oscar", prNumber: 14, release: null },
+        { sha: "ccc3333", subject: "Independent older work", author: "casey", prNumber: null, release: null },
         { sha: "def5678", subject: "Already shipped", author: "bob", prNumber: 10, release: "v0.9.0" },
+      ],
+      pullRequests: [
+        { number: 12, title: "Merged feature", state: "MERGED", mergedAt: "2026-05-03T10:00:00Z" },
+        { number: 13, title: "Closed experiment", state: "CLOSED", mergedAt: null },
+        { number: 14, title: "Open feature", state: "OPEN", mergedAt: null },
       ],
       releases: [],
       unpublishedCount: 1,
     },
   });
+  const basePicker = html.match(/<details class="source-dropdown base-tree-picker" id="base-picker">([\s\S]*?)<\/details>/)?.[1] ?? "";
 
-  assert.match(html, /<vscode-multi-select id="base" combobox filter="contains" position="below"/);
-  assert.doesNotMatch(html, /<select id="base"/);
+  assert.match(html, /<select id="base" class="backing-select" multiple aria-hidden="true" tabindex="-1"/);
+  assert.match(html, /<details class="source-dropdown base-tree-picker" id="base-picker">/);
+  assert.match(basePicker, /<vscode-tree id="base-tree" multi-select indent-guides="always">/);
+  assert.match(basePicker, /<vscode-tree-item open>\s+Branches\s+<span slot="description">2<\/span>/);
+  assert.match(basePicker, /data-ref="main" data-related-refs="main,abc1234,bbb2222,opn1111,ccc3333"/);
+  assert.match(basePicker, /<span>main - abc1234<\/span>/);
+  assert.match(basePicker, /data-ref="maintenance" data-related-refs="maintenance,ccc3333"/);
+  assert.match(basePicker, /<span>maintenance - ccc3333<\/span>/);
+  assert.match(basePicker, /<span>PR #12<\/span>/);
+  assert.match(basePicker, /Merged \| 2 commits/);
+  assert.match(basePicker, /abc1234 - Unreleased work/);
+  assert.match(basePicker, /data-ref="abc1234" data-related-refs="abc1234,bbb2222" data-release-root="true"/);
+  assert.match(basePicker, /bbb2222 - Earlier unreleased work/);
+  assert.match(basePicker, /<span>PR #14<\/span>/);
+  assert.match(basePicker, /Open \| 1 commit/);
+  assert.match(basePicker, /opn1111 - Open PR work/);
+  assert.doesNotMatch(basePicker, /PR #13/);
+  assert.doesNotMatch(basePicker, /Closed without merge/);
+  assert.equal((basePicker.match(/ccc3333 - Independent older work \*/g) ?? []).length, 2);
+  assert.match(basePicker, /class="base-tree-item duplicated-ref" data-ref="ccc3333"/);
+  assert.match(basePicker, /data-duplicated="true"/);
+  assert.doesNotMatch(html, /<vscode-multi-select id="base"/);
   assert.match(html, /<select id="head"/);
   assert.doesNotMatch(html, /<input id="base"/);
   assert.doesNotMatch(html, /<input id="head"/);
-  assert.match(html, /<vscode-option value="abc1234" description="Pull requests" data-related-refs="abc1234,bbb2222">PR #12 - 2 commit\(s\)<\/vscode-option>/);
+  assert.doesNotMatch(html, /data-action="selectAllBase"/);
+  assert.doesNotMatch(html, /data-action="unselectAllBase"/);
+  assert.doesNotMatch(html, />Select all<\/button>/);
+  assert.doesNotMatch(html, />Unselect all<\/button>/);
+  assert.match(html, /<option value="abc1234" data-related-refs="abc1234,bbb2222" data-release-root="true">PR #12 - 2 commit\(s\)<\/option>/);
+  assert.doesNotMatch(html, /PR #13 - Closed without merge/);
+  assert.match(html, /<option value="opn1111" data-related-refs="opn1111" data-release-root="true">PR #14 - Open PR work<\/option>/);
+  assert.match(html, /<option value="bbb2222" data-related-refs="bbb2222,opn1111,ccc3333">bbb2222 - Earlier unreleased work<\/option>/);
+  assert.match(html, /<option value="ccc3333" data-related-refs="ccc3333" data-release-root="true">ccc3333 - Independent older work<\/option>/);
+  assert.match(html, /function recomputeBaseSelection\(\)/);
+  assert.match(html, /recomputeBaseSelection\(\);\n    }\n    function syncBaseSelection/);
   assert.match(html, /function expandRelatedRefs\(control, refs\)/);
   assert.match(html, /expandRelatedRefs\(base, manualRefs\)\.forEach/);
-  assert.match(html, /class="source-toggle" type="checkbox" data-ref="main" data-refs="main,abc1234,bbb2222"/);
-  assert.match(html, /class="source-toggle" type="checkbox" data-ref="abc1234" data-refs="abc1234,bbb2222"/);
-  assert.match(html, /class="source-toggle" type="checkbox" data-ref="bbb2222" data-refs="bbb2222" data-unselect-refs="abc1234,bbb2222"/);
+  assert.match(html, /class="source-toggle" type="checkbox" data-ref="main" data-refs="main,abc1234,bbb2222,opn1111,ccc3333"/);
+  assert.match(html, /class="source-toggle" type="checkbox" data-ref="maintenance" data-refs="maintenance,ccc3333"/);
+  assert.match(html, /class="source-toggle" type="checkbox" data-ref="abc1234" data-refs="abc1234,bbb2222,opn1111,ccc3333"/);
+  assert.match(html, /class="source-toggle" type="checkbox" data-ref="bbb2222" data-refs="bbb2222,opn1111,ccc3333" data-unselect-refs="abc1234,bbb2222"/);
   assert.doesNotMatch(html, /def5678 - Already shipped/);
 });
 
@@ -218,7 +304,11 @@ test("renders releases as a dedicated sub-panel with notes, commits, and suggest
       targets: [],
       rendered: { "github-release": "## Unreleased\n\n- Improve API review" },
       item_count: 1,
-      sections: [{ kind: "changed", title: "Changed", items: [draftItem({ id: "ci_1", title: "Improve API" })] }],
+      sections: [{
+        kind: "changed",
+        title: "Changed",
+        items: [draftItem({ id: "ci_1", title: "Improve API", commit_shas: ["abc123456789", "def567890123"] })],
+      }],
     },
     overview: {
       branches: [],
@@ -277,11 +367,16 @@ test("renders releases as a dedicated sub-panel with notes, commits, and suggest
   assert.match(html, /<details class="section tree-section releases-panel" id="releases-panel" open>/);
   assert.match(buildReleaseControlHtml({ modelSettings, range, busy: false }), /id="releases-panel"/);
   assert.match(html, /data-release-state="unreleased"/);
-  assert.match(html, /Release Note/);
+  assert.match(html, /2 draft commit\(s\) -> 1 changeset\(s\) -> 1 release note\(s\) \| 1 suggestion\(s\)/);
+  assert.match(html, /Release note/);
   assert.match(html, /## Unreleased/);
-  assert.match(html, /Draft Items/);
+  assert.match(html, /Changesets/);
   assert.match(html, /Improve API/);
-  assert.match(html, /SUGGESTIONS/);
+  assert.match(html, /2 commit\(s\) in changeset/);
+  assert.match(html, /Changeset commits <span>2<\/span>/);
+  assert.match(html, /abc123456789/);
+  assert.match(html, /def567890123/);
+  assert.match(html, /INTENT INFERENCE/);
   assert.match(html, /Improve API review for release notes/);
   assert.match(html, /Unreleased commits/);
   assert.match(html, /data-action="useBase" data-ref="abc1234"/);
@@ -297,7 +392,7 @@ test("renders releases as a dedicated sub-panel with notes, commits, and suggest
   assert.doesNotMatch(html, /Associated Releases/);
 });
 
-test("counts visible draft items separately from hidden reviewed items", () => {
+test("explains selected sources versus draft items and rendered release notes", () => {
   const html = buildReleaseControlHtml({
     modelSettings,
     range,
@@ -315,7 +410,7 @@ test("counts visible draft items separately from hidden reviewed items", () => {
           kind: "changed",
           title: "Changed",
           items: [
-            draftItem({ id: "visible", title: "Visible item", hidden: false, status: "needs-review" }),
+            draftItem({ id: "visible", title: "Visible item", hidden: false, status: "needs-review", commit_shas: ["aaa111111111", "bbb222222222", "ccc333333333"] }),
             draftItem({ id: "hidden", title: "Hidden item", hidden: true, status: "hidden" }),
           ],
         },
@@ -323,14 +418,40 @@ test("counts visible draft items separately from hidden reviewed items", () => {
     },
   });
 
+  assert.match(html, /class="meta-card" data-action="filterItems" data-filter="unreleased" title="Show the commits represented in the current draft"/);
+  assert.match(html, /<strong>4<\/strong><span>commits in draft<\/span>/);
+  assert.match(html, /title="Show changesets built by grouping those commits"/);
+  assert.match(html, /<strong>2<\/strong><span>changesets<\/span>/);
   assert.match(html, /class="meta-card" data-action="filterItems" data-filter="visible"/);
-  assert.match(html, /<strong>1<\/strong><span>visible<\/span>/);
+  assert.match(html, /<strong>1<\/strong><span>release notes<\/span>/);
+  assert.match(html, /data-filter="hidden" title="Show hidden draft items that can be unhidden"/);
+  assert.match(html, /<strong>1<\/strong><span>hidden<\/span>/);
+  assert.match(html, /CHANGESETS FROM DIFFS/);
+  assert.match(html, /4 commit\(s\) -> 2 changeset\(s\) -> 1 release note\(s\)/);
+  assert.match(html, /class="release-math"/);
+  assert.match(html, /data-action="clearWorkingState"/);
+  assert.match(html, /Clear working state/);
+  assert.match(html, /preserving published releases/);
+  assert.match(html, /selected sources/);
+  assert.match(html, /changesets/);
+  assert.match(html, /release notes/);
+  assert.match(html, /Commits are grouped into changesets by PR, conventional commit signal, and changed area/);
+  assert.match(html, /1 hidden item\(s\) are kept out of rendered release notes/);
+  assert.match(html, /id="source-selection-total">0<\/strong>/);
+  assert.match(html, /id="source-selection-auto">Selection updates as refs change\.<\/span>/);
+  assert.match(html, /selectedLabel = refs\.length === 1 \? '1 selected source' : refs\.length \+ ' selected sources'/);
+  assert.match(html, /autoLabel = autoRefs\.length \? ' \(' \+ autoRefs\.length \+ ' auto-selected\)' : ''/);
   assert.match(html, /data-visibility="visible"/);
   assert.match(html, /data-visibility="hidden"/);
   assert.match(html, /body\[data-filter="visible"\] \.item\[data-visibility="hidden"\]/);
+  assert.match(html, /body\[data-filter="hidden"\] \.item\[data-visibility="visible"\]/);
   assert.match(html, /Visible item/);
+  assert.match(html, /3 commit\(s\) in changeset/);
+  assert.match(html, /aaa111111111/);
   assert.match(html, /Hidden item/);
   assert.match(html, /item hidden/);
+  assert.match(html, /Hidden by saved review state; it will not render until unhidden/);
+  assert.match(html, /data-action="unhide" data-item="hidden"/);
 });
 
 test("renders scanner errors in the view", () => {
@@ -338,11 +459,11 @@ test("renders scanner errors in the view", () => {
     modelSettings,
     range,
     busy: false,
-    errorMessage: "ReleasePilot CLI was not found",
+    errorMessage: "Verlato CLI was not found",
   });
 
   assert.match(html, /notice error/);
-  assert.match(html, /ReleasePilot CLI was not found/);
+  assert.match(html, /Verlato CLI was not found/);
 });
 
 test("renders suggestion actions and review variants", () => {
@@ -403,7 +524,7 @@ test("renders suggestion actions and review variants", () => {
 
   assert.match(controlHtml, /data-action="suggestAll"/);
   assert.match(controlHtml, /data-action="suggest" data-item="ci_1"/);
-  assert.match(html, /SUGGESTIONS/);
+  assert.match(html, /INTENT INFERENCE/);
   assert.match(html, /Current/);
   assert.match(html, /Suggested/);
   assert.match(html, /Evidence/);
@@ -431,19 +552,19 @@ test("keeps request inspection out of the release control view", () => {
     requests: [
       {
         id: 42,
-        command: "releasepilot",
+        command: "verlato",
         args: ["draft", "suggest", "--all-visible"],
         label: "draft suggest",
         status: "running",
         startedAt: "2026-05-03T12:00:00.000Z",
         stdout: "",
-        stderr: "[releasepilot:model] starting suggest provider=ollama title=Improve API",
+        stderr: "[verlato:model] starting suggest provider=ollama title=Improve API",
       },
     ],
   });
 
   assert.doesNotMatch(html, /REQUESTS/);
-  assert.doesNotMatch(html, /releasepilot draft suggest --all-visible/);
+  assert.doesNotMatch(html, /verlato draft suggest --all-visible/);
 });
 
 test("renders live request inspection and per-request stop controls in activity view", () => {
@@ -454,13 +575,13 @@ test("renders live request inspection and per-request stop controls in activity 
     requests: [
       {
         id: 42,
-        command: "releasepilot",
+        command: "verlato",
         args: ["draft", "suggest", "--all-visible"],
         label: "draft suggest",
         status: "running",
         startedAt: "2026-05-03T12:00:00.000Z",
         stdout: "",
-        stderr: "[releasepilot:model] starting suggest provider=ollama title=Improve API",
+        stderr: "[verlato:model] starting suggest provider=ollama title=Improve API",
       },
     ],
   });
@@ -469,7 +590,7 @@ test("renders live request inspection and per-request stop controls in activity 
   assert.match(html, /1 running/);
   assert.match(html, /<details class="section tree-section requests" open>/);
   assert.match(html, /<span class="badge request-status running"><span class="spinner" aria-hidden="true"><\/span><span>running<\/span><\/span>/);
-  assert.match(html, /releasepilot draft suggest --all-visible/);
+  assert.match(html, /verlato draft suggest --all-visible/);
   assert.match(html, /starting suggest provider=ollama/);
   assert.match(html, /data-action="cancelRequest" data-request="42"/);
 });
@@ -482,7 +603,7 @@ test("opens completed request groups in the dedicated activity view", () => {
     requests: [
       {
         id: 45,
-        command: "releasepilot",
+        command: "verlato",
         args: ["draft", "prompt"],
         label: "draft prompt",
         status: "completed",
@@ -506,26 +627,26 @@ test("renders model activity newest first with raw output preserved", () => {
     requests: [
       {
         id: 43,
-        command: "releasepilot",
+        command: "verlato",
         args: ["draft", "suggest", "--id", "ci_1"],
         label: "draft suggest",
         status: "running",
         startedAt: "2026-05-03T12:00:00.000Z",
         stdout: "",
-        stderr: "[releasepilot:model] provider=ollama task=suggest model=gemma4 endpoint=http://127.0.0.1 prompt_chars=123 evidence_keys=4",
+        stderr: "[verlato:model] provider=ollama task=suggest model=gemma4 endpoint=http://127.0.0.1 prompt_chars=123 evidence_keys=4",
         activity: [
           {
             id: 1,
             stream: "stderr",
             category: "model",
-            message: "[releasepilot:model] provider=ollama task=suggest model=gemma4 endpoint=http://127.0.0.1 prompt_chars=123 evidence_keys=4",
+            message: "[verlato:model] provider=ollama task=suggest model=gemma4 endpoint=http://127.0.0.1 prompt_chars=123 evidence_keys=4",
             receivedAt: "2026-05-03T12:00:01.000Z",
           },
           {
             id: 2,
             stream: "stderr",
             category: "model",
-            message: "[releasepilot:model] response provider=ollama task=suggest content_chars=88 empty=False",
+            message: "[verlato:model] response provider=ollama task=suggest content_chars=88 empty=False",
             receivedAt: "2026-05-03T12:00:02.000Z",
           },
           {
@@ -542,7 +663,7 @@ test("renders model activity newest first with raw output preserved", () => {
             id: 4,
             stream: "stderr",
             category: "model",
-            message: "[releasepilot:model] prompt-budget chars=1692 files=12/24 commits=1/1 hunks=0/0 pr_body_chars=0/0 diff_summary_chars=300/300",
+            message: "[verlato:model] prompt-budget chars=1692 files=12/24 commits=1/1 hunks=0/0 pr_body_chars=0/0 diff_summary_chars=300/300",
             event: "prompt_budget",
             attributes: {
               prompt_chars: 1692,
@@ -572,7 +693,7 @@ test("renders model activity newest first with raw output preserved", () => {
   assert.match(html, /data-copy-label="payload 34 chars redacted"/);
   assert.match(html, /Summarize the changed API behavior/);
   assert.match(html, /Raw output/);
-  assert.doesNotMatch(html, /\[releasepilot:model\] provider=ollama task=suggest model=gemma4<\/span>/);
+  assert.doesNotMatch(html, /\[verlato:model\] provider=ollama task=suggest model=gemma4<\/span>/);
 });
 
 test("renders semantic status badge colors and running spinner hooks", () => {
@@ -602,7 +723,7 @@ test("renders semantic status badge colors and running spinner hooks", () => {
     requests: [
       {
         id: 50,
-        command: "releasepilot",
+        command: "verlato",
         args: ["draft", "preview"],
         label: "draft preview",
         status: "failed",
@@ -616,7 +737,7 @@ test("renders semantic status badge colors and running spinner hooks", () => {
     requests: [
       {
         id: 50,
-        command: "releasepilot",
+        command: "verlato",
         args: ["draft", "preview"],
         label: "draft preview",
         status: "failed",
@@ -633,7 +754,7 @@ test("renders semantic status badge colors and running spinner hooks", () => {
   assert.match(activityHtml, /\.request \.badge\.completed[\s\S]*var\(--vscode-charts-green/);
   assert.match(activityHtml, /\.request \.badge\.running[\s\S]*var\(--vscode-charts-yellow/);
   assert.match(activityHtml, /\.request \.badge\.failed[\s\S]*var\(--vscode-errorForeground/);
-  assert.match(activityHtml, /@keyframes releasepilot-spin/);
+  assert.match(activityHtml, /@keyframes verlato-spin/);
 });
 
 test("renders coalesced stream chunk activity as live blocks", () => {
@@ -644,7 +765,7 @@ test("renders coalesced stream chunk activity as live blocks", () => {
     requests: [
       {
         id: 44,
-        command: "releasepilot",
+        command: "verlato",
         args: ["draft", "suggest", "--id", "ci_1"],
         label: "draft suggest",
         status: "running",
@@ -656,7 +777,7 @@ test("renders coalesced stream chunk activity as live blocks", () => {
             id: 1,
             stream: "stderr",
             category: "model",
-            message: "[releasepilot:model] stream reasoning chunks=3 chars=18",
+            message: "[verlato:model] stream reasoning chunks=3 chars=18",
             event: "stream_chunk",
             attributes: { kind: "reasoning", chunks: 3, chars: 18 },
             payload: "Thinking through diff",
@@ -666,7 +787,7 @@ test("renders coalesced stream chunk activity as live blocks", () => {
             id: 2,
             stream: "stderr",
             category: "model",
-            message: "[releasepilot:model] stream content chunks=2 chars=19",
+            message: "[verlato:model] stream content chunks=2 chars=19",
             event: "stream_chunk",
             attributes: { kind: "content", chunks: 2, chars: 19 },
             payload: "Adds model tracing",
@@ -681,7 +802,8 @@ test("renders coalesced stream chunk activity as live blocks", () => {
   assert.match(html, /Response streaming\.\.\. 2 chunks/);
   assert.match(html, /Reasoning stream 18 chars/);
   assert.match(html, /Response stream 19 chars/);
-  assert.match(html, /<details class="payload stream-payload" open>/);
+  assert.match(html, /<details class="payload stream-payload">/);
+  assert.doesNotMatch(html, /<details class="payload stream-payload" open>/);
   assert.match(html, /<pre class="stream-scroll" tabindex="0" data-scroll-key="request-44-stream-task-reasoning">/);
   assert.match(html, /let restoringScroll = false;/);
   assert.match(html, /if \(restoringScroll\) return;/);
@@ -690,33 +812,33 @@ test("renders coalesced stream chunk activity as live blocks", () => {
   assert.match(html, /Adds model tracing/);
 });
 
-test("contributes focused ReleasePilot views and optional walkthrough", () => {
-  const views = manifest.contributes.views.releasepilot;
+test("contributes focused Verlato views and optional walkthrough", () => {
+  const views = manifest.contributes.views.verlato;
 
   assert.deepEqual(views.map((view) => view.id), [
-    "releasepilot.control",
-    "releasepilot.releases",
-    "releasepilot.activity",
-    "releasepilot.sources",
+    "verlato.control",
+    "verlato.releases",
+    "verlato.activity",
+    "verlato.sources",
   ]);
-  assert.equal(views[0].contextualTitle, "ReleasePilot Control");
-  assert.equal(views[1].contextualTitle, "ReleasePilot Releases");
-  assert.equal(views[2].contextualTitle, "ReleasePilot Activity");
-  assert.equal(views[3].contextualTitle, "ReleasePilot Sources");
-  assert.equal(manifest.contributes.configuration.properties["releasepilot.notifications.successLevel"].default, "visible");
-  assert.deepEqual(manifest.contributes.configuration.properties["releasepilot.notifications.successLevel"].enum, [
+  assert.equal(views[0].contextualTitle, "Verlato Control");
+  assert.equal(views[1].contextualTitle, "Verlato Releases");
+  assert.equal(views[2].contextualTitle, "Verlato Activity");
+  assert.equal(views[3].contextualTitle, "Verlato Sources");
+  assert.equal(manifest.contributes.configuration.properties["verlato.notifications.successLevel"].default, "visible");
+  assert.deepEqual(manifest.contributes.configuration.properties["verlato.notifications.successLevel"].enum, [
     "visible",
     "quiet",
   ]);
-  assert.equal(manifest.contributes.walkthroughs[0].title, "Get started with ReleasePilot");
+  assert.equal(manifest.contributes.walkthroughs[0].title, "Get started with Verlato");
   assert.match(manifest.contributes.walkthroughs[0].description, /Optional shortcuts/);
   assert.deepEqual(
     manifest.contributes.walkthroughs[0].steps.map((step) => step.completionEvents[0]),
     [
-      "onView:releasepilot.control",
-      "onCommand:releasepilot.changeModel",
-      "onCommand:releasepilot.scanRepository",
-      "onCommand:releasepilot.previewReleaseNotes",
+      "onView:verlato.control",
+      "onCommand:verlato.changeModel",
+      "onCommand:verlato.scanRepository",
+      "onCommand:verlato.previewReleaseNotes",
     ],
   );
 });
@@ -735,7 +857,7 @@ function draftItem(overrides) {
     commit_shas: ["abcdef123456"],
     base_ref: "v1.0.0",
     head_ref: "HEAD",
-    files: ["releasepilot/cli/main.py"],
+    files: ["verlato/cli/main.py"],
     commit_signals: ["diff-fallback"],
     status: "needs-review",
     reviewed_by: null,

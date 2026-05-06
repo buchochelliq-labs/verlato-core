@@ -1,8 +1,8 @@
-# ReleasePilot
+# Verlato
 
-ReleasePilot is an MVP changelog intelligence layer over git history and pull requests.
+Verlato is an MVP changelog intelligence layer over git history and pull requests.
 
-It is **PR-first by default**: the primary analysis unit is a pull request (or grouped change set), not an individual commit. Conventional commits are treated as a strong signal, but when commit messages are weak, ReleasePilot falls back to **diff evidence** from changed files and representative hunks.
+It is **PR-first by default**: the primary analysis unit is a pull request (or grouped change set), not an individual commit. Conventional commits are treated as a strong signal, but when commit messages are weak, Verlato falls back to **diff evidence** from changed files and representative hunks.
 
 ## MVP capabilities
 
@@ -22,7 +22,7 @@ It is **PR-first by default**: the primary analysis unit is a pull request (or g
 
 ## Architecture
 
-`releasepilot/`
+`verlato/`
 
 - `cli/` — CLI entrypoint and command handling.
 - `core/collector.py` — collects commits and maps commits to PRs.
@@ -79,22 +79,22 @@ python -m pip install -e .
 ## CLI usage
 
 ```bash
-releasepilot scan --base <ref> --head <ref>
-releasepilot scan --from-latest-tag --head <ref>
-releasepilot scan --from-latest-published --head <ref>
-releasepilot generate --base <ref> --head <ref>
-releasepilot reconcile --base <ref> --head <ref>
-releasepilot draft preview --base <ref> --head <ref> --version v1.2.0
-releasepilot draft preview --base <ref> --head <ref> --version v1.2.0 --model-provider ollama
-releasepilot draft prompt --base <ref> --head <ref> --id <item-id>
-releasepilot draft json --base <ref> --head <ref> --version v1.2.0
-releasepilot draft apply --base <ref> --head <ref> --target changelog --version v1.2.0
-releasepilot draft review --base <ref> --id <item-id> --status ready --reviewer alice
-releasepilot serve
-releasepilot render --format github-release --version v1.2.0
-releasepilot render --format changelog --version v1.2.0
-releasepilot state show
-releasepilot state mark-published --version v1.2.0 --all-unpublished
+verlato scan --base <ref> --head <ref>
+verlato scan --from-latest-tag --head <ref>
+verlato scan --from-latest-published --head <ref>
+verlato generate --base <ref> --head <ref>
+verlato reconcile --base <ref> --head <ref>
+verlato draft preview --base <ref> --head <ref> --version v1.2.0
+verlato draft preview --base <ref> --head <ref> --version v1.2.0 --model-provider ollama
+verlato draft prompt --base <ref> --head <ref> --id <item-id>
+verlato draft json --base <ref> --head <ref> --version v1.2.0
+verlato draft apply --base <ref> --head <ref> --target changelog --version v1.2.0
+verlato draft review --base <ref> --id <item-id> --status ready --reviewer alice
+verlato serve
+verlato render --format github-release --version v1.2.0
+verlato render --format changelog --version v1.2.0
+verlato state show
+verlato state mark-published --version v1.2.0 --all-unpublished
 ```
 
 ### Command behavior
@@ -117,23 +117,28 @@ releasepilot state mark-published --version v1.2.0 --all-unpublished
 
 ## Config sample
 
-See `releasepilot.sample.json` for a minimal example.
+See `verlato.sample.json` for a minimal example.
 
 Environment variables:
 
-- `RELEASEPILOT_STATE_PATH`: overrides local state file path.
-- `RELEASEPILOT_CONFIG_PATH`: overrides the repo config file path.
-- `RELEASEPILOT_PR_ADAPTER`: PR mapping mode: `standard-git` (default), `github`, or `none`.
-- `RELEASEPILOT_GITHUB_REPO`: repository slug (`owner/repo`) for GitHub API enrichment.
-- `RELEASEPILOT_MODEL_PROVIDER`: model provider mode: `ollama` (default), `stub`, `mock`, or `github-copilot`.
-- `RELEASEPILOT_OLLAMA_MODEL`: model name when using `ollama` (default `gemma4:latest`).
-- `RELEASEPILOT_OLLAMA_ENDPOINT`: override the local Ollama chat endpoint (default `http://127.0.0.1:11434/api/chat`).
-- `RELEASEPILOT_OLLAMA_TIMEOUT_SECONDS`: timeout for each local Ollama model request (default `120`).
-- `RELEASEPILOT_OLLAMA_STREAM`: set to `1` to stream Ollama response chunks into model telemetry while preserving the final response.
-- `RELEASEPILOT_MODEL_MAX_ITEMS`: maximum grouped changes before ReleasePilot disables provider calls for that scan (default `25`; use `-1` to disable the fanout guard).
-- `RELEASEPILOT_GITHUB_MODEL`: model name when using `github-copilot` (default `openai/gpt-4o-mini`; legacy values such as `gpt-4o-mini` are normalized).
-- `RELEASEPILOT_GITHUB_MODELS_ENDPOINT`: override chat-completions endpoint for GitHub-hosted models.
-- `GITHUB_TOKEN` or `GH_TOKEN`: API token used when `RELEASEPILOT_PR_ADAPTER=github`. Also used by `github-copilot` provider mode. If neither is set, the provider falls back to `gh auth token` so it can use the logged-in GitHub CLI user.
+- `VERLATO_STATE_PATH`: overrides local state file path.
+- `VERLATO_CONFIG_PATH`: overrides the repo config file path.
+- `VERLATO_PR_ADAPTER`: PR mapping mode: `standard-git` (default), `github`, or `none`.
+- `VERLATO_GITHUB_REPO`: repository slug (`owner/repo`) for GitHub API enrichment.
+- `VERLATO_MODEL_PROVIDER`: model provider mode: `ollama` (default), `stub`, `mock`, or `github-copilot`.
+- `VERLATO_OLLAMA_MODEL`: model name when using `ollama` (default `gemma4:latest`).
+- `VERLATO_OLLAMA_ENDPOINT`: override the local Ollama chat endpoint (default `http://127.0.0.1:11434/api/chat`).
+- `VERLATO_OLLAMA_TIMEOUT_SECONDS`: timeout for each local Ollama model request (default `15`).
+- `VERLATO_OLLAMA_STREAM`: set to `1` to stream Ollama response chunks into model telemetry while preserving the final response.
+- `VERLATO_OLLAMA_KEEP_ALIVE`: Ollama keep-alive value to avoid reloading the model between nearby requests (default `10m`; set empty to use Ollama's default behavior).
+- `VERLATO_OLLAMA_NUM_CTX`: optional Ollama context-window override for local requests.
+- `VERLATO_OLLAMA_NUM_PREDICT`: optional global output-token cap for Ollama requests.
+- `VERLATO_OLLAMA_SUMMARY_NUM_PREDICT`: summary/suggestion output-token cap when no global cap is set (default `180`).
+- `VERLATO_OLLAMA_CLASSIFY_NUM_PREDICT`: classification output-token cap when no global cap is set (default `24`).
+- `VERLATO_MODEL_MAX_ITEMS`: maximum grouped changes before Verlato disables provider calls for that scan (default `25`; use `-1` to disable the fanout guard).
+- `VERLATO_GITHUB_MODEL`: model name when using `github-copilot` (default `openai/gpt-4o-mini`; legacy values such as `gpt-4o-mini` are normalized).
+- `VERLATO_GITHUB_MODELS_ENDPOINT`: override chat-completions endpoint for GitHub-hosted models.
+- `GITHUB_TOKEN` or `GH_TOKEN`: API token used when `VERLATO_PR_ADAPTER=github`. Also used by `github-copilot` provider mode. If neither is set, the provider falls back to `gh auth token` so it can use the logged-in GitHub CLI user.
 
 Provider behavior:
 
@@ -142,7 +147,7 @@ Provider behavior:
 - `ollama`: local provider that calls a locally running Ollama model and keeps AI requests on your machine.
 - `github-copilot`: remote provider that enriches summaries and can assist low-confidence classification.
 
-Provider defaults can also be set in `releasepilot.json`; environment variables override these values:
+Provider defaults can also be set in `verlato.json`; environment variables override these values:
 
 ```json
 {
@@ -150,84 +155,87 @@ Provider defaults can also be set in `releasepilot.json`; environment variables 
     "name": "ollama",
     "model": "gemma4:latest",
     "endpoint": "http://127.0.0.1:11434/api/chat",
+    "keep_alive": "10m",
+    "summary_num_predict": 180,
+    "classify_num_predict": 24,
     "max_items_per_scan": 25
   }
 }
 ```
 
-When a provider is enabled, ReleasePilot sends compact file-diff evidence, representative hunks, PR context, and commit subjects to the summary prompt. If the model returns empty output, an error marker, or text that simply repeats the title/commit subject, ReleasePilot falls back to its deterministic diff summary. If a scan expands beyond `max_items_per_scan`, ReleasePilot skips provider calls for that scan to avoid hammering the selected model.
+When a provider is enabled, Verlato sends compact file-diff evidence, representative hunks, PR context, and commit subjects to the summary prompt. Ollama requests keep the selected model warm for nearby calls and cap generated output by task, which helps local scans avoid reload and over-generation costs. If the model returns empty output, an error marker, or text that simply repeats the title/commit subject, Verlato falls back to its deterministic diff summary. If a scan expands beyond `max_items_per_scan`, Verlato skips provider calls for that scan to avoid hammering the selected model.
 
-You can also override the provider for one CLI run with `--model-provider mock`, `--model-provider ollama`, or `--model-provider github-copilot` on `scan`, `generate`, `reconcile`, and `draft` commands. The VS Code extension exposes the same override through the `releasepilot.modelProvider` setting; leave it as `configured` to honor `releasepilot.json` or environment variables. The `draft suggest` command defaults to `ollama` when no provider is configured because it explicitly asks the model for a summary.
+You can also override the provider for one CLI run with `--model-provider mock`, `--model-provider ollama`, or `--model-provider github-copilot` on `scan`, `generate`, `reconcile`, and `draft` commands. The VS Code extension exposes the same override through the `verlato.modelProvider` setting; leave it as `configured` to honor `verlato.json` or environment variables. The `draft suggest` command defaults to `ollama` when no provider is configured because it explicitly asks the model for a summary.
 
-`draft suggest` generates one suggested description by default. Use `--count`, `RELEASEPILOT_SUGGESTION_COUNT`, `suggestion_count` in `releasepilot.json`, or the VS Code `releasepilot.suggestionCount` setting to request up to five variants. Use `--tone`, `RELEASEPILOT_SUGGESTION_TONE`, `suggestion_tone`, or `releasepilot.suggestionTone` to choose `release-note`, `concise`, `technical`, or `customer-facing` wording. Project language controls can be set with `suggestion_style` in config, `RELEASEPILOT_STYLE_GUIDANCE`, `RELEASEPILOT_PROJECT_VOCABULARY`, `RELEASEPILOT_BANNED_PHRASES`, `RELEASEPILOT_SPECIFICITY_FLOOR`, or the matching VS Code settings. Banned phrase matches are rejected from suggestion candidates; specificity rejection is opt-in by setting a floor above `0`. The VS Code release control view can regenerate all visible suggestions or regenerate a single item after changing tone. Set `RELEASEPILOT_TRACE_MODEL_CALLS=1` or pass `draft suggest --trace-suggestions` to log model-call and suggestion parsing diagnostics to stderr without changing JSON stdout.
+`draft suggest` generates one suggested description by default. Use `--count`, `VERLATO_SUGGESTION_COUNT`, `suggestion_count` in `verlato.json`, or the VS Code `verlato.suggestionCount` setting to request up to five variants. Use `--tone`, `VERLATO_SUGGESTION_TONE`, `suggestion_tone`, or `verlato.suggestionTone` to choose `release-note`, `concise`, `technical`, or `customer-facing` wording. Project language controls can be set with `suggestion_style` in config, `VERLATO_STYLE_GUIDANCE`, `VERLATO_PROJECT_VOCABULARY`, `VERLATO_BANNED_PHRASES`, `VERLATO_SPECIFICITY_FLOOR`, or the matching VS Code settings. Banned phrase matches are rejected from suggestion candidates; specificity rejection is opt-in by setting a floor above `0`. The VS Code release control view can regenerate all visible suggestions or regenerate a single item after changing tone. Set `VERLATO_TRACE_MODEL_CALLS=1` or pass `draft suggest --trace-suggestions` to log model-call and suggestion parsing diagnostics to stderr without changing JSON stdout.
 
-Model telemetry is ephemeral in the VS Code request timeline by default. Full prompt and response payloads are hidden unless `releasepilot.telemetry.includePromptPayloads` or `RELEASEPILOT_TRACE_MODEL_PAYLOADS=1` is enabled, because prompts can include PR text and diff snippets. Set `releasepilot.telemetry.debugModelLogPath` or `RELEASEPILOT_MODEL_LOG_PATH` to persist JSONL model telemetry for debugging; provider log records use an OpenTelemetry-style shape so they can later be exported to JSON/OTLP pipelines. ReleasePilot captures provider-exposed reasoning fields when available, but does not assume every provider exposes private model reasoning. See [docs/model-telemetry.md](docs/model-telemetry.md) for the event schema.
+Model telemetry is ephemeral in the VS Code request timeline by default. Full prompt and response payloads are hidden unless `verlato.telemetry.includePromptPayloads` or `VERLATO_TRACE_MODEL_PAYLOADS=1` is enabled, because prompts can include PR text and diff snippets. Set `verlato.telemetry.debugModelLogPath` or `VERLATO_MODEL_LOG_PATH` to persist JSONL model telemetry for debugging; provider log records use an OpenTelemetry-style shape so they can later be exported to JSON/OTLP pipelines. Verlato captures provider-exposed reasoning fields when available, but does not assume every provider exposes private model reasoning. See [docs/model-telemetry.md](docs/model-telemetry.md) for the event schema.
 
-Reasoning payloads are controlled separately with `releasepilot.telemetry.includeReasoningPayloads` or `RELEASEPILOT_TRACE_MODEL_REASONING=1`. When disabled, ReleasePilot still reports whether reasoning was exposed and how many characters were produced, but it does not stream or return the full reasoning text in editor-facing telemetry.
+Reasoning payloads are controlled separately with `verlato.telemetry.includeReasoningPayloads` or `VERLATO_TRACE_MODEL_REASONING=1`. When disabled, Verlato still reports whether reasoning was exposed and how many characters were produced, but it does not stream or return the full reasoning text in editor-facing telemetry.
 
-Payload redaction is enabled by default whenever payload telemetry is shown or persisted. Use `releasepilot.telemetry.redactPayloads=false` or `RELEASEPILOT_REDACT_MODEL_PAYLOADS=0` only for deep local debugging when you are comfortable with raw prompt and response text being visible in telemetry.
+Payload redaction is enabled by default whenever payload telemetry is shown or persisted. Use `verlato.telemetry.redactPayloads=false` or `VERLATO_REDACT_MODEL_PAYLOADS=0` only for deep local debugging when you are comfortable with raw prompt and response text being visible in telemetry.
 
-When a generated suggestion is applied, ReleasePilot stores summary provenance with the draft item, including source, provider/model, prompt hash when available, tone, style profile, response metadata, and apply timestamp. Draft JSON includes this provenance so model-assisted release-note text remains auditable after review.
+When a generated suggestion is applied, Verlato stores summary provenance with the draft item, including source, provider/model, prompt hash when available, tone, style profile, response metadata, and apply timestamp. Draft JSON includes this provenance so model-assisted release-note text remains auditable after review.
 
-ReleasePilot also records lightweight local feedback in `.releasepilot_state.json` under `feedback_events`. Apply/edit actions are inferred automatically, and VS Code records skip, regenerate, useful, and not-useful actions. By default feedback stores hashes and metrics instead of full summary text. Set `feedback_include_text=true` or `RELEASEPILOT_FEEDBACK_INCLUDE_TEXT=1` only when you explicitly want accepted/edited summary text persisted. Export feedback with `releasepilot feedback export --output feedback.json`, or run `releasepilot feedback recommend` to get safe aggregate prompt/style recommendations without reading raw prompt or response payloads.
+Verlato also records lightweight local feedback in `.verlato_state.json` under `feedback_events`. Apply/edit actions are inferred automatically, and VS Code records skip, regenerate, useful, and not-useful actions. By default feedback stores hashes and metrics instead of full summary text. Set `feedback_include_text=true` or `VERLATO_FEEDBACK_INCLUDE_TEXT=1` only when you explicitly want accepted/edited summary text persisted. Export feedback with `verlato feedback export --output feedback.json`, or run `verlato feedback recommend` to get safe aggregate prompt/style recommendations without reading raw prompt or response payloads.
 
-Persisted debug logs can be exported with `releasepilot model-logs export --file <model-debug.jsonl> --output model-export.json`. The export normalizes CLI and provider records into a `releasepilot.model_logs.v1` JSON document and reapplies redaction by default.
+Persisted debug logs can be exported with `verlato model-logs export --file <model-debug.jsonl> --output model-export.json`. The export normalizes CLI and provider records into a `verlato.model_logs.v1` JSON document and reapplies redaction by default.
 
 For local AI use, run Ollama locally and make sure the selected model is pulled before using `draft suggest`. For prompt debugging or manual model use, prefer `draft prompt`, which only returns the generated prompt and does not call any LLM. GitHub auth is no longer requested by default for configured/local flows.
 
 Config targets:
 
-- `releasepilot.json` can define draft/apply targets such as `CHANGELOG.md` and `.github/release.md`.
-- See `releasepilot.sample.json` for the baseline shape.
+- `verlato.json` can define draft/apply targets such as `CHANGELOG.md` and `.github/release.md`.
+- See `verlato.sample.json` for the baseline shape.
 
 Agent guidance:
 
 - `AGENT.md` describes the project mission and working expectations for coding agents.
 - `.github/copilot-instructions.md` gives Copilot a short workspace entrypoint and points to the deeper guidance files.
-- `.codex/skills/releasepilot/SKILL.md` bundles an in-repo skill for agents working on ReleasePilot itself.
+- `.codex/skills/verlato/SKILL.md` bundles an in-repo skill for agents working on Verlato itself.
 
 Editor integration:
 
-- The bundled VS Code extension uses one-off `releasepilot` CLI commands for its current UI workflow.
+- The bundled VS Code extension uses one-off `verlato` CLI commands for its current UI workflow.
 - The repo includes [.vscode/mcp.json](.vscode/mcp.json) so VS Code/Copilot can attach to the FastMCP server from the workspace.
 - The MCP server exposes these tool names:
-  - `releasepilot_service_health`
-  - `releasepilot_service_info`
-  - `releasepilot_scan_unpublished_changes`
-  - `releasepilot_get_draft_document`
-  - `releasepilot_preview_release_notes`
-  - `releasepilot_apply_draft`
-  - `releasepilot_update_review_state`
-  - `releasepilot_reconcile_preview`
+  - `verlato_service_health`
+  - `verlato_service_info`
+  - `verlato_scan_unpublished_changes`
+  - `verlato_get_draft_document`
+  - `verlato_preview_release_notes`
+  - `verlato_apply_draft`
+  - `verlato_update_review_state`
+  - `verlato_reconcile_preview`
 - The MCP server also exposes read-only resources:
-  - `releasepilot://overview`
-  - `releasepilot://guidance/{name}`
-  - `releasepilot://sample-config`
-- The MCP server exposes the prompt `releasepilot_review_request`.
+  - `verlato://overview`
+  - `verlato://guidance/{name}`
+  - `verlato://sample-config`
+- The MCP server exposes the prompt `verlato_review_request`.
 
 MCP setup:
 
 - Install the optional FastMCP v3+ dependency with `python -m pip install -e .[mcp]`.
-- The checked-in [.vscode/mcp.json](.vscode/mcp.json) runs `fastmcp run ${workspaceFolder}/scripts/releasepilot_mcp_server.py:mcp`.
-- Start the MCP server manually with `releasepilot serve` if you are not using the workspace config.
+- The checked-in [.vscode/mcp.json](.vscode/mcp.json) runs `fastmcp run ${workspaceFolder}/scripts/verlato_mcp_server.py:mcp`.
+- Start the MCP server manually with `verlato serve` if you are not using the workspace config.
 
 VS Code extension local testing:
 
 Install into VS Code from this checkout:
 
 ```powershell
-.\scripts\install_vscode_extension.ps1
+.\scripts\install_vscode_extension.cmd
 ```
 
-The script installs the Python backend in editable mode, installs the extension dependencies, builds the TypeScript, packages a local VSIX, and installs it into VS Code with `--force`. It uses `code.cmd` when available, which is more reliable on Windows than accidentally resolving `code` to `Code.exe`.
+The wrapper runs the PowerShell installer with a process-local execution-policy bypass, which avoids the common Windows "running scripts is disabled" failure. The script installs the Python backend in editable mode, installs the extension dependencies, builds the TypeScript, packages a local VSIX, and installs it into VS Code with `--force`. It uses `code.cmd` when available, which is more reliable on Windows than accidentally resolving `code` to `Code.exe`.
 
 Useful script options:
 
 ```powershell
-.\scripts\install_vscode_extension.ps1 -SkipPythonInstall
-.\scripts\install_vscode_extension.ps1 -SkipNpmInstall
-.\scripts\install_vscode_extension.ps1 -SkipPackage
-.\scripts\install_vscode_extension.ps1 -PreRelease
+.\scripts\install_vscode_extension.cmd -SkipPythonInstall
+.\scripts\install_vscode_extension.cmd -SkipNpmInstall
+.\scripts\install_vscode_extension.cmd -SkipPackage
+.\scripts\install_vscode_extension.cmd -PreRelease
 ```
 
 Manual install path:
@@ -241,23 +249,23 @@ Manual install path:
 4. Package the extension:
    `npx @vscode/vsce package`
 5. Install the generated VSIX:
-   `code --install-extension .\vscode-extension\releasepilot-vscode-0.0.1.vsix --force`
+   `code --install-extension .\vscode-extension\verlato-vscode-0.0.1.vsix --force`
 
 Development host path:
 
 1. Follow steps 1-3 above.
 2. Open the repo root in VS Code and press `F5`.
    The checked-in [.vscode/launch.json](.vscode/launch.json) starts an Extension Development Host using `vscode-extension/`.
-3. In the Extension Development Host, open the `ReleasePilot` activity bar view.
+3. In the Extension Development Host, open the `Verlato` activity bar view.
 
-After installation, open a repository and use the `ReleasePilot` activity bar view. The extension expects the `releasepilot` CLI to be available through one of these paths:
+After installation, open a repository and use the `Verlato` activity bar view. The extension expects the `verlato` CLI to be available through one of these paths:
 
-1. The `releasepilot.cliPath` VS Code setting.
-2. A workspace-local `.venv\Scripts\releasepilot.exe` on Windows, or `.venv/bin/releasepilot` on macOS/Linux.
+1. The `verlato.cliPath` VS Code setting.
+2. A workspace-local `.venv\Scripts\verlato.exe` on Windows, or `.venv/bin/verlato` on macOS/Linux.
 3. The installed extension's `.venv`, or the checked-out repo's `.venv` when developing this extension.
-4. `releasepilot` on VS Code's inherited `PATH`.
+4. `verlato` on VS Code's inherited `PATH`.
 
-On Windows, `scripts\install_vscode_extension.ps1` installs the backend into this repo's `.venv` and writes the matching `releasepilot.cliPath` VS Code user setting so the extension can run from other repositories.
+On Windows, `scripts\install_vscode_extension.ps1` installs the backend into this repo's `.venv` and writes the matching `verlato.cliPath` VS Code user setting so the extension can run from other repositories.
 
 To exercise the MCP server in the same workspace, ensure `fastmcp>=3` is installed and keep [.vscode/mcp.json](.vscode/mcp.json) enabled.
 

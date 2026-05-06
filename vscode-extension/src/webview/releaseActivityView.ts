@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 
-import { ReleasePilotClient } from "../client/releasePilotClient";
+import { VerlatoClient } from "../client/verlatoClient";
 import { CommandRequestSnapshot } from "../client/types";
 import { buildReleaseActivityHtml } from "./releaseControlMarkup";
 
@@ -8,7 +8,7 @@ export class ReleaseActivityViewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined;
   private requests: CommandRequestSnapshot[] = [];
 
-  constructor(private readonly client: ReleasePilotClient) {
+  constructor(private readonly client: VerlatoClient) {
     this.requests = client.getCommandRequests();
     this.client.onDidChangeRequests((requests) => {
       this.requests = requests;
@@ -28,7 +28,7 @@ export class ReleaseActivityViewProvider implements vscode.WebviewViewProvider {
   }
 
   reveal(): void {
-    void vscode.commands.executeCommand("releasepilot.activity.focus");
+    void vscode.commands.executeCommand("verlato.activity.focus");
   }
 
   private async handleMessage(message: ViewMessage): Promise<void> {
@@ -48,11 +48,11 @@ export class ReleaseActivityViewProvider implements vscode.WebviewViewProvider {
     const runningCount = this.requests.filter((request) => request.status === "running").length;
     const failedCount = this.requests.filter((request) => request.status === "failed").length;
     if (runningCount) {
-      this.view.badge = { value: runningCount, tooltip: `${runningCount} running ReleasePilot request(s)` };
+      this.view.badge = { value: runningCount, tooltip: `${runningCount} running Verlato request(s)` };
       return;
     }
     if (failedCount) {
-      this.view.badge = { value: failedCount, tooltip: `${failedCount} failed ReleasePilot request(s)` };
+      this.view.badge = { value: failedCount, tooltip: `${failedCount} failed Verlato request(s)` };
       return;
     }
     this.view.badge = undefined;

@@ -3,7 +3,7 @@ from __future__ import annotations
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
-from releasepilot.core.adapters import StandardGitAdapter
+from verlato.core.adapters import StandardGitAdapter
 
 
 def test_standard_git_adapter_extracts_pr_and_files():
@@ -23,7 +23,7 @@ def test_standard_git_adapter_extracts_pr_and_files():
         ),
     ]
 
-    with patch("subprocess.run", side_effect=outputs):
+    with patch("subprocess.run", side_effect=outputs) as run:
         pr = StandardGitAdapter().find_pr_for_commit("abc")
 
     assert pr is not None
@@ -32,6 +32,7 @@ def test_standard_git_adapter_extracts_pr_and_files():
     assert [f.path for f in pr.files] == ["src/search.py", "docs/search.md"]
     assert pr.files[0].patch
     assert "+new" in pr.files[0].patch
+    assert "--first-parent" in run.call_args_list[1].args[0]
 
 
 def test_standard_git_adapter_returns_none_without_pr_number():

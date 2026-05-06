@@ -1,4 +1,4 @@
-# ReleasePilot Backlog
+# Verlato Backlog
 
 This backlog is the implementation tracker for the MVP and near-term follow-ups from the original project goal.
 

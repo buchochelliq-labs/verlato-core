@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
-from releasepilot.github.adapter import GitHubApiAdapter
+from verlato.github.adapter import GitHubApiAdapter
 
 
 class _FakeResp:

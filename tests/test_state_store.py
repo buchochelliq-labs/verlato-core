@@ -1,13 +1,13 @@
 import json
 
-from releasepilot.core.models import (
+from verlato.core.models import (
     ChangeItem,
     Classification,
     Content,
     Evidence,
     SourceRef,
 )
-from releasepilot.state.store import StateStore, StateStoreError
+from verlato.state.store import StateStore, StateStoreError
 
 
 def test_state_store_roundtrip(tmp_path):
@@ -31,7 +31,7 @@ def test_state_store_roundtrip(tmp_path):
             "prompt_sha": "abc123",
         },
     )
-    from releasepilot.state.store import StateData
+    from verlato.state.store import StateData
 
     store.save(StateData(items=[item], feedback_events=[{"event": "suggestion_applied", "item_id": "ci_1"}]))
     loaded = store.load()

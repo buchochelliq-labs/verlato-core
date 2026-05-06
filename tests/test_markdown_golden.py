@@ -1,8 +1,8 @@
 from datetime import date
 from pathlib import Path
 
-from releasepilot.core.generator import MarkdownGenerator
-from releasepilot.core.models import ChangeItem, Classification, Content, Evidence, SourceRef
+from verlato.core.generator import MarkdownGenerator
+from verlato.core.models import ChangeItem, Classification, Content, Evidence, SourceRef
 
 
 class _FixedDate(date):
@@ -33,7 +33,7 @@ def _item(
 
 
 def test_github_release_golden(monkeypatch):
-    monkeypatch.setattr("releasepilot.core.generator.date", _FixedDate)
+    monkeypatch.setattr("verlato.core.generator.date", _FixedDate)
     items = [
         _item("ci_a", 10, "added", "Add public API", "Adds endpoint support", 0.91, ["v1.8.0"]),
         _item("ci_b", 11, "fixed", "Patch login bug", "Fixes timeout regression", 0.77),
@@ -49,7 +49,7 @@ def test_github_release_golden(monkeypatch):
 
 
 def test_changelog_golden(monkeypatch):
-    monkeypatch.setattr("releasepilot.core.generator.date", _FixedDate)
+    monkeypatch.setattr("verlato.core.generator.date", _FixedDate)
     items = [
         _item("ci_a", 10, "added", "Add public API", "Adds endpoint support", 0.91, ["v1.8.0"]),
         _item("ci_b", 11, "fixed", "Patch login bug", "Fixes timeout regression", 0.77),
@@ -65,7 +65,7 @@ def test_changelog_golden(monkeypatch):
 
 
 def test_github_release_empty_document_has_markdown_subheading(monkeypatch):
-    monkeypatch.setattr("releasepilot.core.generator.date", _FixedDate)
+    monkeypatch.setattr("verlato.core.generator.date", _FixedDate)
 
     rendered = MarkdownGenerator().render_github_release([], version="v2.0.0")
 

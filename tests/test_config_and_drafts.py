@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from releasepilot.cli.main import main
-from releasepilot.config import load_config
-from releasepilot.core.classifier import Classifier
-from releasepilot.core.drafts import normalize_remote_url
-from releasepilot.core.models import (
+from verlato.cli.main import main
+from verlato.config import load_config
+from verlato.core.classifier import Classifier
+from verlato.core.drafts import DraftService, normalize_remote_url
+from verlato.core.models import (
     ChangeGroup,
     ChangedFile,
     ChangeItem,
@@ -18,9 +18,9 @@ from releasepilot.core.models import (
     PullRequest,
     SourceRef,
 )
-from releasepilot.providers.base import ProviderRequest, ProviderResponse
-from releasepilot.providers.stub import StubProvider
-from releasepilot.state.store import StateData, StateStore
+from verlato.providers.base import ProviderRequest, ProviderResponse
+from verlato.providers.stub import StubProvider
+from verlato.state.store import StateData, StateStore
 
 
 def _mk_item(
@@ -67,13 +67,13 @@ def test_load_config_defaults_without_file(monkeypatch, tmp_path: Path):
 
     config = load_config()
 
-    assert config.state_path == ".releasepilot_state.json"
+    assert config.state_path == ".verlato_state.json"
     assert config.targets["changelog"].path == "CHANGELOG.md"
     assert config.targets["github-release"].path == ".github/release.md"
 
 
 def test_load_config_reads_custom_targets(monkeypatch, tmp_path: Path):
-    config_path = tmp_path / "releasepilot.json"
+    config_path = tmp_path / "verlato.json"
     config_path.write_text(
         json.dumps(
             {
@@ -95,7 +95,7 @@ def test_load_config_reads_custom_targets(monkeypatch, tmp_path: Path):
 
 
 def test_load_config_reads_provider_defaults(monkeypatch, tmp_path: Path):
-    config_path = tmp_path / "releasepilot.json"
+    config_path = tmp_path / "verlato.json"
     config_path.write_text(
         json.dumps(
             {
@@ -117,7 +117,7 @@ def test_load_config_reads_provider_defaults(monkeypatch, tmp_path: Path):
 
 
 def test_load_config_reads_provider_fanout_limit(monkeypatch, tmp_path: Path):
-    config_path = tmp_path / "releasepilot.json"
+    config_path = tmp_path / "verlato.json"
     config_path.write_text(json.dumps({"provider": {"max_items_per_scan": 7}}))
     monkeypatch.chdir(tmp_path)
 
@@ -127,7 +127,7 @@ def test_load_config_reads_provider_fanout_limit(monkeypatch, tmp_path: Path):
 
 
 def test_load_config_reads_provider_timeout(monkeypatch, tmp_path: Path):
-    config_path = tmp_path / "releasepilot.json"
+    config_path = tmp_path / "verlato.json"
     config_path.write_text(json.dumps({"provider": {"timeout_seconds": 45}}))
     monkeypatch.chdir(tmp_path)
 
@@ -136,8 +136,32 @@ def test_load_config_reads_provider_timeout(monkeypatch, tmp_path: Path):
     assert config.provider.timeout_seconds == 45
 
 
+def test_load_config_reads_ollama_tuning(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "verlato.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "provider": {
+                    "keep_alive": "20m",
+                    "num_ctx": 4096,
+                    "summary_num_predict": 96,
+                    "classify_num_predict": 12,
+                }
+            }
+        )
+    )
+    monkeypatch.chdir(tmp_path)
+
+    config = load_config()
+
+    assert config.provider.keep_alive == "20m"
+    assert config.provider.num_ctx == 4096
+    assert config.provider.summary_num_predict == 96
+    assert config.provider.classify_num_predict == 12
+
+
 def test_load_config_reads_suggestion_count(monkeypatch, tmp_path: Path):
-    config_path = tmp_path / "releasepilot.json"
+    config_path = tmp_path / "verlato.json"
     config_path.write_text(json.dumps({"suggestion_count": 4}))
     monkeypatch.chdir(tmp_path)
 
@@ -147,7 +171,7 @@ def test_load_config_reads_suggestion_count(monkeypatch, tmp_path: Path):
 
 
 def test_load_config_reads_suggestion_tone(monkeypatch, tmp_path: Path):
-    config_path = tmp_path / "releasepilot.json"
+    config_path = tmp_path / "verlato.json"
     config_path.write_text(json.dumps({"suggestion_tone": "technical"}))
     monkeypatch.chdir(tmp_path)
 
@@ -157,7 +181,7 @@ def test_load_config_reads_suggestion_tone(monkeypatch, tmp_path: Path):
 
 
 def test_load_config_reads_suggestion_style(monkeypatch, tmp_path: Path):
-    config_path = tmp_path / "releasepilot.json"
+    config_path = tmp_path / "verlato.json"
     config_path.write_text(
         json.dumps(
             {
@@ -181,7 +205,7 @@ def test_load_config_reads_suggestion_style(monkeypatch, tmp_path: Path):
 
 
 def test_load_config_reads_feedback_text_opt_in(monkeypatch, tmp_path: Path):
-    config_path = tmp_path / "releasepilot.json"
+    config_path = tmp_path / "verlato.json"
     config_path.write_text(json.dumps({"feedback_include_text": True}))
     monkeypatch.chdir(tmp_path)
 
@@ -201,8 +225,8 @@ def test_load_config_defaults_to_one_suggestion(monkeypatch, tmp_path: Path):
 def test_draft_json_command_outputs_sections_and_targets(monkeypatch, tmp_path: Path, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        "releasepilot.cli.main.detect_change_items",
-        lambda base, head: [_mk_item("ci_1", base_ref=base, head_ref=head, kind="added")],
+        "verlato.cli.main._detect_change_items_with_provider",
+        lambda base, head, model_provider: [_mk_item("ci_1", base_ref=base, head_ref=head, kind="added")],
     )
 
     rc = main(["draft", "json", "--base", "v1.0.0", "--head", "HEAD", "--version", "v1.1.0"])
@@ -224,8 +248,8 @@ def test_draft_json_command_outputs_sections_and_targets(monkeypatch, tmp_path: 
 def test_draft_preview_command_renders_github_release(monkeypatch, tmp_path: Path, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        "releasepilot.cli.main.detect_change_items",
-        lambda base, head: [_mk_item("ci_1", base_ref=base, head_ref=head, kind="fixed")],
+        "verlato.cli.main._detect_change_items_with_provider",
+        lambda base, head, model_provider: [_mk_item("ci_1", base_ref=base, head_ref=head, kind="fixed")],
     )
 
     rc = main(["draft", "preview", "--base", "v1.0.0", "--version", "v1.0.1"])
@@ -236,12 +260,32 @@ def test_draft_preview_command_renders_github_release(monkeypatch, tmp_path: Pat
     assert "### Fixed" in out
 
 
+def test_draft_json_ignores_configured_provider_without_explicit_override(monkeypatch, tmp_path: Path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setenv("VERLATO_MODEL_PROVIDER", "mock")
+    group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+
+    def fail_build_provider(*args, **kwargs):
+        raise AssertionError("draft json should stay deterministic unless --model-provider is explicit")
+
+    monkeypatch.setattr("verlato.cli.main.build_provider", fail_build_provider)
+
+    rc = main(["draft", "json", "--base", "v1.0.0", "--version", "v1.1.0"])
+
+    assert rc == 0
+    document = json.loads(capsys.readouterr().out)
+    item = document["sections"][0]["items"][0]
+    assert item["summary_source"] == "Deterministic summary generated from changed-file evidence"
+
+
 def test_draft_apply_updates_changelog_target(monkeypatch, tmp_path: Path, capsys):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "CHANGELOG.md").write_text("# Changelog\n\nExisting notes\n")
     monkeypatch.setattr(
-        "releasepilot.cli.main.detect_change_items",
-        lambda base, head: [_mk_item("ci_1", base_ref=base, head_ref=head)],
+        "verlato.cli.main._detect_change_items_with_provider",
+        lambda base, head, model_provider: [_mk_item("ci_1", base_ref=base, head_ref=head)],
     )
 
     rc = main(["draft", "apply", "--base", "v1.0.0", "--version", "v1.1.0", "--target", "changelog"])
@@ -258,8 +302,8 @@ def test_draft_apply_uses_custom_file_for_github_release(monkeypatch, tmp_path: 
     monkeypatch.chdir(tmp_path)
     custom_file = tmp_path / "notes" / "release.md"
     monkeypatch.setattr(
-        "releasepilot.cli.main.detect_change_items",
-        lambda base, head: [_mk_item("ci_1", base_ref=base, head_ref=head)],
+        "verlato.cli.main._detect_change_items_with_provider",
+        lambda base, head, model_provider: [_mk_item("ci_1", base_ref=base, head_ref=head)],
     )
 
     rc = main(
@@ -286,11 +330,10 @@ def test_draft_apply_uses_custom_file_for_github_release(monkeypatch, tmp_path: 
 def test_draft_review_persists_and_overlays_review_state(monkeypatch, tmp_path: Path, capsys):
     state_path = tmp_path / "state.json"
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
-    monkeypatch.setattr(
-        "releasepilot.cli.main.detect_change_items",
-        lambda base, head: [_mk_item("ci_1", base_ref=base, head_ref=head)],
-    )
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(state_path))
+    group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
+    target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
 
     rc = main(
         [
@@ -299,7 +342,7 @@ def test_draft_review_persists_and_overlays_review_state(monkeypatch, tmp_path: 
             "--base",
             "v1.0.0",
             "--id",
-            "ci_1",
+            target_item.id,
             "--status",
             "hidden",
             "--summary",
@@ -315,12 +358,12 @@ def test_draft_review_persists_and_overlays_review_state(monkeypatch, tmp_path: 
     assert reviewed["edited_summary"] == "Edited hidden summary"
     assert reviewed["hidden"] is True
 
-    rc = main(["draft", "json", "--base", "v1.0.0", "--version", "v1.1.0"])
+    rc = main(["draft", "json", "--base", "v1.0.0", "--version", "v1.1.0", "--model-provider", "stub"])
     assert rc == 0
     document = json.loads(capsys.readouterr().out)
     assert document["sections"][0]["items"][0]["status"] == "hidden"
     assert document["sections"][0]["items"][0]["summary"] == "Edited hidden summary"
-    assert document["sections"][0]["items"][0]["original_summary"] == "Improves login flows"
+    assert document["sections"][0]["items"][0]["original_summary"] != "Edited hidden summary"
     assert document["sections"][0]["items"][0]["summary_source"].startswith("Human edited summary")
     assert "Improve login" not in document["rendered"]["github-release"]
 
@@ -331,11 +374,11 @@ def test_draft_json_excludes_items_already_published_in_another_release(monkeypa
     published.published = True
     published.published_in = "v1.0.0"
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(state_path))
     StateStore(str(state_path)).save(StateData(items=[published]))
     monkeypatch.setattr(
-        "releasepilot.cli.main.detect_change_items",
-        lambda base, head: [_mk_item("ci_1", base_ref=base, head_ref=head)],
+        "verlato.cli.main._detect_change_items_with_provider",
+        lambda base, head, model_provider: [_mk_item("ci_1", base_ref=base, head_ref=head)],
     )
 
     rc = main(["draft", "json", "--base", "v0.9.0", "--head", "HEAD", "--version", "v1.1.0"])
@@ -349,7 +392,7 @@ def test_draft_json_excludes_items_already_published_in_another_release(monkeypa
 def test_draft_suggest_persists_model_summary(monkeypatch, tmp_path: Path, capsys):
     state_path = tmp_path / "state.json"
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(state_path))
     group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
     target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
 
@@ -360,14 +403,14 @@ def test_draft_suggest_persists_model_summary(monkeypatch, tmp_path: Path, capsy
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="[mock-classification] changed/general/external/patch", confidence=0.8, model="mock-local")
 
-    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
 
     def fake_build_provider(config, mode=None):
         if mode == "mock":
             return MockSummaryProvider()
         return StubProvider()
 
-    monkeypatch.setattr("releasepilot.cli.main.build_provider", fake_build_provider)
+    monkeypatch.setattr("verlato.cli.main.build_provider", fake_build_provider)
 
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--model-provider", "mock"])
 
@@ -381,7 +424,7 @@ def test_draft_suggest_persists_model_summary(monkeypatch, tmp_path: Path, capsy
     assert suggested["summary_provenance"]["tone"] == "release-note"
     assert suggested["summary_provenance"]["applied_at"]
 
-    rc = main(["draft", "json", "--base", "v1.0.0"])
+    rc = main(["draft", "json", "--base", "v1.0.0", "--model-provider", "stub"])
     assert rc == 0
     document = json.loads(capsys.readouterr().out)
     item = document["sections"][0]["items"][0]
@@ -399,7 +442,7 @@ def test_draft_suggest_persists_model_summary(monkeypatch, tmp_path: Path, capsy
 def test_draft_review_persists_model_suggestion_provenance(monkeypatch, tmp_path: Path, capsys):
     state_path = tmp_path / "state.json"
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(state_path))
     group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
     target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
     provenance = {
@@ -410,7 +453,7 @@ def test_draft_review_persists_model_suggestion_provenance(monkeypatch, tmp_path
         "suggestion_index": 0,
         "response_metadata": {"total_duration": 12},
     }
-    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
 
     rc = main(
         [
@@ -437,7 +480,7 @@ def test_draft_review_persists_model_suggestion_provenance(monkeypatch, tmp_path
     assert reviewed["summary_provenance"]["response_metadata"] == {"total_duration": 12}
     assert reviewed["summary_provenance"]["applied_at"]
 
-    rc = main(["draft", "json", "--base", "v1.0.0"])
+    rc = main(["draft", "json", "--base", "v1.0.0", "--model-provider", "stub"])
     assert rc == 0
     document = json.loads(capsys.readouterr().out)
     item = document["sections"][0]["items"][0]
@@ -448,7 +491,7 @@ def test_draft_review_persists_model_suggestion_provenance(monkeypatch, tmp_path
 def test_feedback_record_and_export(monkeypatch, tmp_path: Path, capsys):
     state_path = tmp_path / "state.json"
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(state_path))
 
     rc = main(
         [
@@ -470,7 +513,7 @@ def test_feedback_record_and_export(monkeypatch, tmp_path: Path, capsys):
     rc = main(["feedback", "export"])
     assert rc == 0
     exported = json.loads(capsys.readouterr().out)
-    assert exported["schema_version"] == "releasepilot.feedback.v1"
+    assert exported["schema_version"] == "verlato.feedback.v1"
     assert exported["record_count"] == 1
     assert exported["records"][0]["event"] == "suggestion_skipped"
     assert exported["records"][0]["metadata"] == {"scope": "item"}
@@ -479,7 +522,7 @@ def test_feedback_record_and_export(monkeypatch, tmp_path: Path, capsys):
 def test_feedback_recommend_uses_safe_aggregates(monkeypatch, tmp_path: Path, capsys):
     state_path = tmp_path / "state.json"
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(state_path))
     events = [
         ("suggestion_regenerated", "concise", {}),
         ("suggestion_regenerated", "concise", {}),
@@ -508,7 +551,7 @@ def test_feedback_recommend_uses_safe_aggregates(monkeypatch, tmp_path: Path, ca
 
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["schema_version"] == "releasepilot.feedback_recommendations.v1"
+    assert payload["schema_version"] == "verlato.feedback_recommendations.v1"
     assert payload["event_count"] == 5
     assert payload["signals"]["average_specificity"] == 0.35
     kinds = {recommendation["kind"] for recommendation in payload["recommendations"]}
@@ -521,7 +564,7 @@ def test_feedback_recommend_uses_safe_aggregates(monkeypatch, tmp_path: Path, ca
 def test_draft_suggest_preview_returns_variants_without_persisting(monkeypatch, tmp_path: Path, capsys):
     state_path = tmp_path / "state.json"
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(state_path))
     group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
     target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
 
@@ -543,8 +586,8 @@ def test_draft_suggest_preview_returns_variants_without_persisting(monkeypatch, 
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: [group])
-    monkeypatch.setattr("releasepilot.cli.main.build_provider", lambda config, mode=None: VariantProvider())
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
 
     rc = main(
         [
@@ -589,7 +632,7 @@ def test_draft_suggest_preview_returns_variants_without_persisting(monkeypatch, 
 
 
 def test_draft_suggest_applies_style_controls_to_prompt_and_rejections(monkeypatch, tmp_path: Path, capsys):
-    config_path = tmp_path / "releasepilot.json"
+    config_path = tmp_path / "verlato.json"
     config_path.write_text(
         json.dumps(
             {
@@ -604,7 +647,7 @@ def test_draft_suggest_applies_style_controls_to_prompt_and_rejections(monkeypat
     )
     state_path = tmp_path / "state.json"
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(state_path))
     group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
     target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
 
@@ -625,8 +668,8 @@ def test_draft_suggest_applies_style_controls_to_prompt_and_rejections(monkeypat
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: [group])
-    monkeypatch.setattr("releasepilot.cli.main.build_provider", lambda config, mode=None: StyledProvider())
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: StyledProvider())
 
     rc = main(
         [
@@ -656,7 +699,7 @@ def test_draft_suggest_applies_style_controls_to_prompt_and_rejections(monkeypat
 def test_draft_suggest_preview_defaults_to_one_suggestion(monkeypatch, tmp_path: Path, capsys):
     state_path = tmp_path / "state.json"
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(state_path))
     group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
     target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
 
@@ -674,8 +717,8 @@ def test_draft_suggest_preview_defaults_to_one_suggestion(monkeypatch, tmp_path:
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: [group])
-    monkeypatch.setattr("releasepilot.cli.main.build_provider", lambda config, mode=None: VariantProvider())
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
 
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"])
 
@@ -688,7 +731,7 @@ def test_draft_suggest_preview_defaults_to_one_suggestion(monkeypatch, tmp_path:
 def test_draft_suggest_preview_rejects_too_similar_candidates(monkeypatch, tmp_path: Path, capsys):
     state_path = tmp_path / "state.json"
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(state_path))
     group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
     target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
 
@@ -707,8 +750,8 @@ def test_draft_suggest_preview_rejects_too_similar_candidates(monkeypatch, tmp_p
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: [group])
-    monkeypatch.setattr("releasepilot.cli.main.build_provider", lambda config, mode=None: VariantProvider())
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
 
     rc = main(
         [
@@ -736,7 +779,7 @@ def test_draft_suggest_preview_rejects_too_similar_candidates(monkeypatch, tmp_p
 def test_draft_suggest_batch_preview_excludes_hidden_items(monkeypatch, tmp_path: Path, capsys):
     state_path = tmp_path / "state.json"
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(state_path))
     groups = [
         _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow"),
         _mk_group(number=2, title="Tune dashboard", commit_sha="b2", commit_message="update dashboard"),
@@ -755,8 +798,8 @@ def test_draft_suggest_batch_preview_excludes_hidden_items(monkeypatch, tmp_path
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: groups)
-    monkeypatch.setattr("releasepilot.cli.main.build_provider", lambda config, mode=None: VariantProvider())
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
 
     rc = main(["draft", "review", "--base", "v1.0.0", "--id", second.id, "--status", "hidden"])
     assert rc == 0
@@ -784,8 +827,8 @@ def test_draft_suggest_batch_preview_excludes_hidden_items(monkeypatch, tmp_path
 
 def test_draft_suggest_trace_logs_filter_reasons(monkeypatch, tmp_path: Path, capsys):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(tmp_path / "state.json"))
-    monkeypatch.setenv("RELEASEPILOT_TRACE_MODEL_CALLS", "1")
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setenv("VERLATO_TRACE_MODEL_CALLS", "1")
     group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
     target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
 
@@ -801,8 +844,8 @@ def test_draft_suggest_trace_logs_filter_reasons(monkeypatch, tmp_path: Path, ca
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: [group])
-    monkeypatch.setattr("releasepilot.cli.main.build_provider", lambda config, mode=None: VariantProvider())
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
 
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"])
 
@@ -823,8 +866,8 @@ def test_draft_suggest_trace_logs_filter_reasons(monkeypatch, tmp_path: Path, ca
 
 def test_draft_suggest_trace_suggestions_alias_enables_trace(monkeypatch, tmp_path: Path, capsys):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(tmp_path / "state.json"))
-    monkeypatch.delenv("RELEASEPILOT_TRACE_MODEL_CALLS", raising=False)
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.delenv("VERLATO_TRACE_MODEL_CALLS", raising=False)
     group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
     target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
 
@@ -839,8 +882,8 @@ def test_draft_suggest_trace_suggestions_alias_enables_trace(monkeypatch, tmp_pa
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: [group])
-    monkeypatch.setattr("releasepilot.cli.main.build_provider", lambda config, mode=None: VariantProvider())
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
 
     rc = main(
         [
@@ -865,8 +908,8 @@ def test_draft_suggest_trace_suggestions_alias_enables_trace(monkeypatch, tmp_pa
 
 def test_draft_suggest_can_include_provider_reasoning_payload(monkeypatch, tmp_path: Path, capsys):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(tmp_path / "state.json"))
-    monkeypatch.setenv("RELEASEPILOT_TRACE_MODEL_REASONING", "1")
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setenv("VERLATO_TRACE_MODEL_REASONING", "1")
     group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
     target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
 
@@ -882,8 +925,8 @@ def test_draft_suggest_can_include_provider_reasoning_payload(monkeypatch, tmp_p
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: [group])
-    monkeypatch.setattr("releasepilot.cli.main.build_provider", lambda config, mode=None: VariantProvider())
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
 
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"])
 
@@ -897,11 +940,11 @@ def test_draft_suggest_can_include_provider_reasoning_payload(monkeypatch, tmp_p
 def test_draft_suggest_trace_can_emit_prompt_payloads_and_debug_jsonl(monkeypatch, tmp_path: Path, capsys):
     log_path = tmp_path / "model-debug.jsonl"
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(tmp_path / "state.json"))
-    monkeypatch.setenv("RELEASEPILOT_TRACE_MODEL_CALLS", "1")
-    monkeypatch.setenv("RELEASEPILOT_TRACE_MODEL_PAYLOADS", "1")
-    monkeypatch.setenv("RELEASEPILOT_TRACE_MODEL_REASONING", "1")
-    monkeypatch.setenv("RELEASEPILOT_MODEL_LOG_PATH", str(log_path))
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setenv("VERLATO_TRACE_MODEL_CALLS", "1")
+    monkeypatch.setenv("VERLATO_TRACE_MODEL_PAYLOADS", "1")
+    monkeypatch.setenv("VERLATO_TRACE_MODEL_REASONING", "1")
+    monkeypatch.setenv("VERLATO_MODEL_LOG_PATH", str(log_path))
     group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
     target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
 
@@ -917,19 +960,19 @@ def test_draft_suggest_trace_can_emit_prompt_payloads_and_debug_jsonl(monkeypatc
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: [group])
-    monkeypatch.setattr("releasepilot.cli.main.build_provider", lambda config, mode=None: VariantProvider())
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
 
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"])
 
     assert rc == 0
     captured = capsys.readouterr()
-    assert "[releasepilot:model] prompt-preview" in captured.err
-    assert "[releasepilot:model] json " in captured.err
+    assert "[verlato:model] prompt-preview" in captured.err
+    assert "[verlato:model] json " in captured.err
     payload_events = [
-        json.loads(line.removeprefix("[releasepilot:model] json "))
+        json.loads(line.removeprefix("[verlato:model] json "))
         for line in captured.err.splitlines()
-        if line.startswith("[releasepilot:model] json ")
+        if line.startswith("[verlato:model] json ")
     ]
     assert any(event["event"] == "prompt_preview" and "Improve login" in event["payload"] for event in payload_events)
     assert any(event["event"] == "reasoning_preview" and event["payload"] == "Used the login diff hunk." for event in payload_events)
@@ -940,10 +983,10 @@ def test_draft_suggest_trace_can_emit_prompt_payloads_and_debug_jsonl(monkeypatc
 def test_draft_suggest_redacts_payload_secrets_by_default(monkeypatch, tmp_path: Path, capsys):
     log_path = tmp_path / "model-debug.jsonl"
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(tmp_path / "state.json"))
-    monkeypatch.setenv("RELEASEPILOT_TRACE_MODEL_CALLS", "1")
-    monkeypatch.setenv("RELEASEPILOT_TRACE_MODEL_PAYLOADS", "1")
-    monkeypatch.setenv("RELEASEPILOT_MODEL_LOG_PATH", str(log_path))
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setenv("VERLATO_TRACE_MODEL_CALLS", "1")
+    monkeypatch.setenv("VERLATO_TRACE_MODEL_PAYLOADS", "1")
+    monkeypatch.setenv("VERLATO_MODEL_LOG_PATH", str(log_path))
     group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
     assert group.pr is not None
     group.pr.body = "Use token=ghp_abcdefghijklmnopqrstuvwxyz123456 for local testing"
@@ -960,8 +1003,8 @@ def test_draft_suggest_redacts_payload_secrets_by_default(monkeypatch, tmp_path:
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: [group])
-    monkeypatch.setattr("releasepilot.cli.main.build_provider", lambda config, mode=None: VariantProvider())
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
 
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"])
 
@@ -980,8 +1023,8 @@ def test_draft_suggest_redacts_payload_secrets_by_default(monkeypatch, tmp_path:
 def test_draft_suggest_defaults_to_ollama_when_no_provider_configured(monkeypatch, tmp_path: Path, capsys):
     state_path = tmp_path / "state.json"
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
-    monkeypatch.delenv("RELEASEPILOT_MODEL_PROVIDER", raising=False)
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(state_path))
+    monkeypatch.delenv("VERLATO_MODEL_PROVIDER", raising=False)
     group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
     target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
 
@@ -996,8 +1039,8 @@ def test_draft_suggest_defaults_to_ollama_when_no_provider_configured(monkeypatc
         assert mode == "ollama"
         return LocalSummaryProvider()
 
-    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: [group])
-    monkeypatch.setattr("releasepilot.cli.main.build_provider", fake_build_provider)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", fake_build_provider)
 
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id])
 
@@ -1008,7 +1051,7 @@ def test_draft_suggest_defaults_to_ollama_when_no_provider_configured(monkeypatc
 
 def test_draft_suggest_surfaces_provider_errors(monkeypatch, tmp_path: Path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
     group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
     target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
 
@@ -1023,8 +1066,8 @@ def test_draft_suggest_surfaces_provider_errors(monkeypatch, tmp_path: Path):
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="[github-copilot-error] classify should not run", confidence=0.0, model="github-copilot:gpt-4o-mini")
 
-    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: [group])
-    monkeypatch.setattr("releasepilot.cli.main.build_provider", lambda config, mode=None: ErrorProvider())
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: ErrorProvider())
 
     try:
         main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--model-provider", "github-copilot"])
@@ -1050,7 +1093,7 @@ def test_draft_suggest_only_requests_summary_for_selected_item(monkeypatch, tmp_
 
     provider = CountingProvider()
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
 
     groups = [
         ChangeGroup(
@@ -1072,8 +1115,8 @@ def test_draft_suggest_only_requests_summary_for_selected_item(monkeypatch, tmp_
     ]
     target_item = Classifier().classify(groups[0], "v1.0.0", "HEAD")[0]
 
-    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: groups)
-    monkeypatch.setattr("releasepilot.cli.main.build_provider", lambda config, mode=None: provider)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
 
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id])
 
@@ -1102,11 +1145,11 @@ def test_scan_disables_provider_when_change_fanout_exceeds_limit(monkeypatch, tm
         _mk_group(number=2, title="Second change", commit_sha="b2", commit_message="second"),
     ]
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_MODEL_MAX_ITEMS", "1")
-    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: groups)
-    monkeypatch.setattr("releasepilot.cli.main.build_provider", lambda config, mode=None: provider)
+    monkeypatch.setenv("VERLATO_MODEL_MAX_ITEMS", "1")
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
 
-    from releasepilot.cli.main import detect_change_items
+    from verlato.cli.main import detect_change_items
 
     items = detect_change_items("v1.0.0", "HEAD", model_provider="mock")
 
@@ -1121,10 +1164,10 @@ def test_draft_suggest_all_visible_refuses_large_model_fanout(monkeypatch, tmp_p
         _mk_group(number=2, title="Second change", commit_sha="b2", commit_message="second"),
     ]
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("RELEASEPILOT_MODEL_MAX_ITEMS", "1")
-    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setenv("VERLATO_MODEL_MAX_ITEMS", "1")
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
     monkeypatch.setattr(
-        "releasepilot.cli.main.build_provider",
+        "verlato.cli.main.build_provider",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fanout guard should stop provider setup")),
     )
 
@@ -1141,9 +1184,9 @@ def test_draft_prompt_outputs_prompt_without_calling_provider(monkeypatch, tmp_p
     group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
     target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
 
-    monkeypatch.setattr("releasepilot.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
     monkeypatch.setattr(
-        "releasepilot.cli.main.build_provider",
+        "verlato.cli.main.build_provider",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("draft prompt should not build a provider")),
     )
 
@@ -1159,7 +1202,7 @@ def test_draft_prompt_outputs_prompt_without_calling_provider(monkeypatch, tmp_p
 
 
 def test_render_uses_edited_summary_and_skips_hidden_items(monkeypatch, tmp_path: Path, capsys):
-    from releasepilot.state.store import StateData, StateStore
+    from verlato.state.store import StateData, StateStore
 
     state_path = tmp_path / "state.json"
     hidden = _mk_item("ci_hidden", title="Hidden change")
@@ -1169,7 +1212,7 @@ def test_render_uses_edited_summary_and_skips_hidden_items(monkeypatch, tmp_path
     edited.status = "edited"
     edited.edited_summary = "Custom reviewer summary"
     StateStore(str(state_path)).save(StateData(items=[hidden, edited]))
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(state_path))
 
     rc = main(["render", "--format", "changelog", "--version", "v1.2.0"])
 
@@ -1182,3 +1225,13 @@ def test_render_uses_edited_summary_and_skips_hidden_items(monkeypatch, tmp_path
 def test_normalize_remote_url_for_github_links():
     assert normalize_remote_url("git@github.com:owner/repo.git") == "https://github.com/owner/repo"
     assert normalize_remote_url("https://github.com/owner/repo.git") == "https://github.com/owner/repo"
+
+
+def test_repository_url_skips_git_subprocess_outside_worktree(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "verlato.core.drafts.subprocess.run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("git should not run outside a worktree")),
+    )
+
+    assert DraftService()._repository_url() is None

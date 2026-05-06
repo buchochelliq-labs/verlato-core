@@ -1,10 +1,10 @@
 import json
 
-from releasepilot.cli.main import main
+from verlato.cli.main import main
 
 
 def test_model_logs_export_outputs_normalized_json_with_redaction(tmp_path, capsys, monkeypatch):
-    monkeypatch.delenv("RELEASEPILOT_REDACT_MODEL_PAYLOADS", raising=False)
+    monkeypatch.delenv("VERLATO_REDACT_MODEL_PAYLOADS", raising=False)
     source = tmp_path / "model.jsonl"
     source.write_text(
         "\n".join(
@@ -25,9 +25,9 @@ def test_model_logs_export_outputs_normalized_json_with_redaction(tmp_path, caps
                         "SeverityNumber": 9,
                         "Body": "stream token=ghp_abcdefghijklmnopqrstuvwxyz123456",
                         "Attributes": {"provider": "ollama"},
-                        "EventName": "releasepilot.model.stream",
-                        "Resource": {"service.name": "releasepilot"},
-                        "InstrumentationScope": {"name": "releasepilot.providers"},
+                        "EventName": "verlato.model.stream",
+                        "Resource": {"service.name": "verlato"},
+                        "InstrumentationScope": {"name": "verlato.providers"},
                     }
                 ),
             ]
@@ -38,7 +38,7 @@ def test_model_logs_export_outputs_normalized_json_with_redaction(tmp_path, caps
 
     assert rc == 0
     exported = json.loads(capsys.readouterr().out)
-    assert exported["schema_version"] == "releasepilot.model_logs.v1"
+    assert exported["schema_version"] == "verlato.model_logs.v1"
     assert exported["record_count"] == 2
     cli_record = exported["records"][0]
     assert cli_record["raw_format"] == "cli"
@@ -49,7 +49,7 @@ def test_model_logs_export_outputs_normalized_json_with_redaction(tmp_path, caps
     assert "[REDACTED]" in cli_record["payload"]
     otel_record = exported["records"][1]
     assert otel_record["raw_format"] == "otel"
-    assert otel_record["event"] == "releasepilot.model.stream"
+    assert otel_record["event"] == "verlato.model.stream"
     assert otel_record["attributes"]["redacted"] is True
     assert "ghp_abcdefghijklmnopqrstuvwxyz" not in otel_record["body"]
 

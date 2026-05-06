@@ -1,8 +1,8 @@
-from releasepilot.core.checksum import CHECKSUM_VERSION
-from releasepilot.core.classifier import Classifier
-from releasepilot.core.models import ChangedFile, ChangeGroup, Commit, PullRequest
-from releasepilot.core.reconciler import Reconciler
-from releasepilot.state.store import StateData, StateStore
+from verlato.core.checksum import CHECKSUM_VERSION
+from verlato.core.classifier import Classifier
+from verlato.core.models import ChangedFile, ChangeGroup, Commit, PullRequest
+from verlato.core.reconciler import Reconciler
+from verlato.state.store import StateData, StateStore
 
 
 def test_append_new_populates_lineage_from_prior_published(tmp_path):

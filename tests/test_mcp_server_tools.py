@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import get_type_hints
 
-from releasepilot.cli.main import main
-from releasepilot.mcp.server import (
+from verlato.cli.main import main
+from verlato.mcp.server import (
     create_fastmcp_server,
     list_prompt_metadata,
     list_resource_metadata,
@@ -57,7 +57,7 @@ class _FakeService:
         return {"status": "ok"}
 
     def info(self):
-        return {"targets": ["changelog"], "mcp_tools": ["releasepilot_service_health"]}
+        return {"targets": ["changelog"], "mcp_tools": ["verlato_service_health"]}
 
     def list_unpublished_changes(self, base: str, head: str = "HEAD"):
         return [{"id": f"{base}->{head}"}]
@@ -98,15 +98,15 @@ def test_mcp_tool_metadata_lists_agent_facing_tools():
     names = [tool["name"] for tool in list_tool_metadata()]
 
     assert names == [
-        "releasepilot_service_health",
-        "releasepilot_service_info",
-        "releasepilot_scan_unpublished_changes",
-        "releasepilot_get_draft_document",
-        "releasepilot_preview_release_notes",
-        "releasepilot_apply_draft",
-        "releasepilot_update_review_state",
-        "releasepilot_request_model_input",
-        "releasepilot_reconcile_preview",
+        "verlato_service_health",
+        "verlato_service_info",
+        "verlato_scan_unpublished_changes",
+        "verlato_get_draft_document",
+        "verlato_preview_release_notes",
+        "verlato_apply_draft",
+        "verlato_update_review_state",
+        "verlato_request_model_input",
+        "verlato_reconcile_preview",
     ]
 
 
@@ -114,47 +114,47 @@ def test_mcp_resource_and_prompt_metadata_lists_capabilities():
     resource_uris = [resource["uri"] for resource in list_resource_metadata()]
     prompt_names = [prompt["name"] for prompt in list_prompt_metadata()]
 
-    assert "releasepilot://overview" in resource_uris
-    assert "releasepilot://guidance/{name}" in resource_uris
-    assert "releasepilot_review_request" in prompt_names
+    assert "verlato://overview" in resource_uris
+    assert "verlato://guidance/{name}" in resource_uris
+    assert "verlato_review_request" in prompt_names
 
 
-def test_create_fastmcp_server_registers_releasepilot_tools():
+def test_create_fastmcp_server_registers_verlato_tools():
     server = create_fastmcp_server(service=_FakeService(), fastmcp_cls=_FakeFastMCP)
 
-    assert server.name == "ReleasePilot"
+    assert server.name == "Verlato"
     assert server.kwargs["version"]
     assert "instructions" in server.kwargs
     assert set(server.registered) == {
-        "releasepilot_service_health",
-        "releasepilot_service_info",
-        "releasepilot_scan_unpublished_changes",
-        "releasepilot_get_draft_document",
-        "releasepilot_preview_release_notes",
-        "releasepilot_apply_draft",
-        "releasepilot_update_review_state",
-        "releasepilot_request_model_input",
-        "releasepilot_reconcile_preview",
+        "verlato_service_health",
+        "verlato_service_info",
+        "verlato_scan_unpublished_changes",
+        "verlato_get_draft_document",
+        "verlato_preview_release_notes",
+        "verlato_apply_draft",
+        "verlato_update_review_state",
+        "verlato_request_model_input",
+        "verlato_reconcile_preview",
     }
-    assert "releasepilot://overview" in server.resources
-    assert "releasepilot://guidance/{name}" in server.resources
-    assert "releasepilot_sample_config" not in server.prompts
-    assert "releasepilot_review_request" in server.prompts
-    assert server.tool_annotations["releasepilot_preview_release_notes"]["readOnlyHint"] is True
-    assert server.tool_annotations["releasepilot_apply_draft"]["destructiveHint"] is True
-    hints = get_type_hints(server.registered["releasepilot_apply_draft"], include_extras=True)
+    assert "verlato://overview" in server.resources
+    assert "verlato://guidance/{name}" in server.resources
+    assert "verlato_sample_config" not in server.prompts
+    assert "verlato_review_request" in server.prompts
+    assert server.tool_annotations["verlato_preview_release_notes"]["readOnlyHint"] is True
+    assert server.tool_annotations["verlato_apply_draft"]["destructiveHint"] is True
+    hints = get_type_hints(server.registered["verlato_apply_draft"], include_extras=True)
     assert "target" in hints
     assert "file" in hints
-    assert server.registered["releasepilot_preview_release_notes"](base="v1.0.0") == "preview:v1.0.0->HEAD"
-    assert server.registered["releasepilot_apply_draft"](base="v1.0.0", target="changelog")["target"] == "changelog"
+    assert server.registered["verlato_preview_release_notes"](base="v1.0.0") == "preview:v1.0.0->HEAD"
+    assert server.registered["verlato_apply_draft"](base="v1.0.0", target="changelog")["target"] == "changelog"
 
 
 def test_run_mcp_stdio_uses_stdio_transport():
-    server = _FakeFastMCP("ReleasePilot")
+    server = _FakeFastMCP("Verlato")
 
     class _Factory:
         def __call__(self, name: str, **kwargs):
-            assert name == "ReleasePilot"
+            assert name == "Verlato"
             assert "instructions" in kwargs
             return server
 
@@ -165,7 +165,7 @@ def test_run_mcp_stdio_uses_stdio_transport():
 
 
 def test_cli_serve_can_delegate_to_mcp_stdio(monkeypatch):
-    monkeypatch.setattr("releasepilot.mcp.server.run_mcp_stdio", lambda: 0)
+    monkeypatch.setattr("verlato.mcp.server.run_mcp_stdio", lambda: 0)
 
     rc = main(["serve"])
 

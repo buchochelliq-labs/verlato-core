@@ -1,9 +1,9 @@
 {
-    "releasepilot.modelProvider": "ollama",
-    "releasepilot.ollamaModel": "gemma4",
-    "releasepilot.ollamaEndpoint": "http://127.0.0.1:11434/api/chat",
-    "releasepilot.maxModelItems": 25,
-    "releasepilot.suggestionCount": 3,
-    "releasepilot.telemetry.includeReasoningPayloads": true,
-    "releasepilot.telemetry.includePromptPayloads": true
+    "verlato.modelProvider": "ollama",
+    "verlato.ollamaModel": "gemma4",
+    "verlato.ollamaEndpoint": "http://127.0.0.1:11434/api/chat",
+    "verlato.maxModelItems": 25,
+    "verlato.suggestionCount": 3,
+    "verlato.telemetry.includeReasoningPayloads": true,
+    "verlato.telemetry.includePromptPayloads": true
 }

@@ -8,8 +8,8 @@ export class PreviewPanel {
   show(document: DraftDocument): void {
     if (!this.panel) {
       this.panel = vscode.window.createWebviewPanel(
-        "releasepilot.preview",
-        "ReleasePilot Preview",
+        "verlato.preview",
+        "Verlato Preview",
         vscode.ViewColumn.Beside,
         {
           enableScripts: false,
@@ -20,7 +20,7 @@ export class PreviewPanel {
       });
     }
 
-    this.panel.title = `ReleasePilot Preview: ${document.version}`;
+    this.panel.title = `Verlato Preview: ${document.version}`;
     this.panel.webview.html = this.renderHtml(document);
     this.panel.reveal(vscode.ViewColumn.Beside);
   }

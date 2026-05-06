@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 
-import { ReleasePilotClient } from "../client/releasePilotClient";
+import { VerlatoClient } from "../client/verlatoClient";
 import { DraftDocument, DraftItem, DraftRangeRequest, ModelSettings, RepositoryOverview } from "../client/types";
 import { handleNotificationAction, showErrorNotification, showSuccessNotification } from "../notifications";
 import { PreviewPanel } from "../webview/previewPanel";
@@ -43,12 +43,12 @@ interface GitDiffChange {
 
 export function registerCommands(
   context: vscode.ExtensionContext,
-  client: ReleasePilotClient,
+  client: VerlatoClient,
   treeProvider: ReleaseViewState,
   previewPanel: PreviewPanel,
 ): void {
   context.subscriptions.push(
-    vscode.commands.registerCommand("releasepilot.scanRepository", async () => {
+    vscode.commands.registerCommand("verlato.scanRepository", async () => {
       const request = await promptForRange(client);
       if (!request) {
         return;
@@ -57,10 +57,10 @@ export function registerCommands(
       const overview = await client.getRepositoryOverview();
       treeProvider.refresh(document, overview, client.getModelSettings());
       await handleNotificationAction(
-        await showSuccessNotification(`ReleasePilot loaded ${document.item_count} item(s).`, "Open ReleasePilot", "View Activity"),
+        await showSuccessNotification(`Verlato loaded ${document.item_count} item(s).`, "Open Verlato", "View Activity"),
       );
     }),
-    vscode.commands.registerCommand("releasepilot.previewReleaseNotes", async () => {
+    vscode.commands.registerCommand("verlato.previewReleaseNotes", async () => {
       const request = await promptForRange(client);
       if (!request) {
         return;
@@ -70,21 +70,21 @@ export function registerCommands(
       treeProvider.refresh(document, overview, client.getModelSettings());
       previewPanel.show(document);
       await handleNotificationAction(
-        await showSuccessNotification(`ReleasePilot previewed ${document.item_count} item(s).`, "Open ReleasePilot", "View Activity"),
+        await showSuccessNotification(`Verlato previewed ${document.item_count} item(s).`, "Open Verlato", "View Activity"),
       );
     }),
-    vscode.commands.registerCommand("releasepilot.refreshRepository", async () => {
+    vscode.commands.registerCommand("verlato.refreshRepository", async () => {
       const overview = await client.getRepositoryOverview();
       treeProvider.refresh(undefined, overview, client.getModelSettings());
       await handleNotificationAction(
         await showSuccessNotification(
-          `ReleasePilot found ${overview.branches.length} branch(es), ${overview.tags.length} tag(s), and ${overview.unpublishedCount} unpublished item(s).`,
-          "Open ReleasePilot",
+          `Verlato found ${overview.branches.length} branch(es), ${overview.tags.length} tag(s), and ${overview.unpublishedCount} unpublished item(s).`,
+          "Open Verlato",
           "View Activity",
         ),
       );
     }),
-    vscode.commands.registerCommand("releasepilot.applyToChangelog", async () => {
+    vscode.commands.registerCommand("verlato.applyToChangelog", async () => {
       const request = await promptForRange(client);
       if (!request) {
         return;
@@ -92,7 +92,7 @@ export function registerCommands(
       const result = await client.applyDraft(request, "changelog");
       await showApplyNotification(client, request, previewPanel, result.path);
     }),
-    vscode.commands.registerCommand("releasepilot.applyToReleaseFile", async () => {
+    vscode.commands.registerCommand("verlato.applyToReleaseFile", async () => {
       const request = await promptForRange(client);
       if (!request) {
         return;
@@ -100,22 +100,22 @@ export function registerCommands(
       const result = await client.applyDraft(request, "github-release");
       await showApplyNotification(client, request, previewPanel, result.path);
     }),
-    vscode.commands.registerCommand("releasepilot.refreshItems", async () => {
+    vscode.commands.registerCommand("verlato.refreshItems", async () => {
       treeProvider.refresh(undefined, undefined, client.getModelSettings());
     }),
-    vscode.commands.registerCommand("releasepilot.openCommit", async (sha?: string) => {
+    vscode.commands.registerCommand("verlato.openCommit", async (sha?: string) => {
       await openCommit(sha);
     }),
-    vscode.commands.registerCommand("releasepilot.markItemReady", async (node?: DraftItemNode) => {
+    vscode.commands.registerCommand("verlato.markItemReady", async (node?: DraftItemNode) => {
       await updateItemReviewState(client, treeProvider, previewPanel, node, { status: "ready" });
     }),
-    vscode.commands.registerCommand("releasepilot.markItemNeedsReview", async (node?: DraftItemNode) => {
+    vscode.commands.registerCommand("verlato.markItemNeedsReview", async (node?: DraftItemNode) => {
       await updateItemReviewState(client, treeProvider, previewPanel, node, { status: "needs-review" });
     }),
-    vscode.commands.registerCommand("releasepilot.hideItem", async (node?: DraftItemNode) => {
+    vscode.commands.registerCommand("verlato.hideItem", async (node?: DraftItemNode) => {
       await updateItemReviewState(client, treeProvider, previewPanel, node, { status: "hidden" });
     }),
-    vscode.commands.registerCommand("releasepilot.editItemSummary", async (node?: DraftItemNode) => {
+    vscode.commands.registerCommand("verlato.editItemSummary", async (node?: DraftItemNode) => {
       if (!node) {
         return;
       }
@@ -128,28 +128,28 @@ export function registerCommands(
       }
       await updateItemReviewState(client, treeProvider, previewPanel, node, { summary });
     }),
-    vscode.commands.registerCommand("releasepilot.suggestItemSummary", async (node?: DraftItemNode) => {
+    vscode.commands.registerCommand("verlato.suggestItemSummary", async (node?: DraftItemNode) => {
       await suggestItemSummary(client, treeProvider, previewPanel, node);
     }),
-    vscode.commands.registerCommand("releasepilot.requestModelInput", async (node?: DraftItemNode) => {
+    vscode.commands.registerCommand("verlato.requestModelInput", async (node?: DraftItemNode) => {
       await requestModelInput(client, treeProvider, previewPanel, node);
     }),
-    vscode.commands.registerCommand("releasepilot.acceptItem", async (node?: DraftItemNode) => {
+    vscode.commands.registerCommand("verlato.acceptItem", async (node?: DraftItemNode) => {
       await updateItemReviewState(client, treeProvider, previewPanel, node, { status: "accepted" });
     }),
-    vscode.commands.registerCommand("releasepilot.unhideItem", async (node?: DraftItemNode) => {
+    vscode.commands.registerCommand("verlato.unhideItem", async (node?: DraftItemNode) => {
       await updateItemReviewState(client, treeProvider, previewPanel, node, { status: "needs-review" });
     }),
-    vscode.commands.registerCommand("releasepilot.resetItemSummary", async (node?: DraftItemNode) => {
+    vscode.commands.registerCommand("verlato.resetItemSummary", async (node?: DraftItemNode) => {
       await updateItemReviewState(client, treeProvider, previewPanel, node, { summary: "" });
     }),
-    vscode.commands.registerCommand("releasepilot.showServiceInfo", async () => {
+    vscode.commands.registerCommand("verlato.showServiceInfo", async () => {
       void vscode.window.showInformationMessage(
         client.getDiagnosticInfo(),
         { modal: true },
       );
     }),
-    vscode.commands.registerCommand("releasepilot.changeModel", async () => {
+    vscode.commands.registerCommand("verlato.changeModel", async () => {
       await changeModelSettings(client, treeProvider);
     }),
   );
@@ -236,7 +236,7 @@ function formatAuthor(commit: GitCommit): string {
 }
 
 async function suggestItemSummary(
-  client: ReleasePilotClient,
+  client: VerlatoClient,
   treeProvider: ReleaseViewState,
   previewPanel: PreviewPanel,
   node: DraftItemNode | undefined,
@@ -266,7 +266,7 @@ async function suggestItemSummary(
     const picked = await vscode.window.showQuickPick(
       suggestions.map((summary, index) => ({ label: summary, description: index === 0 ? "best" : undefined })),
       {
-        title: suggestions.length === 1 ? "Review ReleasePilot suggestion" : "Choose ReleasePilot suggestion",
+        title: suggestions.length === 1 ? "Review Verlato suggestion" : "Choose Verlato suggestion",
         placeHolder: suggestions.length === 1 ? "Apply the generated description" : "Pick a generated description to apply",
       },
     );
@@ -281,7 +281,7 @@ async function suggestItemSummary(
 }
 
 async function requestModelInput(
-  client: ReleasePilotClient,
+  client: VerlatoClient,
   treeProvider: ReleaseViewState,
   previewPanel: PreviewPanel,
   node: DraftItemNode | undefined,
@@ -315,11 +315,11 @@ async function requestModelInput(
     return;
   }
   await handleNotificationAction(
-    await showSuccessNotification("ReleasePilot opened the prompt preview and copied it to the clipboard.", "View Activity"),
+    await showSuccessNotification("Verlato opened the prompt preview and copied it to the clipboard.", "View Activity"),
   );
 }
 
-async function promptForRange(client: ReleasePilotClient): Promise<DraftRangeRequest | undefined> {
+async function promptForRange(client: VerlatoClient): Promise<DraftRangeRequest | undefined> {
   const overview = await client.getRepositoryOverview();
   const refPick = await vscode.window.showQuickPick(
     [
@@ -333,12 +333,12 @@ async function promptForRange(client: ReleasePilotClient): Promise<DraftRangeReq
       { label: "HEAD~10", description: "manual default" },
     ],
     {
-      title: "ReleasePilot base ref",
+      title: "Verlato base ref",
       placeHolder: "Pick the previous release tag, branch, or commit to compare from",
     },
   );
   const base = await vscode.window.showInputBox({
-    prompt: "ReleasePilot base ref",
+    prompt: "Verlato base ref",
     placeHolder: "v1.0.0",
     value: refPick?.label ?? "HEAD~10",
   });
@@ -346,7 +346,7 @@ async function promptForRange(client: ReleasePilotClient): Promise<DraftRangeReq
     return undefined;
   }
   const head = await vscode.window.showInputBox({
-    prompt: "ReleasePilot head ref",
+    prompt: "Verlato head ref",
     placeHolder: "HEAD",
     value: "HEAD",
   });
@@ -363,14 +363,14 @@ async function promptForRange(client: ReleasePilotClient): Promise<DraftRangeReq
 }
 
 async function changeModelSettings(
-  client: ReleasePilotClient,
+  client: VerlatoClient,
   treeProvider: ReleaseViewState,
 ): Promise<void> {
   const current = client.getModelSettings();
   const provider = await vscode.window.showQuickPick(
     ["ollama", "configured", "github-copilot", "mock", "stub"],
     {
-      title: "ReleasePilot AI provider",
+      title: "Verlato AI provider",
       placeHolder: "Choose the provider used for summaries and classification assists",
     },
   );
@@ -457,14 +457,14 @@ async function changeModelSettings(
   treeProvider.refresh(undefined, undefined, client.getModelSettings());
   await handleNotificationAction(
     await showSuccessNotification(
-      `ReleasePilot model set to ${provider}${provider === "ollama" ? ` / ${model}` : ""}.`,
-      "Open ReleasePilot",
+      `Verlato model set to ${provider}${provider === "ollama" ? ` / ${model}` : ""}.`,
+      "Open Verlato",
     ),
   );
 }
 
 async function showApplyNotification(
-  client: ReleasePilotClient,
+  client: VerlatoClient,
   request: DraftRangeRequest,
   previewPanel: PreviewPanel,
   resultPath: string,
@@ -483,7 +483,7 @@ async function showApplyNotification(
 }
 
 async function updateItemReviewState(
-  client: ReleasePilotClient,
+  client: VerlatoClient,
   treeProvider: ReleaseViewState,
   previewPanel: PreviewPanel,
   node: DraftItemNode | undefined,
@@ -509,7 +509,7 @@ async function updateItemReviewState(
 
 async function showPromptPreview(promptPreview: { title: string; provider: string; prompt: string; item_id: string }): Promise<void> {
   const content = [
-    `# ReleasePilot Model Prompt`,
+    `# Verlato Model Prompt`,
     ``,
     `Item: ${promptPreview.title}`,
     `Item ID: ${promptPreview.item_id}`,
@@ -519,7 +519,7 @@ async function showPromptPreview(promptPreview: { title: string; provider: strin
     ``,
     promptPreview.prompt,
     ``,
-    `ReleasePilot does not send this prompt automatically. Use it manually with your preferred model.`,
+    `Verlato does not send this prompt automatically. Use it manually with your preferred model.`,
   ].join("\n");
   await vscode.env.clipboard.writeText(promptPreview.prompt);
   const document = await vscode.workspace.openTextDocument({

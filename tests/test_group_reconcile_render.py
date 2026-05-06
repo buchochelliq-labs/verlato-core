@@ -1,8 +1,8 @@
-from releasepilot.core.classifier import Classifier
-from releasepilot.core.generator import MarkdownGenerator
-from releasepilot.core.grouper import Grouper
-from releasepilot.core.models import ChangedFile, ChangeGroup, Commit, PullRequest
-from releasepilot.core.reconciler import Reconciler
+from verlato.core.classifier import Classifier
+from verlato.core.generator import MarkdownGenerator
+from verlato.core.grouper import Grouper
+from verlato.core.models import ChangedFile, ChangeGroup, Commit, PullRequest
+from verlato.core.reconciler import Reconciler
 
 
 def test_group_and_reconcile_and_render():
@@ -38,6 +38,24 @@ def test_grouper_splits_pr_with_unrelated_user_facing_areas():
     assert len(groups) == 2
     titles = sorted(group.pr.title for group in groups if group.pr)
     assert titles == ["Cross-cutting refactor [api]", "Cross-cutting refactor [frontend]"]
+
+
+def test_pr_group_without_pr_files_keeps_commit_file_evidence():
+    commits = [
+        Commit(
+            sha="a1",
+            message="Merge pull request #12 from feature/release-control",
+            files=[ChangedFile(path="src/release_control.py", patch="+render actual diff evidence")],
+        )
+    ]
+    pr = PullRequest(number=12, title="Improve release control", files=[])
+
+    groups = Grouper().group(commits, {"a1": pr})
+    items = Classifier().classify(groups[0], base_ref="v1.0.0", head_ref="main")
+
+    assert groups[0].files[0].path == "src/release_control.py"
+    assert "src/release_control.py" in items[0].content.summary
+    assert items[0].evidence.files == ["src/release_control.py"]
 
 
 def test_render_with_confidence_and_provenance():

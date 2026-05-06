@@ -1,0 +1,40 @@
+{
+  "state_path": ".verlato_state.json",
+  "feedback_include_text": false,
+  "suggestion_count": 1,
+  "suggestion_tone": "release-note",
+  "suggestion_style": {
+    "guidance": "Prefer concrete user workflow language.",
+    "project_vocabulary": [
+      "Release Control"
+    ],
+    "banned_phrases": [
+      "various improvements"
+    ],
+    "specificity_floor": 0
+  },
+  "github": {
+    "repo": "owner/repo",
+    "token_env": "GITHUB_TOKEN"
+  },
+  "provider": {
+    "name": "ollama",
+    "model": "gemma4:latest",
+    "endpoint": "http://127.0.0.1:11434/api/chat",
+    "timeout_seconds": 15,
+    "keep_alive": "10m",
+    "summary_num_predict": 180,
+    "classify_num_predict": 24,
+    "max_items_per_scan": 25
+  },
+  "targets": {
+    "changelog": {
+      "path": "CHANGELOG.md",
+      "format": "changelog"
+    },
+    "github-release": {
+      "path": ".github/release.md",
+      "format": "github-release"
+    }
+  }
+}

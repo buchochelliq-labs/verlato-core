@@ -3,15 +3,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from releasepilot.cli.main import main
-from releasepilot.core.models import (
+from verlato.cli.main import main
+from verlato.core.models import (
     ChangeItem,
     Classification,
     Content,
     Evidence,
     SourceRef,
 )
-from releasepilot.state.store import StateData, StateStore
+from verlato.state.store import StateData, StateStore
 
 
 def _mk_item(item_id: str, published: bool = False, published_in: str | None = None) -> ChangeItem:
@@ -33,7 +33,7 @@ def test_state_mark_published_all_unpublished(monkeypatch, tmp_path: Path):
     store = StateStore(path=str(state_path))
     store.save(StateData(items=[_mk_item("ci_1"), _mk_item("ci_2", published=True)]))
 
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(state_path))
     rc = main(["state", "mark-published", "--version", "v1.2.0", "--all-unpublished"])
     assert rc == 0
 
@@ -43,9 +43,40 @@ def test_state_mark_published_all_unpublished(monkeypatch, tmp_path: Path):
     assert data["items"][1]["published_in"] is None
 
 
+def test_state_clear_working_preserves_published_releases(monkeypatch, tmp_path: Path, capsys):
+    state_path = tmp_path / "state.json"
+    store = StateStore(path=str(state_path))
+    published = _mk_item("ci_published", published=True, published_in="v1.2.0")
+    working = _mk_item("ci_working")
+    working.status = "hidden"
+    working.hidden = True
+    store.save(StateData(
+        items=[published, working],
+        feedback_events=[
+            {"event": "suggestion_applied", "item_id": "ci_working"},
+            {"event": "release_note_kept", "item_id": "ci_published"},
+        ],
+    ))
+
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(state_path))
+    rc = main(["state", "clear-working"])
+
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out == {
+        "removed_working_items": 1,
+        "removed_feedback_events": 1,
+        "preserved_published_items": 1,
+    }
+    loaded = store.load()
+    assert [item.id for item in loaded.items] == ["ci_published"]
+    assert loaded.items[0].published_in == "v1.2.0"
+    assert loaded.feedback_events == [{"event": "release_note_kept", "item_id": "ci_published"}]
+
+
 def test_reconcile_command_outputs_count(monkeypatch, tmp_path: Path, capsys):
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(tmp_path / "state.json"))
-    monkeypatch.setattr("releasepilot.cli.main.run_scan", lambda base, head, persist: [{"id": "ci_1"}])
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setattr("verlato.cli.main.run_scan", lambda base, head, persist: [{"id": "ci_1"}])
 
     rc = main(["reconcile", "--base", "v1.0.0", "--head", "HEAD"])
     assert rc == 0
@@ -59,8 +90,8 @@ def test_reconcile_from_latest_published_marker(monkeypatch, tmp_path: Path, cap
     state_path = tmp_path / "state.json"
     store = StateStore(path=str(state_path))
     store.save(StateData(items=[_mk_item("ci_1", published=True, published_in="v1.0.0")]))
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
-    monkeypatch.setattr("releasepilot.cli.main.run_scan", lambda base, head, persist: [{"id": f"{base}->{head}"}])
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(state_path))
+    monkeypatch.setattr("verlato.cli.main.run_scan", lambda base, head, persist: [{"id": f"{base}->{head}"}])
 
     rc = main(["reconcile", "--from-latest-published", "--head", "HEAD"])
     assert rc == 0
@@ -70,7 +101,7 @@ def test_reconcile_from_latest_published_marker(monkeypatch, tmp_path: Path, cap
 
 
 def test_scan_requires_base_or_marker(monkeypatch):
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", "unused.json")
+    monkeypatch.setenv("VERLATO_STATE_PATH", "unused.json")
     try:
         main(["scan"])
     except SystemExit as exc:
@@ -80,12 +111,12 @@ def test_scan_requires_base_or_marker(monkeypatch):
 
 
 def test_build_adapter_prefers_github_when_enabled(monkeypatch):
-    monkeypatch.setenv("RELEASEPILOT_PR_ADAPTER", "github")
-    monkeypatch.setenv("RELEASEPILOT_GITHUB_REPO", "org/repo")
+    monkeypatch.setenv("VERLATO_PR_ADAPTER", "github")
+    monkeypatch.setenv("VERLATO_GITHUB_REPO", "org/repo")
     monkeypatch.setenv("GITHUB_TOKEN", "token")
 
-    from releasepilot.cli.main import _build_adapter
-    from releasepilot.github.adapter import GitHubApiAdapter
+    from verlato.cli.main import _build_adapter
+    from verlato.github.adapter import GitHubApiAdapter
 
     adapter = _build_adapter()
     assert isinstance(adapter, GitHubApiAdapter)
@@ -94,7 +125,7 @@ def test_build_adapter_prefers_github_when_enabled(monkeypatch):
 def test_render_supports_confidence_and_provenance(monkeypatch, tmp_path: Path, capsys):
     state_path = tmp_path / "state.json"
     StateStore(path=str(state_path)).save(StateData(items=[_mk_item("ci_1")]))
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(state_path))
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(state_path))
 
     rc = main(
         [

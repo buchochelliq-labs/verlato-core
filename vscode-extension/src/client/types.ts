@@ -57,6 +57,12 @@ export interface ApplyResult {
   bytes_written: number;
 }
 
+export interface ClearWorkingStateResult {
+  removed_working_items: number;
+  removed_feedback_events: number;
+  preserved_published_items: number;
+}
+
 export interface DraftRangeRequest {
   base: string;
   head?: string;
@@ -112,6 +118,15 @@ export interface RepositoryCommit {
   release: string | null;
 }
 
+export type RepositoryPullRequestState = "OPEN" | "MERGED" | "CLOSED" | "UNKNOWN";
+
+export interface RepositoryPullRequest {
+  number: number;
+  title?: string;
+  state: RepositoryPullRequestState;
+  mergedAt?: string | null;
+}
+
 export interface ReleaseMarker {
   version: string;
   itemCount: number;
@@ -130,6 +145,7 @@ export interface RepositoryOverview {
   branches: RepositoryRef[];
   tags: RepositoryRef[];
   commits: RepositoryCommit[];
+  pullRequests?: RepositoryPullRequest[];
   releases: ReleaseMarker[];
   unpublishedCount: number;
 }

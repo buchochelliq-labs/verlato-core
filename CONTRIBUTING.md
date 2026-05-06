@@ -1,4 +1,4 @@
-# Contributing to ReleasePilot
+# Contributing to Verlato
 
 ## Development workflow
 
@@ -10,7 +10,7 @@
 3. Run local checks before committing:
    ```bash
    ruff check .
-   mypy releasepilot
+   mypy verlato
    pytest
    ```
 4. Update `ARCHITECTURE.md` and `BACKLOG.md` for any structural changes.

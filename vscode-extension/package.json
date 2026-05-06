@@ -1,13 +1,14 @@
 {
-  "name": "releasepilot-vscode",
-  "displayName": "ReleasePilot",
-  "description": "Scan repositories, preview release notes, and apply changelog updates with ReleasePilot.",
+  "name": "verlato-vscode",
+  "displayName": "Verlato",
+  "description": "Diff-first release notes. Understands your code changes. Writes your releases.",
   "version": "0.0.1",
-  "publisher": "releasepilot",
+  "publisher": "verlato",
+  "icon": "media/verlato-icon.png",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/n1ckyb/release-pilot.git"
+    "url": "https://github.com/n1ckyb/verlato.git"
   },
   "engines": {
     "vscode": "^1.90.0"
@@ -16,30 +17,30 @@
     "Other"
   ],
   "activationEvents": [
-    "onView:releasepilot.control",
-    "onView:releasepilot.releases",
-    "onView:releasepilot.activity",
-    "onView:releasepilot.sources",
-    "onCommand:releasepilot.openControl",
-    "onCommand:releasepilot.openActivity",
-    "onCommand:releasepilot.scanRepository",
-    "onCommand:releasepilot.previewReleaseNotes",
-    "onCommand:releasepilot.refreshRepository",
-    "onCommand:releasepilot.refreshItems",
-    "onCommand:releasepilot.openCommit",
-    "onCommand:releasepilot.applyToChangelog",
-    "onCommand:releasepilot.applyToReleaseFile",
-    "onCommand:releasepilot.markItemReady",
-    "onCommand:releasepilot.markItemNeedsReview",
-    "onCommand:releasepilot.hideItem",
-    "onCommand:releasepilot.editItemSummary",
-    "onCommand:releasepilot.suggestItemSummary",
-    "onCommand:releasepilot.requestModelInput",
-    "onCommand:releasepilot.showServiceInfo",
-    "onCommand:releasepilot.changeModel",
-    "onCommand:releasepilot.acceptItem",
-    "onCommand:releasepilot.unhideItem",
-    "onCommand:releasepilot.resetItemSummary"
+    "onView:verlato.control",
+    "onView:verlato.releases",
+    "onView:verlato.activity",
+    "onView:verlato.sources",
+    "onCommand:verlato.openControl",
+    "onCommand:verlato.openActivity",
+    "onCommand:verlato.scanRepository",
+    "onCommand:verlato.previewReleaseNotes",
+    "onCommand:verlato.refreshRepository",
+    "onCommand:verlato.refreshItems",
+    "onCommand:verlato.openCommit",
+    "onCommand:verlato.applyToChangelog",
+    "onCommand:verlato.applyToReleaseFile",
+    "onCommand:verlato.markItemReady",
+    "onCommand:verlato.markItemNeedsReview",
+    "onCommand:verlato.hideItem",
+    "onCommand:verlato.editItemSummary",
+    "onCommand:verlato.suggestItemSummary",
+    "onCommand:verlato.requestModelInput",
+    "onCommand:verlato.showServiceInfo",
+    "onCommand:verlato.changeModel",
+    "onCommand:verlato.acceptItem",
+    "onCommand:verlato.unhideItem",
+    "onCommand:verlato.resetItemSummary"
   ],
   "extensionDependencies": [
     "vscode.git"
@@ -49,134 +50,134 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "releasepilot",
-          "title": "ReleasePilot",
-          "icon": "media/releasepilot.svg"
+          "id": "verlato",
+          "title": "Verlato",
+          "icon": "media/verlato.svg"
         }
       ]
     },
     "views": {
-      "releasepilot": [
+      "verlato": [
         {
-          "id": "releasepilot.control",
+          "id": "verlato.control",
           "name": "Control",
-          "contextualTitle": "ReleasePilot Control",
-          "icon": "media/releasepilot.svg",
+          "contextualTitle": "Verlato Control",
+          "icon": "media/verlato.svg",
           "type": "webview"
         },
         {
-          "id": "releasepilot.releases",
+          "id": "verlato.releases",
           "name": "Releases",
-          "contextualTitle": "ReleasePilot Releases",
-          "icon": "media/releasepilot.svg",
+          "contextualTitle": "Verlato Releases",
+          "icon": "media/verlato.svg",
           "type": "webview"
         },
         {
-          "id": "releasepilot.activity",
+          "id": "verlato.activity",
           "name": "Activity",
-          "contextualTitle": "ReleasePilot Activity",
-          "icon": "media/releasepilot.svg",
+          "contextualTitle": "Verlato Activity",
+          "icon": "media/verlato.svg",
           "type": "webview"
         },
         {
-          "id": "releasepilot.sources",
+          "id": "verlato.sources",
           "name": "Sources",
-          "contextualTitle": "ReleasePilot Sources",
-          "icon": "media/releasepilot.svg"
+          "contextualTitle": "Verlato Sources",
+          "icon": "media/verlato.svg"
         }
       ]
     },
     "commands": [
       {
-        "command": "releasepilot.openControl",
-        "title": "ReleasePilot: Open Control"
+        "command": "verlato.openControl",
+        "title": "Verlato: Open Control"
       },
       {
-        "command": "releasepilot.openActivity",
-        "title": "ReleasePilot: View Activity"
+        "command": "verlato.openActivity",
+        "title": "Verlato: View Activity"
       },
       {
-        "command": "releasepilot.scanRepository",
-        "title": "ReleasePilot: Scan Repository"
+        "command": "verlato.scanRepository",
+        "title": "Verlato: Scan Repository"
       },
       {
-        "command": "releasepilot.previewReleaseNotes",
-        "title": "ReleasePilot: Preview Release Notes"
+        "command": "verlato.previewReleaseNotes",
+        "title": "Verlato: Preview Release Notes"
       },
       {
-        "command": "releasepilot.refreshRepository",
-        "title": "ReleasePilot: Refresh Repository Activity"
+        "command": "verlato.refreshRepository",
+        "title": "Verlato: Refresh Repository Activity"
       },
       {
-        "command": "releasepilot.applyToChangelog",
-        "title": "ReleasePilot: Apply to CHANGELOG"
+        "command": "verlato.applyToChangelog",
+        "title": "Verlato: Apply to CHANGELOG"
       },
       {
-        "command": "releasepilot.applyToReleaseFile",
-        "title": "ReleasePilot: Apply to Release File"
+        "command": "verlato.applyToReleaseFile",
+        "title": "Verlato: Apply to Release File"
       },
       {
-        "command": "releasepilot.refreshItems",
-        "title": "ReleasePilot: Refresh"
+        "command": "verlato.refreshItems",
+        "title": "Verlato: Refresh"
       },
       {
-        "command": "releasepilot.openCommit",
-        "title": "ReleasePilot: Open Commit"
+        "command": "verlato.openCommit",
+        "title": "Verlato: Open Commit"
       },
       {
-        "command": "releasepilot.markItemReady",
-        "title": "ReleasePilot: Mark Item Ready"
+        "command": "verlato.markItemReady",
+        "title": "Verlato: Mark Item Ready"
       },
       {
-        "command": "releasepilot.markItemNeedsReview",
-        "title": "ReleasePilot: Mark Item Needs Review"
+        "command": "verlato.markItemNeedsReview",
+        "title": "Verlato: Mark Item Needs Review"
       },
       {
-        "command": "releasepilot.hideItem",
-        "title": "ReleasePilot: Hide Item"
+        "command": "verlato.hideItem",
+        "title": "Verlato: Hide Item"
       },
       {
-        "command": "releasepilot.editItemSummary",
-        "title": "ReleasePilot: Edit Item Summary"
+        "command": "verlato.editItemSummary",
+        "title": "Verlato: Edit Item Summary"
       },
       {
-        "command": "releasepilot.suggestItemSummary",
-        "title": "ReleasePilot: Suggest Item Summary"
+        "command": "verlato.suggestItemSummary",
+        "title": "Verlato: Suggest Item Summary"
       },
       {
-        "command": "releasepilot.requestModelInput",
-        "title": "ReleasePilot: Preview Model Prompt"
+        "command": "verlato.requestModelInput",
+        "title": "Verlato: Preview Model Prompt"
       },
       {
-        "command": "releasepilot.showServiceInfo",
-        "title": "ReleasePilot: Show Service Info"
+        "command": "verlato.showServiceInfo",
+        "title": "Verlato: Show Service Info"
       },
       {
-        "command": "releasepilot.changeModel",
-        "title": "ReleasePilot: Change AI Model"
+        "command": "verlato.changeModel",
+        "title": "Verlato: Change AI Model"
       },
       {
-        "command": "releasepilot.acceptItem",
-        "title": "ReleasePilot: Accept Item"
+        "command": "verlato.acceptItem",
+        "title": "Verlato: Accept Item"
       },
       {
-        "command": "releasepilot.unhideItem",
-        "title": "ReleasePilot: Unhide Item"
+        "command": "verlato.unhideItem",
+        "title": "Verlato: Unhide Item"
       },
       {
-        "command": "releasepilot.resetItemSummary",
-        "title": "ReleasePilot: Reset Item Summary"
+        "command": "verlato.resetItemSummary",
+        "title": "Verlato: Reset Item Summary"
       }
     ],
     "configuration": {
-      "title": "ReleasePilot",
+      "title": "Verlato",
       "properties": {
-        "releasepilot.cliPath": {
+        "verlato.cliPath": {
           "type": "string",
-          "default": "releasepilot",
-          "description": "Path to the ReleasePilot CLI executable."
+          "default": "verlato",
+          "description": "Path to the Verlato CLI executable."
         },
-        "releasepilot.modelProvider": {
+        "verlato.modelProvider": {
           "type": "string",
           "default": "ollama",
           "enum": [
@@ -186,43 +187,43 @@
             "ollama",
             "github-copilot"
           ],
-          "description": "Model provider override for LLM-assisted summaries and classifications. Use configured to honor releasepilot.json or environment variables."
+          "description": "Model provider override for LLM-assisted summaries and classifications. Use configured to honor verlato.json or environment variables."
         },
-        "releasepilot.ollamaModel": {
+        "verlato.ollamaModel": {
           "type": "string",
           "default": "gemma4:latest",
-          "description": "Ollama model used when ReleasePilot runs with the Ollama provider. Defaults to Google's latest Gemma family."
+          "description": "Ollama model used when Verlato runs with the Ollama provider. Defaults to Google's latest Gemma family."
         },
-        "releasepilot.ollamaEndpoint": {
+        "verlato.ollamaEndpoint": {
           "type": "string",
           "default": "http://127.0.0.1:11434/api/chat",
-          "description": "Ollama chat endpoint used by ReleasePilot."
+          "description": "Ollama chat endpoint used by Verlato."
         },
-        "releasepilot.ollamaTimeoutSeconds": {
+        "verlato.ollamaTimeoutSeconds": {
           "type": "number",
           "default": 120,
           "minimum": 1,
           "description": "Timeout in seconds for each Ollama model request."
         },
-        "releasepilot.ollamaStreamResponses": {
+        "verlato.ollamaStreamResponses": {
           "type": "boolean",
           "default": true,
-          "description": "Stream Ollama response chunks into the ReleasePilot request timeline while preserving the final model response."
+          "description": "Stream Ollama response chunks into the Verlato request timeline while preserving the final model response."
         },
-        "releasepilot.maxModelItems": {
+        "verlato.maxModelItems": {
           "type": "number",
           "default": 25,
           "minimum": -1,
-          "description": "Maximum grouped changes in a scan before ReleasePilot disables LLM calls to avoid fanout. Use -1 to disable the guard."
+          "description": "Maximum grouped changes in a scan before Verlato disables LLM calls to avoid fanout. Use -1 to disable the guard."
         },
-        "releasepilot.suggestionCount": {
+        "verlato.suggestionCount": {
           "type": "number",
           "default": 1,
           "minimum": 1,
           "maximum": 5,
           "description": "Number of AI description suggestions to generate for each release item."
         },
-        "releasepilot.suggestionTone": {
+        "verlato.suggestionTone": {
           "type": "string",
           "default": "release-note",
           "enum": [
@@ -233,12 +234,12 @@
           ],
           "description": "Tone preset used when generating AI description suggestions."
         },
-        "releasepilot.styleGuidance": {
+        "verlato.styleGuidance": {
           "type": "string",
           "default": "",
           "description": "Optional project-specific writing guidance added to AI suggestion prompts."
         },
-        "releasepilot.projectVocabulary": {
+        "verlato.projectVocabulary": {
           "type": "array",
           "default": [],
           "items": {
@@ -246,7 +247,7 @@
           },
           "description": "Preferred project terms or product vocabulary to encourage in AI suggestions."
         },
-        "releasepilot.bannedPhrases": {
+        "verlato.bannedPhrases": {
           "type": "array",
           "default": [],
           "items": {
@@ -254,85 +255,85 @@
           },
           "description": "Phrases that generated AI suggestions should avoid; matching candidates are rejected."
         },
-        "releasepilot.specificityFloor": {
+        "verlato.specificityFloor": {
           "type": "number",
           "default": 0,
           "minimum": 0,
           "maximum": 1,
           "description": "Optional minimum specificity score for generated suggestions. Leave 0 to disable specificity rejection."
         },
-        "releasepilot.feedbackIncludeText": {
+        "verlato.feedbackIncludeText": {
           "type": "boolean",
           "default": false,
           "description": "Persist full accepted/edited summary text in local feedback events. Disabled by default; feedback otherwise stores hashes and metrics."
         },
-        "releasepilot.telemetry.includePromptPayloads": {
+        "verlato.telemetry.includePromptPayloads": {
           "type": "boolean",
           "default": false,
           "description": "Include full model prompt and response payloads in live request activity. Disabled by default because prompts may include PR bodies and diff snippets."
         },
-        "releasepilot.telemetry.includeReasoningPayloads": {
+        "verlato.telemetry.includeReasoningPayloads": {
           "type": "boolean",
           "default": false,
           "description": "Include full provider-exposed reasoning text in collapsed telemetry details. Disabled by default because reasoning can be large."
         },
-        "releasepilot.telemetry.redactPayloads": {
+        "verlato.telemetry.redactPayloads": {
           "type": "boolean",
           "default": true,
           "description": "Redact likely secrets from model telemetry payloads before showing or persisting them. Keep enabled unless doing deep local debugging."
         },
-        "releasepilot.telemetry.debugModelLogPath": {
+        "verlato.telemetry.debugModelLogPath": {
           "type": "string",
           "default": "",
           "description": "Optional JSONL file path for model telemetry debugging. Leave empty to keep telemetry ephemeral in the VS Code session."
         },
-        "releasepilot.notifications.successLevel": {
+        "verlato.notifications.successLevel": {
           "type": "string",
           "default": "visible",
           "enum": [
             "visible",
             "quiet"
           ],
-          "description": "Controls success notifications for user-initiated ReleasePilot actions. Use quiet to rely on in-view status updates."
+          "description": "Controls success notifications for user-initiated Verlato actions. Use quiet to rely on in-view status updates."
         }
       }
     },
     "walkthroughs": [
       {
-        "id": "releasepilot.getStarted",
-        "title": "Get started with ReleasePilot",
+        "id": "verlato.getStarted",
+        "title": "Get started with Verlato",
         "description": "Optional shortcuts for scanning changes, reviewing suggestions, and applying draft notes from VS Code.",
         "steps": [
           {
-            "id": "releasepilot.openControl",
-            "title": "Open ReleasePilot",
-            "description": "Open the ReleasePilot Activity Bar view to start drafting release notes.\n[Open ReleasePilot](command:releasepilot.openControl)",
+            "id": "verlato.openControl",
+            "title": "Open Verlato",
+            "description": "Open the Verlato Activity Bar view to start drafting release notes.\n[Open Verlato](command:verlato.openControl)",
             "completionEvents": [
-              "onView:releasepilot.control"
+              "onView:verlato.control"
             ]
           },
           {
-            "id": "releasepilot.configureModel",
+            "id": "verlato.configureModel",
             "title": "Configure the model",
-            "description": "Choose the model provider and tone used for generated release-note suggestions.\n[Change AI Model](command:releasepilot.changeModel)",
+            "description": "Choose the model provider and tone used for generated release-note suggestions.\n[Change AI Model](command:verlato.changeModel)",
             "completionEvents": [
-              "onCommand:releasepilot.changeModel"
+              "onCommand:verlato.changeModel"
             ]
           },
           {
-            "id": "releasepilot.scanRange",
+            "id": "verlato.scanRange",
             "title": "Scan a range",
-            "description": "Pick a base ref and scan the repository for candidate release-note items.\n[Scan Repository](command:releasepilot.scanRepository)",
+            "description": "Pick a base ref and scan the repository for candidate release-note items.\n[Scan Repository](command:verlato.scanRepository)",
             "completionEvents": [
-              "onCommand:releasepilot.scanRepository"
+              "onCommand:verlato.scanRepository"
             ]
           },
           {
-            "id": "releasepilot.reviewApply",
+            "id": "verlato.reviewApply",
             "title": "Review and apply notes",
-            "description": "Preview generated release notes, then apply them to your configured changelog or release file.\n[Preview Release Notes](command:releasepilot.previewReleaseNotes)",
+            "description": "Preview generated release notes, then apply them to your configured changelog or release file.\n[Preview Release Notes](command:verlato.previewReleaseNotes)",
             "completionEvents": [
-              "onCommand:releasepilot.previewReleaseNotes"
+              "onCommand:verlato.previewReleaseNotes"
             ]
           }
         ]
@@ -341,70 +342,70 @@
     "menus": {
       "view/title": [
         {
-          "command": "releasepilot.scanRepository",
-          "when": "view == releasepilot.control",
+          "command": "verlato.scanRepository",
+          "when": "view == verlato.control",
           "group": "navigation"
         },
         {
-          "command": "releasepilot.refreshRepository",
-          "when": "view == releasepilot.control || view == releasepilot.releases || view == releasepilot.sources",
+          "command": "verlato.refreshRepository",
+          "when": "view == verlato.control || view == verlato.releases || view == verlato.sources",
           "group": "navigation"
         },
         {
-          "command": "releasepilot.refreshItems",
-          "when": "view == releasepilot.control",
+          "command": "verlato.refreshItems",
+          "when": "view == verlato.control",
           "group": "navigation"
         },
         {
-          "command": "releasepilot.openActivity",
-          "when": "view == releasepilot.control",
+          "command": "verlato.openActivity",
+          "when": "view == verlato.control",
           "group": "navigation"
         }
       ],
       "view/item/context": [
         {
-          "command": "releasepilot.markItemReady",
-          "when": "view == releasepilot.control && viewItem == releasepilot.item",
+          "command": "verlato.markItemReady",
+          "when": "view == verlato.control && viewItem == verlato.item",
           "group": "inline"
         },
         {
-          "command": "releasepilot.markItemNeedsReview",
-          "when": "view == releasepilot.control && viewItem == releasepilot.item",
+          "command": "verlato.markItemNeedsReview",
+          "when": "view == verlato.control && viewItem == verlato.item",
           "group": "inline"
         },
         {
-          "command": "releasepilot.hideItem",
-          "when": "view == releasepilot.control && viewItem == releasepilot.item",
+          "command": "verlato.hideItem",
+          "when": "view == verlato.control && viewItem == verlato.item",
           "group": "inline"
         },
         {
-          "command": "releasepilot.editItemSummary",
-          "when": "view == releasepilot.control && viewItem == releasepilot.item",
+          "command": "verlato.editItemSummary",
+          "when": "view == verlato.control && viewItem == verlato.item",
           "group": "navigation"
         },
         {
-          "command": "releasepilot.suggestItemSummary",
-          "when": "view == releasepilot.control && viewItem == releasepilot.item",
+          "command": "verlato.suggestItemSummary",
+          "when": "view == verlato.control && viewItem == verlato.item",
           "group": "inline"
         },
         {
-          "command": "releasepilot.requestModelInput",
-          "when": "view == releasepilot.control && viewItem == releasepilot.item",
+          "command": "verlato.requestModelInput",
+          "when": "view == verlato.control && viewItem == verlato.item",
           "group": "navigation"
         },
         {
-          "command": "releasepilot.acceptItem",
-          "when": "view == releasepilot.control && viewItem == releasepilot.item",
+          "command": "verlato.acceptItem",
+          "when": "view == verlato.control && viewItem == verlato.item",
           "group": "inline"
         },
         {
-          "command": "releasepilot.unhideItem",
-          "when": "view == releasepilot.control && viewItem == releasepilot.item",
+          "command": "verlato.unhideItem",
+          "when": "view == verlato.control && viewItem == verlato.item",
           "group": "navigation"
         },
         {
-          "command": "releasepilot.resetItemSummary",
-          "when": "view == releasepilot.control && viewItem == releasepilot.item",
+          "command": "verlato.resetItemSummary",
+          "when": "view == verlato.control && viewItem == verlato.item",
           "group": "navigation"
         }
       ]

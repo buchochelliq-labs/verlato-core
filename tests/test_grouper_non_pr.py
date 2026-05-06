@@ -1,5 +1,5 @@
-from releasepilot.core.grouper import Grouper
-from releasepilot.core.models import Commit
+from verlato.core.grouper import Grouper
+from verlato.core.models import Commit
 
 
 def test_group_non_pr_conventional_commits_by_type_scope_and_author():

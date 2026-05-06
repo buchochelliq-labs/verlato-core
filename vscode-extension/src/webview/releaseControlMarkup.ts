@@ -6,7 +6,9 @@ import type {
   DraftSuggestionItem,
   DraftSuggestionPreview,
   ModelSettings,
+  RepositoryCommit,
   RepositoryOverview,
+  RepositoryPullRequest,
 } from "../client/types";
 
 export interface ReleaseControlRenderState {
@@ -35,13 +37,24 @@ export interface ReleaseControlAssets {
   webviewElementsScriptUri?: string;
 }
 
+interface ActiveOperationProgress {
+  kind: "scan" | "suggest" | "apply" | "refresh" | "command";
+  label: string;
+  detail: string;
+  requestId?: number;
+  isModelWork: boolean;
+}
+
 export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets: ReleaseControlAssets = {}): string {
   const nonce = String(Date.now());
   const sections = state.document?.sections ?? [];
   const itemCount = state.document?.item_count ?? 0;
   const visibleItemCount = countVisibleItems(state.document);
-  const releasedCount = state.overview?.releases.reduce((sum, release) => sum + release.itemCount, 0) ?? 0;
-  const unpublishedCount = state.overview?.unpublishedCount ?? itemCount;
+  const hiddenItemCount = countHiddenItems(state.document);
+  const draftCommitCount = countDraftCommits(state.document);
+  const progress = activeOperationProgress(state);
+  const modelBusy = Boolean(progress?.isModelWork);
+  const commitsBySha = commitLookup(state.overview);
   const webviewElementsScript = assets.webviewElementsScriptUri
     ? `<script type="module" nonce="${nonce}" src="${escapeHtml(assets.webviewElementsScriptUri)}"></script>`
     : "";
@@ -53,38 +66,43 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets
   ${webviewElementsScript}
   <style>${styles()}</style>
 </head>
-<body>
+<body${modelBusy ? ` data-model-busy="true"` : ""}>
   <main>
     <div class="toolbar">
-      <span class="title">RELEASE CONTROL</span>
-      <button class="icon" data-action="suggestAll" title="Suggest descriptions">✧</button>
-      <button class="icon" data-action="preview" title="Preview release notes">P</button>
-      <button class="icon" data-action="refresh" title="Refresh repository activity">R</button>
+      <span class="title">${renderBrandMark()}<span>VERLATO</span><small>DIFF-FIRST RELEASE NOTES</small></span>
+      <button class="icon" data-action="suggestAll" title="Infer intent for visible diffs" aria-label="Infer intent for visible diffs">${renderIcon("intent")}</button>
+      <button class="icon" data-action="preview" title="Preview release notes" aria-label="Preview release notes">${renderIcon("document")}</button>
+      <button class="icon" data-action="refresh" title="Analyze repository" aria-label="Analyze repository">${renderIcon("refresh")}</button>
       ${state.busy ? `<button class="stop" data-action="cancel" title="Stop current request">Stop</button>` : ""}
       ${renderModelBadge(state.modelSettings)}
     </div>
 
+    ${renderProcessRail(progress)}
+    ${renderProgressStrip(progress)}
     ${renderNotice(state)}
     <div class="layout">
       <aside class="operations">
         ${renderDraftPanel(state)}
         <section class="meta" aria-label="Release item filters">
-          <button class="meta-card" data-action="filterItems" data-filter="visible" title="Show visible draft items">
-            <strong>${visibleItemCount}</strong><span>visible</span>
+          <button class="meta-card" data-action="filterItems" data-filter="unreleased" title="Show the commits represented in the current draft">
+            <strong>${draftCommitCount}</strong><span>commits in draft</span>
           </button>
-          <button class="meta-card" data-action="filterItems" data-filter="unreleased" title="Show unreleased draft data">
-            <strong>${unpublishedCount}</strong><span>unreleased</span>
+          <button class="meta-card" data-action="filterItems" data-filter="unreleased" title="Show changesets built by grouping those commits">
+            <strong>${itemCount}</strong><span>changesets</span>
           </button>
-          <button class="meta-card" data-action="filterItems" data-filter="released" title="Show released source data">
-            <strong>${releasedCount}</strong><span>released</span>
+          <button class="meta-card" data-action="filterItems" data-filter="visible" title="Show changesets that will render as release notes">
+            <strong>${visibleItemCount}</strong><span>release notes</span>
+          </button>
+          <button class="meta-card" data-action="filterItems" data-filter="hidden" title="Show hidden draft items that can be unhidden">
+            <strong>${hiddenItemCount}</strong><span>hidden</span>
           </button>
         </section>
         <section class="section changes-panel" id="changes-panel">
-          <div class="section-title">CHANGES</div>
-          ${sections.length ? sections.map(renderSection).join("") : `<p class="empty">Draft a release to see unreleased PRs, commits, and release-note items.</p>`}
+          <div class="section-title">${renderIcon("diff")}<span>CHANGESETS FROM DIFFS</span><small>${draftCommitCount} commit(s) -> ${itemCount} changeset(s) -> ${visibleItemCount} release note(s)</small></div>
+          ${sections.length ? sections.map((section) => renderSection(section, modelBusy, commitsBySha)).join("") : renderEmptyState("diff", "No changes to analyze", "Nothing to report.")}
         </section>
         <details class="section tree-section sources-panel" id="sources-panel">
-          <summary class="section-title">SOURCE SELECTION <span>Base refs</span></summary>
+          <summary class="section-title">${renderIcon("branch")}<span>CONVENTIONAL COMMITS</span><small>Base refs</small></summary>
           <button class="inline-action panel-action" data-action="openSources">Open View</button>
           <div class="selection-summary" id="base-selection-summary">
             <strong>Base selection</strong>
@@ -94,7 +112,7 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets
           ${renderSources(state.overview)}
         </details>
         ${renderModelPanel(state)}
-        ${renderReleasesPanel(state)}
+        ${renderReleasesPanel(state, modelBusy)}
       </aside>
     </div>
   </main>
@@ -166,6 +184,7 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets
       const button = event.target.closest('button');
       if (!button) return;
       const action = button.dataset.action;
+      if (document.body.dataset.modelBusy === 'true' && ['suggestAll', 'suggest', 'regenerateSuggestion', 'regenerateAll'].includes(action || '')) return;
       syncRange();
       if (action === 'filterItems') {
         const filter = button.dataset.filter || 'all';
@@ -179,9 +198,14 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets
       if (action === 'suggestAll') vscode.postMessage({ type: 'suggestAll' });
       if (action === 'preview') vscode.postMessage({ type: 'preview' });
       if (action === 'refresh') vscode.postMessage({ type: 'refresh' });
+      if (action === 'clearWorkingState') vscode.postMessage({ type: 'clearWorkingState' });
       if (action === 'openSources') vscode.postMessage({ type: 'openSources' });
       if (action === 'closeSources') {
         const picker = document.getElementById('source-picker');
+        if (picker) picker.open = false;
+      }
+      if (action === 'closeBasePicker') {
+        const picker = document.getElementById('base-picker');
         if (picker) picker.open = false;
       }
       if (action === 'cancel') vscode.postMessage({ type: 'cancel' });
@@ -202,6 +226,7 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets
       if (action === 'ready') vscode.postMessage({ type: 'mark', itemId: button.dataset.item, status: 'ready' });
       if (action === 'accept') vscode.postMessage({ type: 'mark', itemId: button.dataset.item, status: 'accepted' });
       if (action === 'hide') vscode.postMessage({ type: 'mark', itemId: button.dataset.item, status: 'hidden' });
+      if (action === 'unhide') vscode.postMessage({ type: 'mark', itemId: button.dataset.item, status: 'needs-review' });
       if (action === 'prompt') vscode.postMessage({ type: 'prompt', itemId: button.dataset.item });
       if (action === 'suggest') vscode.postMessage({ type: 'suggest', itemId: button.dataset.item });
       if (action === 'applySuggestion') vscode.postMessage({ type: 'applySuggestion', itemId: button.dataset.item, suggestionIndex: Number(button.dataset.index) });
@@ -218,17 +243,17 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets
     const initialBaseRefs = selectedValues(base);
     const selectedBaseRefs = new Set(hasStoredBaseSelection ? storedBaseRefs : expandRelatedRefs(base, initialBaseRefs));
     const manualBaseRefs = new Set(hasStoredBaseSelection ? storedManualBaseRefs : initialBaseRefs);
+    function recomputeBaseSelection() {
+      selectedBaseRefs.clear();
+      expandRelatedRefs(base, Array.from(manualBaseRefs)).forEach((ref) => selectedBaseRefs.add(ref));
+    }
     function setBaseSelection(ref, selected, manual) {
       if (!ref) return;
-      if (selected) selectedBaseRefs.add(ref);
-      else {
-        selectedBaseRefs.delete(ref);
-        manualBaseRefs.delete(ref);
-      }
       if (manual) {
         if (selected) manualBaseRefs.add(ref);
         else manualBaseRefs.delete(ref);
       }
+      recomputeBaseSelection();
     }
     function syncBaseSelection() {
       document.querySelectorAll('.source-toggle[data-ref]').forEach((input) => {
@@ -238,6 +263,14 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets
         const refs = input.dataset.refs.split(',').filter(Boolean);
         input.checked = refs.length > 0 && refs.every((ref) => selectedBaseRefs.has(ref));
         input.indeterminate = refs.some((ref) => selectedBaseRefs.has(ref)) && !input.checked;
+      });
+      document.querySelectorAll('.base-tree-toggle[data-ref]').forEach((input) => {
+        input.checked = selectedBaseRefs.has(input.dataset.ref);
+      });
+      document.querySelectorAll('.base-tree-item[data-ref]').forEach((item) => {
+        const isSelected = selectedBaseRefs.has(item.dataset.ref);
+        item.selected = isSelected;
+        item.toggleAttribute('selected', isSelected);
       });
       document.querySelectorAll('.source-row[data-ref]').forEach((row) => {
         const ref = row.dataset.ref;
@@ -256,8 +289,9 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets
       setSelectedValues(base, selectedRefs.length ? selectedRefs : refs);
       const count = document.getElementById('base-selection-count');
       const list = document.getElementById('base-selection-list');
-      const autoLabel = autoRefs.length ? ' | ' + autoRefs.length + ' auto-selected' : '';
-      if (count) count.textContent = (refs.length === 1 ? '1 selected' : refs.length + ' selected') + autoLabel;
+      const selectedLabel = refs.length === 1 ? '1 selected source' : refs.length + ' selected sources';
+      const autoLabel = autoRefs.length ? ' (' + autoRefs.length + ' auto-selected)' : '';
+      if (count) count.textContent = selectedLabel + autoLabel;
       if (list) {
         list.textContent = '';
         refs.slice(0, 8).forEach((ref) => {
@@ -269,8 +303,16 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets
       }
       const sourcePickerCount = document.getElementById('source-picker-count');
       const sourcePickerLabel = document.getElementById('source-picker-label');
-      if (sourcePickerCount) sourcePickerCount.textContent = (refs.length === 1 ? '1 selected' : refs.length + ' selected') + autoLabel;
+      const basePickerCount = document.getElementById('base-picker-count');
+      const basePickerLabel = document.getElementById('base-picker-label');
+      const sourceTotal = document.getElementById('source-selection-total');
+      const sourceAuto = document.getElementById('source-selection-auto');
+      if (sourceTotal) sourceTotal.textContent = String(refs.length);
+      if (sourceAuto) sourceAuto.textContent = autoRefs.length ? 'includes ' + autoRefs.length + ' auto-selected source(s)' : 'manual selection only';
+      if (sourcePickerCount) sourcePickerCount.textContent = selectedLabel + autoLabel;
       if (sourcePickerLabel) sourcePickerLabel.textContent = refs[refs.length - 1] || 'Select sources';
+      if (basePickerCount) basePickerCount.textContent = selectedLabel + autoLabel;
+      if (basePickerLabel) basePickerLabel.textContent = refs[refs.length - 1] || 'Select base refs';
       vscode.setState({ ...getStoredState(), selectedBaseRefs: refs, manualBaseRefs: Array.from(manualBaseRefs), baseSelectionTouched: true });
       syncRange();
     }
@@ -278,13 +320,15 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets
       const input = event.target;
       if (!(input instanceof HTMLInputElement)) return;
       if (input.classList.contains('source-toggle')) {
-        const refs = (input.checked ? input.dataset.refs : input.dataset.unselectRefs || input.dataset.refs || input.dataset.ref || '').split(',').filter(Boolean);
-        refs.forEach((ref) => setBaseSelection(ref, input.checked, ref === input.dataset.ref));
+        setBaseSelection(input.dataset.ref, input.checked, true);
         syncBaseSelection();
       }
       if (input.classList.contains('pr-toggle')) {
-        const refs = (input.checked ? input.dataset.refs : input.dataset.unselectRefs || input.dataset.refs).split(',').filter(Boolean);
-        refs.forEach((ref) => setBaseSelection(ref, input.checked, false));
+        setBaseSelection(input.dataset.ref, input.checked, true);
+        syncBaseSelection();
+      }
+      if (input.classList.contains('base-tree-toggle')) {
+        setBaseSelection(input.dataset.ref, input.checked, true);
         syncBaseSelection();
       }
     });
@@ -318,6 +362,9 @@ export function buildReleaseReleasesHtml(state: ReleaseReleasesRenderState): str
 </head>
 <body>
   <main>
+    <div class="toolbar view-toolbar">
+      <span class="title"><span class="brand-mark">V</span><span>RELEASE NOTES</span><small>READY TO SHIP</small></span>
+    </div>
     ${renderReleasesPanel(state)}
   </main>
   <script nonce="${nonce}">
@@ -352,10 +399,10 @@ export function buildReleaseActivityHtml(state: ReleaseActivityRenderState): str
 </head>
 <body>
   <main>
-    <div class="toolbar">
-      <span class="title">ACTIVITY</span>
+    <div class="toolbar view-toolbar">
+      <span class="title">${renderIcon("terminal")}<span>ACTIVITY</span><small>REQUESTS AND MODEL OUTPUT</small></span>
     </div>
-    ${state.requests.length ? renderRequests(state.requests, true) : `<p class="empty">Run a ReleasePilot command to see request and model activity.</p>`}
+    ${state.requests.length ? renderRequests(state.requests, true) : renderEmptyState("terminal", "No activity yet", "Run a Verlato command to see request and model activity.")}
   </main>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
@@ -378,21 +425,175 @@ export function buildReleaseActivityHtml(state: ReleaseActivityRenderState): str
 function renderModelBadge(settings: ModelSettings): string {
   const detail = modelDetail(settings);
   return `<button class="model-badge" data-action="changeModel" title="${escapeHtml(detail)}" data-tooltip="${escapeHtml(detail)}">
-    <span class="model-mark">AI</span>
+    <span class="model-mark">${renderIcon("intent")}</span>
     <span class="model-name">${escapeHtml(modelBadgeLabel(settings))}</span>
   </button>`;
 }
 
+type VerlatoIconName =
+  | "apply"
+  | "branch"
+  | "copy"
+  | "diff"
+  | "document"
+  | "intent"
+  | "refresh"
+  | "stop"
+  | "terminal"
+  | "warning";
+
+function renderIcon(name: VerlatoIconName): string {
+  const common = `class="verlato-icon ${name}" viewBox="0 0 24 24" aria-hidden="true"`;
+  switch (name) {
+    case "diff":
+      return `<svg ${common}><path class="plus" d="M5 5v6M2 8h6"/><path class="line add" d="M11 5h9M11 9h6"/><path class="minus" d="M2 18h6"/><path class="line remove" d="M11 15h8M11 19h5"/></svg>`;
+    case "branch":
+      return `<svg ${common}><circle cx="6" cy="5" r="2.5"/><circle cx="18" cy="12" r="2.5"/><circle cx="6" cy="19" r="2.5"/><path d="M8.3 6.2c5 1.2 5.1 4.6 7.3 5.4M8.3 17.8c5-1.2 5.1-4.6 7.3-5.4M6 7.5v9"/></svg>`;
+    case "intent":
+      return `<svg ${common}><circle cx="5" cy="6" r="2"/><circle cx="5" cy="12" r="2"/><circle cx="5" cy="18" r="2"/><path class="line intent-line" d="M10 6h9M10 12h6M10 18h10"/></svg>`;
+    case "document":
+      return `<svg ${common}><path d="M6 3.5h8l4 4V20.5H6z"/><path d="M14 3.5v4h4M9 12h6M9 16h6"/></svg>`;
+    case "refresh":
+      return `<svg ${common}><path d="M18.5 8.5A7 7 0 0 0 6 6l-1.5 2.5M5 4v4.5h4.5M5.5 15.5A7 7 0 0 0 18 18l1.5-2.5M19 20v-4.5h-4.5"/></svg>`;
+    case "stop":
+      return `<svg ${common}><rect x="6" y="6" width="12" height="12" rx="2"/></svg>`;
+    case "terminal":
+      return `<svg ${common}><path d="M4 6h16v12H4z"/><path d="m7 10 3 2-3 2M12 15h5"/></svg>`;
+    case "warning":
+      return `<svg ${common}><path d="M12 4 21 20H3z"/><path d="M12 9v5M12 17h.01"/></svg>`;
+    case "copy":
+      return `<svg ${common}><rect x="8" y="8" width="10" height="12" rx="1.5"/><path d="M6 16H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>`;
+    case "apply":
+      return `<svg ${common}><path d="m5 12 4 4L19 6"/><path class="line add" d="M5 6h6M5 18h14"/></svg>`;
+  }
+}
+
+function renderBrandMark(): string {
+  return `<svg class="brand-mark" viewBox="0 0 128 128" aria-hidden="true">
+    <path class="brand-v-green" d="M22 24h20l22 58 22-58h20L72 104H56L22 24z"/>
+    <path class="brand-v-blue" d="M64 82 86 24h20L72 104H56l8-22z"/>
+    <path class="brand-line brand-line-add" d="M84 48h24"/>
+    <path class="brand-line brand-line-neutral" d="M80 64h28"/>
+    <path class="brand-line brand-line-remove" d="M76 80h20"/>
+  </svg>`;
+}
+
+function renderProcessRail(progress: ActiveOperationProgress | undefined): string {
+  const active = activeProcessStep(progress);
+  const steps: { id: string; icon: VerlatoIconName; label: string; detail: string }[] = [
+    { id: "diffs", icon: "diff", label: "Diffs", detail: "Source of truth" },
+    { id: "commits", icon: "branch", label: "Conventional commits", detail: "Enhance when available" },
+    { id: "intent", icon: "intent", label: "Intent inference", detail: "Accurate and grouped" },
+    { id: "notes", icon: "document", label: "Release notes", detail: "Ready to ship" },
+  ];
+  return `<nav class="process-rail" aria-label="Diff-first release flow">
+    ${steps.map((step, index) => `<span class="process-step${active === step.id ? " active" : ""}" data-step="${step.id}">
+      ${renderIcon(step.icon)}
+      <span><strong>${escapeHtml(step.label)}</strong><small>${escapeHtml(step.detail)}</small></span>
+    </span>${index < steps.length - 1 ? `<span class="process-arrow" aria-hidden="true"></span>` : ""}`).join("")}
+  </nav>`;
+}
+
+function activeProcessStep(progress: ActiveOperationProgress | undefined): string {
+  if (!progress) {
+    return "diffs";
+  }
+  if (progress.kind === "suggest") {
+    return "intent";
+  }
+  if (progress.kind === "apply") {
+    return "notes";
+  }
+  if (progress.kind === "scan" || progress.kind === "refresh") {
+    return "diffs";
+  }
+  return "diffs";
+}
+
+function renderEmptyState(icon: VerlatoIconName, title: string, detail: string): string {
+  return `<div class="empty-state">
+    ${renderIcon(icon)}
+    <strong>${escapeHtml(title)}</strong>
+    <span>${escapeHtml(detail)}</span>
+  </div>`;
+}
+
+function activeOperationProgress(state: ReleaseControlRenderState): ActiveOperationProgress | undefined {
+  const running = (state.requests ?? []).find((request) => request.status === "running");
+  if (!running && !state.busy) {
+    return undefined;
+  }
+  const args = running?.args ?? [];
+  const commandKey = args.slice(0, 2).join(" ");
+  const itemIndex = args.indexOf("--id");
+  const itemId = itemIndex >= 0 ? args[itemIndex + 1] : undefined;
+  const isSuggest = commandKey === "draft suggest";
+  const isPreview = commandKey === "draft preview";
+  const isDraftJson = commandKey === "draft json";
+  const isApply = commandKey === "draft apply";
+  const isRefresh = commandKey.startsWith("state") || running?.command === "git";
+  if (isSuggest) {
+    const scope = itemId ? `item ${itemId}` : "all rendered release-note items";
+    return {
+      kind: "suggest",
+      label: itemId ? "Generating suggestion" : "Generating suggestions",
+      detail: `Inferring intent from ${scope} with ${modelBadgeLabel(state.modelSettings)} | ${state.range.base}..${state.range.head ?? "HEAD"}`,
+      requestId: running?.id,
+      isModelWork: true,
+    };
+  }
+  if (isApply) {
+    return {
+      kind: "apply",
+      label: "Writing release notes",
+      detail: `${state.range.version ?? "Unreleased"} | ${state.range.base}..${state.range.head ?? "HEAD"}`,
+      requestId: running?.id,
+      isModelWork: false,
+    };
+  }
+  if (isPreview || isDraftJson) {
+    return {
+      kind: "scan",
+      label: isPreview ? "Generating release notes" : "Processing diffs",
+      detail: `${state.range.base}..${state.range.head ?? "HEAD"}`,
+      requestId: running?.id,
+      isModelWork: false,
+    };
+  }
+  return {
+    kind: isRefresh ? "refresh" : "command",
+    label: isRefresh ? "Analyzing repository" : "Running Verlato",
+    detail: running?.label || `${state.range.base}..${state.range.head ?? "HEAD"}`,
+    requestId: running?.id,
+    isModelWork: false,
+  };
+}
+
+function renderProgressStrip(progress: ActiveOperationProgress | undefined): string {
+  if (!progress) {
+    return "";
+  }
+  const stopAction = progress.requestId === undefined
+    ? `<button class="progress-stop" data-action="cancel" title="Stop current request">${renderIcon("stop")}<span>Stop</span></button>`
+    : `<button class="progress-stop" data-action="cancelRequest" data-request="${progress.requestId}" title="Stop this request">${renderIcon("stop")}<span>Stop</span></button>`;
+  return `<section class="progress-strip ${escapeHtml(progress.kind)}${progress.isModelWork ? " model-work" : ""}" aria-live="polite">
+    <vscode-progress-bar long-running-threshold="1000"></vscode-progress-bar>
+    <div class="progress-copy">
+      <strong>${escapeHtml(progress.label)}</strong>
+      <small>${escapeHtml(progress.detail)}</small>
+    </div>
+    ${stopAction}
+  </section>`;
+}
+
 function renderDraftPanel(state: ReleaseControlRenderState): string {
   return `<details class="section tree-section control-panel" open>
-    <summary class="section-title">DRAFT <span>${escapeHtml(state.range.version ?? "Unreleased")}</span></summary>
+    <summary class="section-title">${renderIcon("document")}<span>RELEASE NOTES</span><small>${escapeHtml(state.range.version ?? "Unreleased")}</small></summary>
     <input id="version" value="${escapeHtml(state.range.version ?? "Unreleased")}" placeholder="Release version">
     <div class="range">
       <div class="select-field">
         <vscode-label for="base">Base</vscode-label>
-        <vscode-multi-select id="base" combobox filter="contains" position="below" title="Choose one or more release base refs">
-          ${renderVscodeRefOptions(state, "base")}
-        </vscode-multi-select>
+        ${renderBaseTreePicker(state)}
       </div>
       <div class="select-field">
         <span>Head</span>
@@ -401,15 +602,39 @@ function renderDraftPanel(state: ReleaseControlRenderState): string {
         </select>
       </div>
     </div>
-    <button class="primary" data-action="scan">${state.busy ? "Scanning..." : "Draft Notes Between Refs"}</button>
+    <button class="primary" data-action="scan">${state.busy ? "Processing diffs..." : "Generate release notes"}</button>
     <div class="split">
-      <button data-action="applyChangelog">Apply CHANGELOG</button>
-      <button data-action="applyRelease">Apply Release File</button>
+      <button data-action="applyChangelog">${renderIcon("apply")}<span>CHANGELOG</span></button>
+      <button data-action="applyRelease">${renderIcon("apply")}<span>Release file</span></button>
     </div>
+    <button class="secondary full-width" data-action="clearWorkingState" title="Clear unpublished draft review state while preserving published releases">Clear working state</button>
+    ${renderReleaseMath(state)}
   </details>`;
 }
 
-function refOptionsForState(state: ReleaseControlRenderState, slot: "base" | "head"): { value: string; label: string; group: string; relatedRefs: string[]; selected: boolean }[] {
+function renderReleaseMath(state: ReleaseControlRenderState): string {
+  const draftItemCount = state.document?.item_count ?? 0;
+  const releaseNoteCount = countVisibleItems(state.document);
+  const hiddenItemCount = countHiddenItems(state.document);
+  const hiddenNote = hiddenItemCount
+    ? `${hiddenItemCount} hidden item(s) are kept out of rendered release notes.`
+    : "No draft items are hidden.";
+  const detail = draftItemCount
+    ? `Commits are grouped into changesets by PR, conventional commit signal, and changed area. ${hiddenNote}`
+    : "Generate release notes to see how commits are grouped into changesets.";
+  return `<div class="release-math" aria-live="polite">
+    <div class="release-math-flow">
+      <span><strong id="source-selection-total">0</strong><small>selected sources</small></span>
+      <span class="release-math-arrow" aria-hidden="true"></span>
+      <span><strong>${draftItemCount}</strong><small>changesets</small></span>
+      <span class="release-math-arrow" aria-hidden="true"></span>
+      <span><strong>${releaseNoteCount}</strong><small>release notes</small></span>
+    </div>
+    <small><span id="source-selection-auto">Selection updates as refs change.</span> ${escapeHtml(detail)}</small>
+  </div>`;
+}
+
+function refOptionsForState(state: ReleaseControlRenderState, slot: "base" | "head"): { value: string; label: string; group: string; relatedRefs: string[]; selectAllRoot?: boolean; selected: boolean }[] {
   const current = slot === "base" ? state.range.base : state.range.head ?? "HEAD";
   const options = releaseRefOptions(state.overview, slot);
   const hasCurrent = options.some((option) => option.value === current);
@@ -426,7 +651,8 @@ function renderNativeRefOptions(state: ReleaseControlRenderState, slot: "base" |
     const next = all[index + 1];
     const openGroup = previous?.group !== option.group ? `<optgroup label="${escapeHtml(option.group)}">` : "";
     const closeGroup = next?.group !== option.group ? "</optgroup>" : "";
-    return `${openGroup}<option value="${escapeHtml(option.value)}" data-related-refs="${escapeHtml(option.relatedRefs.join(","))}"${option.selected ? " selected" : ""}>${escapeHtml(option.label)}</option>${closeGroup}`;
+    const selectAllRoot = option.selectAllRoot ? ` data-release-root="true"` : "";
+    return `${openGroup}<option value="${escapeHtml(option.value)}" data-related-refs="${escapeHtml(option.relatedRefs.join(","))}"${selectAllRoot}${option.selected ? " selected" : ""}>${escapeHtml(option.label)}</option>${closeGroup}`;
   }).join("");
 }
 
@@ -434,15 +660,225 @@ function renderVscodeRefOptions(state: ReleaseControlRenderState, slot: "base" |
   const rendered = refOptionsForState(state, slot);
   return rendered.map((option) => {
     const description = option.group === "Current" ? "current" : option.group;
-    return `<vscode-option value="${escapeHtml(option.value)}" description="${escapeHtml(description)}" data-related-refs="${escapeHtml(option.relatedRefs.join(","))}"${option.selected ? " selected" : ""}>${escapeHtml(option.label)}</vscode-option>`;
+    const selectAllRoot = option.selectAllRoot ? ` data-release-root="true"` : "";
+    return `<vscode-option value="${escapeHtml(option.value)}" description="${escapeHtml(description)}" data-related-refs="${escapeHtml(option.relatedRefs.join(","))}"${selectAllRoot}${option.selected ? " selected" : ""}>${escapeHtml(option.label)}</vscode-option>`;
   }).join("");
+}
+
+function renderBaseTreePicker(state: ReleaseControlRenderState): string {
+  const options = refOptionsForState(state, "base");
+  const treeItems = state.overview ? renderRepositoryBaseTree(state, options) : renderGroupedBaseTree(options);
+  return `<select id="base" class="backing-select" multiple aria-hidden="true" tabindex="-1">
+          ${renderNativeRefOptions(state, "base")}
+        </select>
+        <details class="source-dropdown base-tree-picker" id="base-picker">
+          <summary title="Choose one or more release base refs">
+            <span id="base-picker-label">Select base refs</span>
+            <small id="base-picker-count">0 selected</small>
+          </summary>
+          <div class="source-dropdown-menu base-tree-menu">
+            <vscode-tree id="base-tree" multi-select indent-guides="always">
+              ${treeItems}
+            </vscode-tree>
+            <button class="inline-action source-done" data-action="closeBasePicker">Done</button>
+          </div>
+        </details>`;
+}
+
+function renderRepositoryBaseTree(state: ReleaseControlRenderState, options: ReturnType<typeof refOptionsForState>): string {
+  const overview = state.overview;
+  if (!overview) {
+    return renderGroupedBaseTree(options);
+  }
+  const byValue = new Map(options.map((option) => [option.value, option]));
+  const prsByNumber = pullRequestsByNumber(overview);
+  const unreleasedCommits = visibleCommitsForPullRequestState(
+    overview.commits.filter((commit) => commit.release === null),
+    prsByNumber,
+  );
+  const currentOptions = options.filter((option) => option.group === "Current");
+  const tagOptions = options.filter((option) => option.group === "Tags");
+  const branchCommitRefs = overview.branches.map((branch) => (
+    branch.detail ? commitAndEarlierRefs(branch.detail, unreleasedCommits) : []
+  ));
+  const duplicateNonPrShas = duplicatedNonPrCommitShas(branchCommitRefs, unreleasedCommits);
+  const branchCoveredShas = new Set(branchCommitRefs.flat());
+  const renderedPrCommitShas = new Set<string>();
+  const renderedPrNumbers = new Set<number>();
+  const branchItems = overview.branches.map((branch, index) => {
+    const branchOption = byValue.get(branch.name) ?? {
+      value: branch.name,
+      label: branch.detail ? `${branch.name} - ${branch.detail}` : branch.name,
+      group: "Branches",
+      relatedRefs: [branch.name],
+      selected: state.range.base === branch.name,
+    };
+    const branchCommits = commitsForRefs(branchCommitRefs[index] ?? [], unreleasedCommits);
+    return renderBaseTreeBranch(branchOption, branchCommits, prsByNumber, renderedPrCommitShas, renderedPrNumbers, duplicateNonPrShas);
+  }).join("");
+  const unassignedCommits = unreleasedCommits.filter((commit) => (
+    !branchCoveredShas.has(commit.sha) && !renderedPrCommitShas.has(commit.sha)
+  ));
+  const unassignedItems = unassignedCommits.length
+    ? renderBaseTreeBranch({
+      value: "HEAD",
+      label: "Unassigned commits",
+      group: "Branches",
+      relatedRefs: unassignedCommits.map((commit) => commit.sha),
+      selected: false,
+    }, unassignedCommits, prsByNumber, renderedPrCommitShas, renderedPrNumbers, duplicateNonPrShas)
+    : "";
+  return [
+    currentOptions.length ? renderBaseTreeGroup("Current", currentOptions.map(renderBaseTreeItem).join(""), currentOptions.length) : "",
+    tagOptions.length ? renderBaseTreeGroup("Tags", tagOptions.map(renderBaseTreeItem).join(""), tagOptions.length) : "",
+    branchItems ? renderBaseTreeGroup("Branches", branchItems, overview.branches.length) : "",
+    unassignedItems ? renderBaseTreeGroup("Unassigned", unassignedItems, unassignedCommits.length) : "",
+  ].filter(Boolean).join("");
+}
+
+function renderGroupedBaseTree(options: ReturnType<typeof refOptionsForState>): string {
+  const groups = new Map<string, typeof options>();
+  options.forEach((option) => {
+    const group = groups.get(option.group) ?? [];
+    group.push(option);
+    groups.set(option.group, group);
+  });
+  return Array.from(groups.entries()).map(([group, groupedOptions]) => (
+    renderBaseTreeGroup(group, groupedOptions.map(renderBaseTreeItem).join(""), groupedOptions.length)
+  )).join("");
+}
+
+function renderBaseTreeGroup(label: string, children: string, count: number): string {
+  return `<vscode-tree-item open>
+      ${escapeHtml(label)}
+      <span slot="description">${count}</span>
+      ${children}
+    </vscode-tree-item>`;
+}
+
+function renderBaseTreeBranch(
+  option: { value: string; label: string; group: string; relatedRefs: string[]; selectAllRoot?: boolean; selected: boolean },
+  commits: RepositoryCommit[],
+  prsByNumber: Map<number, RepositoryPullRequest>,
+  renderedPrCommitShas: Set<string>,
+  renderedPrNumbers: Set<number>,
+  duplicateNonPrShas: Set<string>,
+): string {
+  const allPrGroups = groupCommitsByPr(commits, prsByNumber);
+  const hiddenPrCommitShas = new Set(
+    allPrGroups
+      .filter((pr) => !shouldShowPullRequest(pr.pullRequest))
+      .flatMap((pr) => pr.commits.map((commit) => commit.sha)),
+  );
+  const visibleCommits = commits.filter((commit) => !hiddenPrCommitShas.has(commit.sha));
+  const prGroups = allPrGroups
+    .filter((pr) => shouldShowPullRequest(pr.pullRequest))
+    .filter((pr) => !renderedPrNumbers.has(pr.prNumber))
+    .map((pr) => ({
+      ...pr,
+      commits: pr.commits.filter((commit) => !renderedPrCommitShas.has(commit.sha)),
+    }))
+    .filter((pr) => pr.commits.length > 0);
+  prGroups.forEach((pr) => {
+    renderedPrNumbers.add(pr.prNumber);
+    pr.commits.forEach((commit) => renderedPrCommitShas.add(commit.sha));
+  });
+  const prCommitShas = new Set(prGroups.flatMap((pr) => pr.commits.map((commit) => commit.sha)));
+  const prItems = prGroups.map((pr) => {
+    const prRef = pr.commits[0].sha;
+    const refs = pr.commits.map((commit) => commit.sha);
+    const stateLabel = pullRequestStateLabel(pr.pullRequest);
+    const countLabel = pr.commits.length === 1 ? "1 commit" : `${pr.commits.length} commits`;
+    const prOption = {
+      value: prRef,
+      label: `PR #${pr.prNumber}`,
+      group: "Pull requests",
+      relatedRefs: refs,
+      selectAllRoot: true,
+      selected: option.selected && refs.includes(option.value),
+    };
+    return `<vscode-tree-item class="base-tree-item" data-ref="${escapeHtml(prOption.value)}" data-related-refs="${escapeHtml(prOption.relatedRefs.join(","))}" data-release-root="true"${prOption.selected ? " selected" : ""}>
+      <label class="base-tree-row" title="Select PR #${pr.prNumber} and its commits">
+        <input class="base-tree-toggle" type="checkbox" data-ref="${escapeHtml(prOption.value)}">
+        <span>${escapeHtml(prOption.label)}</span>
+      </label>
+      <span slot="description">${escapeHtml(stateLabel ? `${stateLabel} | ${countLabel}` : countLabel)}</span>
+      ${pr.commits.map((commit) => renderBaseTreeCommit(commit, visibleCommits)).join("")}
+    </vscode-tree-item>`;
+  }).join("");
+  const ungroupedCommitItems = visibleCommits
+    .filter((commit) => !prCommitShas.has(commit.sha) && !renderedPrCommitShas.has(commit.sha))
+    .map((commit) => renderBaseTreeCommit(commit, visibleCommits, duplicateNonPrShas.has(commit.sha)))
+    .join("");
+  return `<vscode-tree-item class="base-tree-item" data-ref="${escapeHtml(option.value)}" data-related-refs="${escapeHtml(option.relatedRefs.join(","))}"${option.selected ? " selected" : ""}>
+    <label class="base-tree-row" title="Select branch and reachable commits">
+      <input class="base-tree-toggle" type="checkbox" data-ref="${escapeHtml(option.value)}">
+      <span>${escapeHtml(option.label)}</span>
+    </label>
+    <span slot="description">${visibleCommits.length === 1 ? "1 commit" : `${visibleCommits.length} commits`}</span>
+    ${prItems}
+    ${ungroupedCommitItems}
+  </vscode-tree-item>`;
+}
+
+function renderBaseTreeCommit(
+  commit: { sha: string; subject: string; prNumber?: number | null },
+  commits: { sha: string }[],
+  duplicated = false,
+): string {
+  return renderBaseTreeItem({
+    value: commit.sha,
+    label: `${commit.sha} - ${commit.subject}${duplicated ? " *" : ""}`,
+    group: duplicated ? "shared commit" : "Unreleased commits",
+    relatedRefs: commitAndEarlierRefs(commit.sha, commits),
+    selectAllRoot: commit.prNumber === null,
+    selected: false,
+    duplicated,
+  });
+}
+
+function renderBaseTreeItem(option: { value: string; label: string; group: string; relatedRefs: string[]; selectAllRoot?: boolean; selected: boolean; duplicated?: boolean }): string {
+  const description = option.group === "Current" ? "current" : option.group;
+  const selectAllRoot = option.selectAllRoot ? ` data-release-root="true"` : "";
+  const duplicateAttrs = option.duplicated ? ` data-duplicated="true"` : "";
+  const duplicateClass = option.duplicated ? " duplicated-ref" : "";
+  const title = option.duplicated ? "Select as base ref; this commit is reachable from multiple branches" : "Select as base ref";
+  return `<vscode-tree-item class="base-tree-item${duplicateClass}" data-ref="${escapeHtml(option.value)}" data-related-refs="${escapeHtml(option.relatedRefs.join(","))}"${selectAllRoot}${duplicateAttrs}${option.selected ? " selected" : ""}>
+    <label class="base-tree-row" title="${escapeHtml(title)}">
+      <input class="base-tree-toggle" type="checkbox" data-ref="${escapeHtml(option.value)}">
+      <span>${escapeHtml(option.label)}</span>
+    </label>
+    <span slot="description">${escapeHtml(description)}</span>
+  </vscode-tree-item>`;
+}
+
+function commitsForRefs<T extends { sha: string }>(refs: string[], commits: T[]): T[] {
+  const refSet = new Set(refs);
+  return commits.filter((commit) => refSet.has(commit.sha));
+}
+
+function duplicatedNonPrCommitShas(
+  branchCommitRefs: string[][],
+  commits: { sha: string; prNumber: number | null }[],
+): Set<string> {
+  const nonPrShas = new Set(commits.filter((commit) => commit.prNumber === null).map((commit) => commit.sha));
+  const counts = new Map<string, number>();
+  branchCommitRefs.forEach((refs) => {
+    const branchRefs = new Set(refs);
+    branchRefs.forEach((ref) => {
+      if (nonPrShas.has(ref)) {
+        counts.set(ref, (counts.get(ref) ?? 0) + 1);
+      }
+    });
+  });
+  return new Set(Array.from(counts.entries()).filter(([, count]) => count > 1).map(([sha]) => sha));
 }
 
 function releaseRefOptions(
   overview: RepositoryOverview | undefined,
   slot: "base" | "head",
-): { value: string; label: string; group: string; relatedRefs: string[] }[] {
-  const options: { value: string; label: string; group: string; relatedRefs: string[] }[] = [];
+): { value: string; label: string; group: string; relatedRefs: string[]; selectAllRoot?: boolean }[] {
+  const options: { value: string; label: string; group: string; relatedRefs: string[]; selectAllRoot?: boolean }[] = [];
   if (slot === "head") {
     options.push({ value: "HEAD", label: "HEAD", group: "Heads", relatedRefs: ["HEAD"] });
   }
@@ -452,7 +888,11 @@ function releaseRefOptions(
     }
     return options;
   }
-  const unreleasedCommits = overview.commits.filter((commit) => commit.release === null);
+  const prsByNumber = pullRequestsByNumber(overview);
+  const unreleasedCommits = visibleCommitsForPullRequestState(
+    overview.commits.filter((commit) => commit.release === null),
+    prsByNumber,
+  );
   if (slot === "base") {
     options.push(...overview.tags.map((tag) => ({
       value: tag.name,
@@ -460,33 +900,36 @@ function releaseRefOptions(
       group: "Tags",
       relatedRefs: [tag.name],
     })));
-    options.push(...groupCommitsByPr(unreleasedCommits).map((pr) => ({
+    options.push(...groupCommitsByPr(unreleasedCommits, prsByNumber).filter((pr) => shouldShowPullRequest(pr.pullRequest)).map((pr) => ({
       value: pr.commits[0].sha,
       label: `PR #${pr.prNumber} - ${pr.commits.length === 1 ? pr.commits[0].subject : `${pr.commits.length} commit(s)`}`,
       group: "Pull requests",
       relatedRefs: pr.commits.map((commit) => commit.sha),
+      selectAllRoot: true,
     })));
   }
   options.push(...overview.branches.map((branch) => ({
     value: branch.name,
     label: branch.detail ? `${branch.name} - ${branch.detail}` : branch.name,
     group: slot === "head" ? "Branches / heads" : "Branches",
-    relatedRefs: [branch.name, ...unreleasedCommits
-      .filter((commit) => Boolean(branch.detail) && commit.sha.startsWith(branch.detail ?? ""))
-      .map((commit) => commit.sha)],
+    relatedRefs: [
+      branch.name,
+      ...commitAndEarlierRefs(branch.detail ?? "", unreleasedCommits),
+    ],
   })));
   options.push(...unreleasedCommits.map((commit) => ({
     value: commit.sha,
     label: `${commit.sha} - ${commit.subject}`,
     group: "Unreleased commits",
-    relatedRefs: [commit.sha],
+    relatedRefs: commitAndEarlierRefs(commit.sha, unreleasedCommits),
+    selectAllRoot: commit.prNumber === null,
   })));
   return dedupeRefOptions(options);
 }
 
 function dedupeRefOptions(
-  options: { value: string; label: string; group: string; relatedRefs: string[] }[],
-): { value: string; label: string; group: string; relatedRefs: string[] }[] {
+  options: { value: string; label: string; group: string; relatedRefs: string[]; selectAllRoot?: boolean }[],
+): { value: string; label: string; group: string; relatedRefs: string[]; selectAllRoot?: boolean }[] {
   const seen = new Set<string>();
   return options.filter((option) => {
     if (seen.has(option.value)) {
@@ -499,7 +942,7 @@ function dedupeRefOptions(
 
 function renderModelPanel(state: ReleaseControlRenderState): string {
   return `<details class="section tree-section model-panel">
-    <summary class="section-title">MODEL <span>${escapeHtml(state.modelSettings.provider)}</span></summary>
+    <summary class="section-title">${renderIcon("intent")}<span>INTENT INFERENCE</span><small>${escapeHtml(state.modelSettings.provider)}</small></summary>
     <button class="model" data-action="changeModel" title="${escapeHtml(modelDetail(state.modelSettings))}">
       <span>${escapeHtml(state.modelSettings.provider)}</span>
       <small>${escapeHtml(state.modelSettings.provider === "ollama" ? state.modelSettings.model : `fanout ${state.modelSettings.maxModelItems}`)}</small>
@@ -551,12 +994,12 @@ function modelDetail(settings: ModelSettings): string {
   ].join("\n");
 }
 
-function renderSuggestions(preview: DraftSuggestionPreview | undefined): string {
+function renderSuggestions(preview: DraftSuggestionPreview | undefined, modelBusy = false): string {
   if (!preview || !preview.items.length) {
     return "";
   }
   return `<section class="sub-panel suggestions">
-    <div class="section-title">SUGGESTIONS <button class="inline-action" data-action="regenerateAll">Regenerate</button></div>
+    <div class="section-title">${renderIcon("intent")}<span>INTENT INFERENCE</span><button class="inline-action model-action" data-action="regenerateAll"${modelBusy ? " disabled" : ""}>Regenerate</button></div>
     ${preview.items.map((item) => `<article class="suggestion">
       <div class="item-head">
         <span class="name">${escapeHtml(item.title)}</span>
@@ -574,7 +1017,7 @@ function renderSuggestions(preview: DraftSuggestionPreview | undefined): string 
       </div>
       ${renderRejectedSuggestions(item)}
       <div class="suggestion-actions">
-        <button data-action="regenerateSuggestion" data-item="${escapeHtml(item.item_id)}">Regenerate</button>
+        <button class="model-action" data-action="regenerateSuggestion" data-item="${escapeHtml(item.item_id)}"${modelBusy ? " disabled" : ""}>Regenerate</button>
         <button class="skip" data-action="skipSuggestion" data-item="${escapeHtml(item.item_id)}">Skip</button>
         <button data-action="feedbackPositive" data-item="${escapeHtml(item.item_id)}">Useful</button>
         <button data-action="feedbackNegative" data-item="${escapeHtml(item.item_id)}">Not useful</button>
@@ -583,12 +1026,12 @@ function renderSuggestions(preview: DraftSuggestionPreview | undefined): string 
   </section>`;
 }
 
-function renderReleasesPanel(state: ReleaseReleasesRenderState): string {
+function renderReleasesPanel(state: ReleaseReleasesRenderState, modelBusy = false): string {
   const released = state.overview?.releases ?? [];
   const releaseCount = released.length + 1;
   return `<details class="section tree-section releases-panel" id="releases-panel" open>
-    <summary class="section-title">RELEASES <span>${releaseCount}</span></summary>
-    ${renderUnreleasedRelease(state.document, state.suggestions, state.overview)}
+    <summary class="section-title">${renderIcon("document")}<span>RELEASE NOTES</span><small>${releaseCount}</small></summary>
+    ${renderUnreleasedRelease(state.document, state.suggestions, state.overview, modelBusy)}
     ${renderReleasedReleases(state.overview)}
   </details>`;
 }
@@ -597,25 +1040,30 @@ function renderUnreleasedRelease(
   document: DraftDocument | undefined,
   suggestions: DraftSuggestionPreview | undefined,
   overview: RepositoryOverview | undefined,
+  modelBusy = false,
 ): string {
   const version = document?.version ?? "Unreleased";
   const items = document?.sections.flatMap((section) => section.items) ?? [];
-  const visibleItems = items.filter((item) => !item.hidden);
+  const renderedItems = items.filter((item) => !item.hidden);
+  const hiddenItems = items.length - renderedItems.length;
   const commits = overview?.commits.filter((commit) => commit.release === null) ?? [];
+  const commitsBySha = commitLookup(overview);
+  const draftCommitCount = countDraftCommits(document);
   const suggestionCount = suggestions?.items.reduce((sum, item) => sum + item.suggestions.length, 0) ?? 0;
+  const hiddenDetail = hiddenItems ? ` | ${hiddenItems} hidden` : "";
   return `<details class="release-card" open data-release-state="unreleased">
     <summary>
       <span>${escapeHtml(version)}</span>
-      <small>${visibleItems.length} visible item(s) | ${commits.length} unreleased commit(s) | ${suggestionCount} suggestion(s)</small>
+      <small>${draftCommitCount} draft commit(s) -> ${items.length} changeset(s) -> ${renderedItems.length} release note(s)${hiddenDetail} | ${suggestionCount} suggestion(s)</small>
     </summary>
     <div class="sub-panel release-note-panel">
-      <div class="sub-panel-title">Release Note</div>
+      <div class="sub-panel-title">${renderIcon("document")}<span>Release note</span></div>
       ${renderDraftReleaseNote(document)}
     </div>
-    ${renderSuggestions(suggestions)}
+    ${renderSuggestions(suggestions, modelBusy)}
     <div class="sub-panel">
-      <div class="sub-panel-title">Draft Items</div>
-      ${visibleItems.length ? visibleItems.map(renderReleaseDraftRow).join("") : `<p class="empty">Draft a release to review unreleased release-note items.</p>`}
+      <div class="sub-panel-title">${renderIcon("diff")}<span>Changesets</span></div>
+      ${renderedItems.length ? renderedItems.map((item) => renderReleaseDraftRow(item, commitsBySha)).join("") : renderEmptyState("diff", "No changes to analyze", "Nothing to report.")}
     </div>
     ${renderReleaseCommits(commits, "Unreleased commits")}
   </details>`;
@@ -623,10 +1071,10 @@ function renderUnreleasedRelease(
 
 function renderReleasedReleases(overview: RepositoryOverview | undefined): string {
   if (!overview) {
-    return `<div class="sub-panel"><p class="empty">Refresh repository activity to load released versions and their commits.</p></div>`;
+    return `<div class="sub-panel">${renderEmptyState("terminal", "No activity yet", "Analyze repository to load released versions and commits.")}</div>`;
   }
   if (!overview.releases.length) {
-    return `<div class="sub-panel"><p class="empty">No published release associations were found in local ReleasePilot state.</p></div>`;
+    return `<div class="sub-panel">${renderEmptyState("document", "No release notes yet", "No published release associations were found in local Verlato state.")}</div>`;
   }
   return overview.releases.map((release) => {
     const commits = overview.commits.filter((commit) => commit.release === release.version);
@@ -636,7 +1084,7 @@ function renderReleasedReleases(overview: RepositoryOverview | undefined): strin
         <small>${release.itemCount} release-note item(s) | ${commits.length} commit(s)</small>
       </summary>
       <div class="sub-panel release-note-panel">
-        <div class="sub-panel-title">Release Note</div>
+        <div class="sub-panel-title">${renderIcon("document")}<span>Release note</span></div>
         ${renderPublishedReleaseNotes(release.items ?? [])}
       </div>
       ${renderReleaseCommits(commits, "Commits in release")}
@@ -651,24 +1099,47 @@ function renderDraftReleaseNote(document: DraftDocument | undefined): string {
   }
   const items = document?.sections.flatMap((section) => section.items).filter((item) => !item.hidden) ?? [];
   if (!items.length) {
-    return `<p class="empty">Draft a release to generate the unreleased release note preview.</p>`;
+    return renderEmptyState("document", "No release notes yet", "Generate release notes from the selected diffs.");
   }
   return `<div class="release-note-list">${items.map((item) => `<p><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.summary)}</span></p>`).join("")}</div>`;
 }
 
-function renderReleaseDraftRow(item: DraftItem): string {
+function renderReleaseDraftRow(item: DraftItem, commitsBySha: Map<string, RepositoryCommit> = new Map()): string {
   const suggestionSource = item.summary_source === "model-suggestion" || item.summary_provenance?.source === "model-suggestion"
     ? "model suggestion"
     : item.summary_source ?? "draft";
+  const commitCount = item.commit_shas?.length ?? 0;
   return `<div class="release-row">
-    <span>${escapeHtml(item.title)}</span>
-    <small>${escapeHtml(item.status)} | ${escapeHtml(suggestionSource)}</small>
+    <div class="release-row-main">
+      <span>${escapeHtml(item.title)}</span>
+      <small>${commitCount} commit(s) in changeset | ${escapeHtml(item.status)} | ${escapeHtml(suggestionSource)}</small>
+    </div>
+    ${renderChangesetCommits(item, commitsBySha)}
   </div>`;
+}
+
+function renderChangesetCommits(item: DraftItem, commitsBySha: Map<string, RepositoryCommit> = new Map()): string {
+  const shas = item.commit_shas ?? [];
+  if (!shas.length) {
+    return `<div class="changeset-commits empty">No commits mapped to this changeset.</div>`;
+  }
+  const visibleShas = shas.slice(0, 24);
+  const hiddenCount = shas.length - visibleShas.length;
+  return `<details class="changeset-commits"${shas.length > 1 ? " open" : ""}>
+    <summary>Changeset commits <span>${shas.length}</span></summary>
+    <ol>
+      ${visibleShas.map((sha) => {
+        const commit = commitForSha(commitsBySha, sha);
+        return `<li><code>${escapeHtml(sha.slice(0, 12))}</code>${commit ? `<span>${escapeHtml(commit.subject)}</span>` : ""}</li>`;
+      }).join("")}
+    </ol>
+    ${hiddenCount > 0 ? `<small>${hiddenCount} more commit(s) in this changeset.</small>` : ""}
+  </details>`;
 }
 
 function renderPublishedReleaseNotes(items: { id: string; title: string; summary: string; status?: string; source?: string }[]): string {
   if (!items.length) {
-    return `<p class="empty">No release-note entries are available for this version.</p>`;
+    return renderEmptyState("document", "No release notes yet", "Nothing to report.");
   }
   return `<div class="release-note-list">${items.map((item) => `<p>
     <strong>${escapeHtml(item.title)}</strong>
@@ -679,14 +1150,14 @@ function renderPublishedReleaseNotes(items: { id: string; title: string; summary
 
 function renderReleaseCommits(commits: { sha: string; subject: string; prNumber: number | null }[], title: string): string {
   return `<div class="sub-panel">
-    <div class="sub-panel-title">${escapeHtml(title)} <span>${commits.length}</span></div>
+    <div class="sub-panel-title">${renderIcon("branch")}<span>${escapeHtml(title)}</span><small>${commits.length}</small></div>
     ${commits.length ? commits.slice(0, 12).map((commit) => `<div class="source-row release-commit">
       <button class="source-main" data-action="useBase" data-ref="${escapeHtml(commit.sha)}" title="Use as base ref">
         <span>${escapeHtml(commit.prNumber ? `PR #${commit.prNumber}` : commit.sha)}</span>
         <small>${escapeHtml(commit.subject)}</small>
       </button>
       <button class="source-slot" data-action="useHead" data-ref="${escapeHtml(commit.sha)}" title="Use as head ref">HEAD</button>
-    </div>`).join("") : `<p class="empty">No recent commits are currently mapped to this release.</p>`}
+    </div>`).join("") : renderEmptyState("branch", "No commits mapped", "Nothing to report.")}
   </div>`;
 }
 
@@ -708,7 +1179,7 @@ function renderProviderReasoning(item: DraftSuggestionItem): string {
     return "";
   }
   return `<details class="reasoning">
-    <summary>Provider reasoning <span>${reasoning.length}</span><button class="copy" data-action="copyText" data-copy-label="provider reasoning">Copy</button></summary>
+    <summary>Provider reasoning <span>${reasoning.length}</span><button class="copy" data-action="copyText" data-copy-label="provider reasoning" title="Copy provider reasoning">${renderIcon("copy")}<span>Copy</span></button></summary>
     <pre>${escapeHtml(reasoning)}</pre>
   </details>`;
 }
@@ -734,7 +1205,7 @@ function renderSimilarity(item: DraftSuggestionItem, suggestion: string): string
     return "";
   }
   const specificity = typeof detail.specificity_score === "number"
-    ? ` · ${Math.round(detail.specificity_score * 100)}% specific`
+    ? ` - ${Math.round(detail.specificity_score * 100)}% specific`
     : "";
   return `<small>${Math.round(detail.similarity_to_current * 100)}% similar to current${specificity}</small>`;
 }
@@ -804,11 +1275,11 @@ function renderActivity(requestId: number, activity: NonNullable<CommandRequestS
 
 function renderActivityPayload(requestId: number, entry: NonNullable<CommandRequestSnapshot["activity"]>[number]): string {
   const label = formatPayloadLabel(entry);
-  const open = entry.event === "stream_chunk" ? " open" : "";
+  const open = "";
   const streamClass = entry.event === "stream_chunk" ? " stream-payload" : "";
   const scrollKey = activityPayloadScrollKey(requestId, entry);
   const scrollClass = entry.event === "stream_chunk" ? " class=\"stream-scroll\"" : "";
-  return `<details class="payload${streamClass}"${open}><summary>${escapeHtml(label)}<button class="copy" data-action="copyText" data-copy-label="${escapeHtml(label.toLowerCase())}">Copy</button></summary><pre${scrollClass} tabindex="0" data-scroll-key="${escapeHtml(scrollKey)}">${escapeHtml(entry.payload ?? "")}</pre></details>`;
+  return `<details class="payload${streamClass}"${open}><summary>${escapeHtml(label)}<button class="copy" data-action="copyText" data-copy-label="${escapeHtml(label.toLowerCase())}" title="Copy payload">${renderIcon("copy")}<span>Copy</span></button></summary><pre${scrollClass} tabindex="0" data-scroll-key="${escapeHtml(scrollKey)}">${escapeHtml(entry.payload ?? "")}</pre></details>`;
 }
 
 function activityPayloadScrollKey(requestId: number, entry: NonNullable<CommandRequestSnapshot["activity"]>[number]): string {
@@ -884,7 +1355,7 @@ function parseActivityFromOutput(output: string): NonNullable<CommandRequestSnap
       entries.push({
         id: index,
         stream: "stderr",
-        category: trimmed.startsWith("[releasepilot:model]") ? "model" : "process",
+        category: trimmed.startsWith("[verlato:model]") ? "model" : "process",
         ...parsed,
         receivedAt: "",
       });
@@ -905,7 +1376,7 @@ function formatActivityMessage(entry: NonNullable<CommandRequestSnapshot["activi
   if (entry.event && entry.payload) {
     return entry.event.replace(/_/g, " ");
   }
-  return entry.message.replace(/^\[releasepilot:model\]\s*/, "");
+  return entry.message.replace(/^\[verlato:model\]\s*/, "");
 }
 
 function formatPromptBudget(entry: NonNullable<CommandRequestSnapshot["activity"]>[number]): string {
@@ -939,7 +1410,7 @@ function parseModelActivityLine(line: string): {
   attributes?: Record<string, unknown>;
   payload?: string;
 } {
-  const jsonPrefix = "[releasepilot:model] json ";
+  const jsonPrefix = "[verlato:model] json ";
   if (!line.startsWith(jsonPrefix)) {
     const streamChunk = parseStreamChunkLine(line);
     if (streamChunk) {
@@ -975,7 +1446,7 @@ function parseStreamChunkLine(line: string): {
   attributes: Record<string, unknown>;
   payload: string;
 } | undefined {
-  const match = line.match(/^\[releasepilot:model\]\s+stream-chunk\s+provider=(\S+)\s+task=(\S+)\s+kind=(\S+)\s+chars=(\d+)(?:\s+redacted=(\S+))?\s+text=(.*)$/);
+  const match = line.match(/^\[verlato:model\]\s+stream-chunk\s+provider=(\S+)\s+task=(\S+)\s+kind=(\S+)\s+chars=(\d+)(?:\s+redacted=(\S+))?\s+text=(.*)$/);
   if (!match) {
     return undefined;
   }
@@ -1025,7 +1496,7 @@ function mergeStreamActivity(entries: CommandRequestSnapshot["activity"]): NonNu
       redacted: Boolean(prior.attributes?.redacted) || Boolean(entry.attributes?.redacted),
     };
     prior.payload = trimStreamPayload(`${prior.payload ?? ""}${entry.payload ?? ""}`);
-    prior.message = `[releasepilot:model] stream ${String(kind)} chunks=${priorChunks + nextChunks} chars=${priorChars + nextChars}`;
+    prior.message = `[verlato:model] stream ${String(kind)} chunks=${priorChunks + nextChunks} chars=${priorChars + nextChars}`;
     prior.receivedAt = entry.receivedAt;
   }
   return merged;
@@ -1058,53 +1529,93 @@ function countVisibleItems(document: DraftDocument | undefined): number {
   return document?.sections.reduce((sum, section) => sum + section.items.filter((item) => !item.hidden).length, 0) ?? 0;
 }
 
+function countDraftCommits(document: DraftDocument | undefined): number {
+  const shas = new Set<string>();
+  document?.sections.forEach((section) => {
+    section.items.forEach((item) => {
+      (item.commit_shas ?? []).forEach((sha) => shas.add(sha));
+    });
+  });
+  return shas.size;
+}
+
+function countHiddenItems(document: DraftDocument | undefined): number {
+  return document?.sections.reduce((sum, section) => sum + section.items.filter((item) => item.hidden).length, 0) ?? 0;
+}
+
+function commitLookup(overview: RepositoryOverview | undefined): Map<string, RepositoryCommit> {
+  const lookup = new Map<string, RepositoryCommit>();
+  (overview?.commits ?? []).forEach((commit) => lookup.set(commit.sha, commit));
+  return lookup;
+}
+
+function commitForSha(commitsBySha: Map<string, RepositoryCommit>, sha: string): RepositoryCommit | undefined {
+  return commitsBySha.get(sha)
+    ?? Array.from(commitsBySha.entries()).find(([candidate]) => candidate.startsWith(sha) || sha.startsWith(candidate))?.[1];
+}
+
 function renderNotice(state: ReleaseControlRenderState): string {
   if (state.errorMessage) {
-    return `<div class="notice error">${escapeHtml(state.errorMessage)}</div>`;
+    return `<div class="notice error">${renderIcon("warning")}<span>${escapeHtml(state.errorMessage)}</span></div>`;
   }
   if (state.busy) {
-    return `<div class="notice">Scanning ${escapeHtml(state.range.base)}..${escapeHtml(state.range.head ?? "HEAD")}...</div>`;
+    const progress = activeOperationProgress(state);
+    if (progress) {
+      return "";
+    }
+    return `<div class="notice">${renderIcon("diff")}<span>Processing diffs for ${escapeHtml(state.range.base)}..${escapeHtml(state.range.head ?? "HEAD")}...</span></div>`;
   }
   if (state.statusMessage) {
-    return `<div class="notice">${escapeHtml(state.statusMessage)}</div>`;
+    return `<div class="notice">${renderIcon("document")}<span>${escapeHtml(state.statusMessage)}</span></div>`;
   }
   return "";
 }
 
-function renderSection(section: { title: string; items: DraftItem[] }): string {
+function renderSection(section: { title: string; items: DraftItem[] }, modelBusy = false, commitsBySha: Map<string, RepositoryCommit> = new Map()): string {
   return `<details open>
-    <summary>${escapeHtml(section.title)} <span>${section.items.length}</span></summary>
-    ${section.items.map(renderItem).join("")}
+    <summary>${escapeHtml(section.title)} <span>${section.items.length} changeset(s)</span></summary>
+    ${section.items.map((item) => renderItem(item, modelBusy, commitsBySha)).join("")}
   </details>`;
 }
 
-function renderItem(item: DraftItem): string {
+function renderItem(item: DraftItem, _modelBusy = false, commitsBySha: Map<string, RepositoryCommit> = new Map()): string {
   const pr = item.pr_number ? `#${item.pr_number}` : item.commit_shas?.[0]?.slice(0, 7) ?? "change";
+  const commitCount = item.commit_shas?.length ?? 0;
   const hiddenClass = item.hidden ? " hidden" : "";
   const visibility = item.hidden ? "hidden" : "visible";
+  const hiddenNotice = item.hidden ? `<div class="hidden-notice">${renderIcon("warning")}<span>Hidden by saved review state; it will not render until unhidden.</span></div>` : "";
+  const visibilityButton = item.hidden
+    ? `<button data-action="unhide" data-item="${escapeHtml(item.id)}">Unhide</button>`
+    : `<button data-action="hide" data-item="${escapeHtml(item.id)}">Hide</button>`;
   return `<article class="item${hiddenClass}" data-visibility="${visibility}">
     <div class="item-head">
       <span class="name">${escapeHtml(item.title)}</span>
-      <button class="icon mini" data-action="suggest" data-item="${escapeHtml(item.id)}" title="Suggest descriptions">✧</button>
+      <button class="icon mini" data-action="suggest" data-item="${escapeHtml(item.id)}" title="Infer intent for this diff" aria-label="Infer intent for this diff">${renderIcon("intent")}</button>
       <span class="badge ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span>
     </div>
     <p>${escapeHtml(item.summary)}</p>
-    <div class="item-meta">${escapeHtml(pr)} | ${escapeHtml(item.area)} | ${escapeHtml(item.semver)} | ${item.confidence.toFixed(2)}</div>
+    ${hiddenNotice}
+    <div class="item-meta">${escapeHtml(pr)} | ${commitCount} commit(s) in changeset | ${escapeHtml(item.area)} | ${escapeHtml(item.semver)} | ${item.confidence.toFixed(2)}</div>
+    ${renderChangesetCommits(item, commitsBySha)}
     <div class="actions">
       <button data-action="ready" data-item="${escapeHtml(item.id)}">Ready</button>
       <button data-action="accept" data-item="${escapeHtml(item.id)}">Accept</button>
       <button data-action="prompt" data-item="${escapeHtml(item.id)}">Prompt</button>
-      <button data-action="hide" data-item="${escapeHtml(item.id)}">Hide</button>
+      ${visibilityButton}
     </div>
   </article>`;
 }
 
 function renderSources(overview: RepositoryOverview | undefined): string {
   if (!overview) {
-    return `<p class="empty">Refresh to load PRs, tags, branches, commits, and release associations.</p>`;
+    return renderEmptyState("branch", "No sources loaded", "Analyze repository to load PRs, tags, branches, commits, and release associations.");
   }
-  const unreleasedCommits = overview.commits.filter((commit) => commit.release === null);
-  const prs = groupCommitsByPr(unreleasedCommits).slice(0, 6);
+  const prsByNumber = pullRequestsByNumber(overview);
+  const unreleasedCommits = visibleCommitsForPullRequestState(
+    overview.commits.filter((commit) => commit.release === null),
+    prsByNumber,
+  );
+  const prs = groupCommitsByPr(unreleasedCommits, prsByNumber).filter((pr) => shouldShowPullRequest(pr.pullRequest)).slice(0, 6);
   const tags = overview.tags.slice(0, 6).map((tag) => ({ label: tag.name, ref: tag.name, detail: tag.detail ?? "tag" }));
   const branches = overview.branches.slice(0, 5).map((branch) => ({
     label: branch.name,
@@ -1133,7 +1644,7 @@ function renderSources(overview: RepositoryOverview | undefined): string {
     renderSourceGroup("Recent Commits", commits),
   ].filter(Boolean);
   if (!groups.length) {
-    return `<p class="empty">Repository refresh succeeded, but no refs or commits were returned.</p>`;
+    return renderEmptyState("branch", "No sources found", "Nothing to report.");
   }
   return `<details class="source-dropdown" id="source-picker">
     <summary>
@@ -1153,16 +1664,42 @@ function renderSources(overview: RepositoryOverview | undefined): string {
   </details>`;
 }
 
+function pullRequestsByNumber(overview: RepositoryOverview): Map<number, RepositoryPullRequest> {
+  return new Map((overview.pullRequests ?? []).map((pr) => [pr.number, pr]));
+}
+
+function shouldShowPullRequest(pr: RepositoryPullRequest | undefined): boolean {
+  return !pr || pr.state !== "CLOSED" || Boolean(pr.mergedAt);
+}
+
+function visibleCommitsForPullRequestState(commits: RepositoryCommit[], prsByNumber: Map<number, RepositoryPullRequest>): RepositoryCommit[] {
+  return commits.filter((commit) => commit.prNumber === null || shouldShowPullRequest(prsByNumber.get(commit.prNumber)));
+}
+
+function pullRequestStateLabel(pr: RepositoryPullRequest | undefined): string {
+  if (!pr) {
+    return "";
+  }
+  if (pr.state === "OPEN") {
+    return "Open";
+  }
+  if (pr.state === "MERGED" || pr.mergedAt) {
+    return "Merged";
+  }
+  return "";
+}
+
 function groupCommitsByPr(
-  commits: { sha: string; subject: string; prNumber: number | null; release: string | null }[],
-): { prNumber: number; commits: { sha: string; subject: string; release: string | null }[] }[] {
-  const groups = new Map<number, { prNumber: number; commits: { sha: string; subject: string; release: string | null }[] }>();
+  commits: RepositoryCommit[],
+  prsByNumber = new Map<number, RepositoryPullRequest>(),
+): { prNumber: number; commits: RepositoryCommit[]; pullRequest?: RepositoryPullRequest }[] {
+  const groups = new Map<number, { prNumber: number; commits: RepositoryCommit[]; pullRequest?: RepositoryPullRequest }>();
   commits.forEach((commit) => {
     if (commit.prNumber === null) {
       return;
     }
-    const group = groups.get(commit.prNumber) ?? { prNumber: commit.prNumber, commits: [] };
-    group.commits.push({ sha: commit.sha, subject: commit.subject, release: commit.release });
+    const group = groups.get(commit.prNumber) ?? { prNumber: commit.prNumber, commits: [], pullRequest: prsByNumber.get(commit.prNumber) };
+    group.commits.push(commit);
     groups.set(commit.prNumber, group);
   });
   return Array.from(groups.values());
@@ -1170,7 +1707,7 @@ function groupCommitsByPr(
 
 function renderPrSourceGroup(
   title: string,
-  prs: { prNumber: number; commits: { sha: string; subject: string; release: string | null }[] }[],
+  prs: { prNumber: number; commits: RepositoryCommit[]; pullRequest?: RepositoryPullRequest }[],
   unreleasedCommits: { sha: string }[],
 ): string {
   if (!prs.length) {
@@ -1182,7 +1719,9 @@ function renderPrSourceGroup(
     ${prs.map((pr) => {
       const refs = commitAndEarlierRefs(pr.commits[0].sha, unreleasedCommits).join(",");
       const unselectRefs = commitAndLaterRefs(pr.commits[0].sha, unreleasedCommits).join(",");
-      const detail = pr.commits.length === 1 ? pr.commits[0].subject : `${pr.commits.length} commit(s)`;
+      const countLabel = pr.commits.length === 1 ? "1 commit" : `${pr.commits.length} commits`;
+      const stateLabel = pullRequestStateLabel(pr.pullRequest);
+      const detail = stateLabel ? `${stateLabel} | ${countLabel}` : (pr.commits.length === 1 ? pr.commits[0].subject : countLabel);
       return `<div class="source-row pr-row" data-ref="${escapeHtml(pr.commits[0].sha)}">
         <label class="source-main source-check" title="Select PR #${pr.prNumber} and all commits in it">
           <input class="pr-toggle" type="checkbox" data-ref="${escapeHtml(pr.commits[0].sha)}" data-refs="${escapeHtml(refs)}" data-unselect-refs="${escapeHtml(unselectRefs)}">
@@ -1262,9 +1801,19 @@ function styles(): string {
   return `
     * { box-sizing: border-box; }
     body {
+      --verlato-bg: #020912;
+      --verlato-panel: #08111d;
+      --verlato-green: #22c55e;
+      --verlato-blue: #3b82f6;
+      --verlato-red: #ef4444;
+      --verlato-purple: #8b5cf6;
+      --verlato-neutral: #9ca3af;
+      --verlato-text: #e5e7eb;
+      --verlato-border: rgba(156, 163, 175, .22);
       margin: 0;
-      color: var(--vscode-foreground);
-      background: var(--vscode-sideBar-background);
+      color: var(--vscode-foreground, var(--verlato-text));
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--verlato-bg) 72%, var(--vscode-sideBar-background, #111827) 28%), var(--vscode-sideBar-background, var(--verlato-bg)));
       font: var(--vscode-font-size) var(--vscode-font-family);
     }
     main { padding: 8px 6px 18px; }
@@ -1279,11 +1828,180 @@ function styles(): string {
       gap: 4px;
       min-height: 28px;
       margin-bottom: 8px;
-      padding: 3px 4px;
-      border-bottom: 1px solid color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 45%, transparent);
-      background: linear-gradient(90deg, color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 15%, transparent), transparent);
+      padding: 4px 5px;
+      border-bottom: 1px solid color-mix(in srgb, var(--verlato-green) 38%, var(--verlato-border));
+      background: linear-gradient(90deg, color-mix(in srgb, var(--verlato-green) 13%, transparent), color-mix(in srgb, var(--verlato-blue) 7%, transparent), transparent);
     }
-    .title { flex: 1; color: var(--vscode-sideBarTitle-foreground); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+    .view-toolbar {
+      margin-bottom: 6px;
+    }
+    .process-rail {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 12px minmax(0, 1fr) 12px minmax(0, 1fr) 12px minmax(0, 1fr);
+      align-items: stretch;
+      gap: 4px;
+      margin: -2px 0 8px;
+      padding: 5px;
+      border: 1px solid var(--verlato-border);
+      border-left: 2px solid color-mix(in srgb, var(--verlato-green) 78%, transparent);
+      background: color-mix(in srgb, var(--vscode-input-background, var(--verlato-panel)) 72%, var(--verlato-bg) 28%);
+    }
+    .process-step {
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr);
+      gap: 4px;
+      align-items: center;
+      min-width: 0;
+      padding: 3px 2px;
+      opacity: .72;
+    }
+    .process-step.active {
+      opacity: 1;
+      background: color-mix(in srgb, var(--verlato-green) 9%, transparent);
+      outline: 1px solid color-mix(in srgb, var(--verlato-green) 30%, transparent);
+    }
+    .process-step strong,
+    .process-step small {
+      display: block;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .process-step strong {
+      color: var(--vscode-foreground, var(--verlato-text));
+      font-size: 10px;
+    }
+    .process-step small {
+      color: var(--vscode-descriptionForeground, var(--verlato-neutral));
+      font-size: 9px;
+    }
+    .process-arrow {
+      align-self: center;
+      height: 1px;
+      background: color-mix(in srgb, var(--verlato-neutral) 56%, transparent);
+      position: relative;
+    }
+    .process-arrow::after {
+      content: "";
+      position: absolute;
+      right: -1px;
+      top: -3px;
+      width: 6px;
+      height: 6px;
+      border-top: 1px solid color-mix(in srgb, var(--verlato-neutral) 70%, transparent);
+      border-right: 1px solid color-mix(in srgb, var(--verlato-neutral) 70%, transparent);
+      transform: rotate(45deg);
+    }
+    .progress-strip {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) max-content;
+      gap: 5px 8px;
+      align-items: center;
+      margin: -3px 0 8px;
+      padding: 6px 7px;
+      border-left: 2px solid color-mix(in srgb, var(--verlato-blue) 72%, transparent);
+      background: color-mix(in srgb, var(--vscode-sideBar-background, var(--verlato-bg)) 78%, var(--verlato-blue) 14%);
+      box-shadow: 0 1px 0 var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.18));
+    }
+    .progress-strip.model-work {
+      border-left-color: var(--verlato-purple);
+      background: color-mix(in srgb, var(--vscode-sideBar-background, var(--verlato-bg)) 78%, var(--verlato-purple) 14%);
+    }
+    .progress-strip vscode-progress-bar {
+      grid-column: 1 / -1;
+      width: 100%;
+      min-height: 3px;
+    }
+    .progress-copy {
+      display: grid;
+      gap: 1px;
+      min-width: 0;
+    }
+    .progress-copy strong,
+    .progress-copy small {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .progress-copy strong {
+      font-size: 12px;
+    }
+    .progress-stop {
+      min-height: 22px;
+      padding: 2px 7px;
+      color: var(--vscode-button-foreground);
+      background: color-mix(in srgb, var(--verlato-red) 86%, var(--vscode-errorForeground, #f85149));
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .title {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      color: var(--vscode-sideBarTitle-foreground);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+    .title small {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--vscode-charts-green, #22c55e);
+      font-size: 9px;
+      font-weight: 600;
+    }
+    .brand-mark {
+      display: inline-block;
+      width: 22px;
+      height: 22px;
+      flex: 0 0 22px;
+      filter: drop-shadow(0 0 6px color-mix(in srgb, var(--verlato-green) 34%, transparent));
+    }
+    .brand-v-green { fill: var(--verlato-green); }
+    .brand-v-blue { fill: var(--verlato-blue); }
+    .brand-line {
+      fill: none;
+      stroke-width: 8;
+      stroke-linecap: round;
+    }
+    .brand-line-add { stroke: var(--verlato-green); }
+    .brand-line-neutral { stroke: var(--verlato-neutral); }
+    .brand-line-remove { stroke: var(--verlato-red); }
+    .title > span:not(.brand-mark) {
+      min-width: 0;
+    }
+    .verlato-icon {
+      width: 16px;
+      height: 16px;
+      display: inline-block;
+      vertical-align: -3px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      flex: 0 0 auto;
+    }
+    .verlato-icon .add,
+    .verlato-icon .plus { stroke: var(--verlato-green); }
+    .verlato-icon .remove,
+    .verlato-icon .minus { stroke: var(--verlato-red); }
+    .verlato-icon.intent,
+    .verlato-icon .intent-line { stroke: var(--verlato-purple); }
+    .verlato-icon.branch { stroke: var(--verlato-blue); }
+    .verlato-icon.document { stroke: var(--vscode-foreground, var(--verlato-text)); }
+    .verlato-icon.terminal { stroke: var(--verlato-green); }
     .model-badge {
       position: relative;
       display: inline-flex;
@@ -1332,10 +2050,9 @@ function styles(): string {
       height: 18px;
       border-radius: 999px;
       color: var(--vscode-button-foreground);
-      background: linear-gradient(135deg, var(--vscode-focusBorder, #3794ff), var(--vscode-charts-green, #89d185));
-      font-size: 9px;
-      font-weight: 700;
+      background: color-mix(in srgb, var(--verlato-purple) 30%, var(--vscode-button-secondaryBackground, #2a2d2e));
     }
+    .model-mark .verlato-icon { width: 13px; height: 13px; }
     .model-name {
       min-width: 0;
       overflow: hidden;
@@ -1353,56 +2070,72 @@ function styles(): string {
       cursor: pointer;
     }
     button:hover { background: var(--vscode-button-secondaryHoverBackground); }
-    .icon { width: 24px; min-height: 22px; background: transparent; color: var(--vscode-icon-foreground); }
-    .icon:hover { color: var(--vscode-focusBorder, #3794ff); background: color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 18%, transparent); }
+    .icon {
+      width: 24px;
+      min-height: 22px;
+      display: inline-grid;
+      place-items: center;
+      padding: 0;
+      background: transparent;
+      color: var(--vscode-icon-foreground, var(--verlato-neutral));
+    }
+    .icon:hover { color: var(--verlato-green); background: color-mix(in srgb, var(--verlato-green) 16%, transparent); }
     .stop {
       min-height: 22px;
       padding: 0 7px;
       color: var(--vscode-button-foreground);
-      background: var(--vscode-errorForeground);
+      background: color-mix(in srgb, var(--verlato-red) 86%, var(--vscode-errorForeground, #f85149));
       font-size: 11px;
     }
     .mini { width: 20px; min-height: 18px; }
     .notice {
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr);
+      align-items: center;
+      gap: 5px;
       margin: 0 0 8px;
       padding: 6px;
-      border-left: 2px solid var(--vscode-focusBorder);
-      background: var(--vscode-input-background);
+      border-left: 2px solid var(--verlato-blue);
+      background: color-mix(in srgb, var(--vscode-input-background, var(--verlato-panel)) 82%, var(--verlato-blue) 8%);
       color: var(--vscode-descriptionForeground);
       font-size: 11px;
       line-height: 1.35;
     }
-    .notice.error { border-left-color: var(--vscode-errorForeground); color: var(--vscode-errorForeground); }
+    .notice.error { border-left-color: var(--verlato-red); color: var(--vscode-errorForeground, var(--verlato-red)); }
     .section { margin-bottom: 10px; }
     .tree-section {
       padding: 4px 5px 6px;
-      border-left: 2px solid color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 70%, var(--vscode-sideBarSectionHeader-border, transparent));
-      background: color-mix(in srgb, var(--vscode-input-background, #1f1f1f) 70%, transparent);
+      border-left: 2px solid color-mix(in srgb, var(--verlato-blue) 70%, var(--vscode-sideBarSectionHeader-border, transparent));
+      background: color-mix(in srgb, var(--vscode-input-background, var(--verlato-panel)) 76%, transparent);
     }
     .control-panel {
-      border-left-color: color-mix(in srgb, var(--vscode-charts-green, #89d185) 68%, var(--vscode-focusBorder, #3794ff));
+      border-left-color: var(--verlato-green);
     }
     .model-panel {
-      border-left-color: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 70%, var(--vscode-focusBorder, #3794ff));
+      border-left-color: var(--verlato-purple);
     }
     .sources-panel {
-      border-left-color: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 72%, var(--vscode-focusBorder, #3794ff));
+      border-left-color: var(--verlato-blue);
       margin-top: 8px;
     }
     .releases-panel {
-      border-left-color: color-mix(in srgb, var(--vscode-charts-green, #89d185) 62%, var(--vscode-focusBorder, #3794ff));
+      border-left-color: var(--vscode-foreground, var(--verlato-text));
       min-width: 0;
       overflow: hidden;
     }
     .section-title {
+      display: flex;
+      align-items: center;
+      gap: 5px;
       margin: 0 0 5px;
-      color: var(--vscode-sideBarSectionHeader-foreground);
+      color: var(--verlato-green);
       font-weight: 700;
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0;
     }
-    .section-title span { float: right; color: var(--vscode-descriptionForeground); font-weight: 400; text-transform: none; }
+    .section-title span { color: inherit; font-weight: 700; }
+    .section-title small { margin-left: auto; color: var(--vscode-descriptionForeground); font-weight: 400; text-transform: none; }
     summary.section-title {
       display: flex;
       align-items: center;
@@ -1413,7 +2146,7 @@ function styles(): string {
       list-style-position: inside;
     }
     summary.section-title:hover { background: color-mix(in srgb, var(--vscode-list-hoverBackground, #2a2d2e) 70%, transparent); }
-    summary.section-title span { float: none; margin-left: auto; }
+    summary.section-title span { margin-left: 0; }
     summary::marker { color: var(--vscode-focusBorder, #3794ff); }
     input,
     select {
@@ -1442,6 +2175,17 @@ function styles(): string {
       margin-bottom: 5px;
       --dropdown-z-index: 10;
     }
+    .backing-select {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+      border: 0;
+    }
     .range { display: grid; grid-template-columns: minmax(0, 1fr) minmax(92px, 35%); gap: 5px; }
     .select-field {
       min-width: 0;
@@ -1455,10 +2199,79 @@ function styles(): string {
       text-transform: uppercase;
       font-weight: 700;
     }
-    .primary { width: 100%; color: var(--vscode-button-foreground); background: var(--vscode-button-background); margin-bottom: 5px; box-shadow: inset 3px 0 0 color-mix(in srgb, var(--vscode-charts-green, #89d185) 75%, transparent); }
+    .primary { width: 100%; color: var(--vscode-button-foreground); background: var(--vscode-button-background); margin-bottom: 5px; box-shadow: inset 3px 0 0 var(--verlato-green); }
     .primary:hover { background: var(--vscode-button-hoverBackground); }
+    .secondary.full-width {
+      width: 100%;
+      margin-top: 5px;
+      margin-bottom: 0;
+      color: var(--vscode-button-secondaryForeground);
+      background: var(--vscode-button-secondaryBackground);
+      box-shadow: inset 3px 0 0 var(--verlato-purple);
+    }
     .split { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
-    .meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin: 0 0 10px; }
+    .release-math {
+      margin-top: 6px;
+      padding: 6px;
+      border: 1px solid var(--verlato-border);
+      border-left: 2px solid var(--verlato-green);
+      background: color-mix(in srgb, var(--vscode-input-background, var(--verlato-panel)) 82%, transparent);
+    }
+    .release-math-flow {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr) 14px minmax(0, 1fr);
+      gap: 4px;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+    .release-math-flow span:not(.release-math-arrow) {
+      min-width: 0;
+      display: grid;
+      gap: 1px;
+      text-align: center;
+    }
+    .release-math-flow strong {
+      color: var(--vscode-foreground, var(--verlato-text));
+      font-size: 14px;
+      line-height: 1.1;
+    }
+    .release-math-flow small,
+    .release-math > small {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      line-height: 1.35;
+    }
+    .release-math-arrow {
+      height: 1px;
+      background: color-mix(in srgb, var(--verlato-neutral) 62%, transparent);
+      position: relative;
+    }
+    .release-math-arrow::after {
+      content: "";
+      position: absolute;
+      right: 0;
+      top: -3px;
+      width: 6px;
+      height: 6px;
+      border-top: 1px solid color-mix(in srgb, var(--verlato-neutral) 70%, transparent);
+      border-right: 1px solid color-mix(in srgb, var(--verlato-neutral) 70%, transparent);
+      transform: rotate(45deg);
+    }
+    .split button,
+    .suggestion-actions button,
+    .copy {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+    }
+    .split .verlato-icon,
+    .copy .verlato-icon,
+    .progress-stop .verlato-icon {
+      width: 13px;
+      height: 13px;
+    }
+    .meta { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin: 0 0 10px; }
     .operations .meta { margin-top: 10px; }
     .meta-card {
       border-top: 2px solid color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 45%, var(--vscode-sideBarSectionHeader-border, transparent));
@@ -1473,11 +2286,13 @@ function styles(): string {
       background: color-mix(in srgb, var(--vscode-list-hoverBackground, #2a2d2e) 75%, var(--vscode-focusBorder, #3794ff) 10%);
       outline: 1px solid color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 65%, transparent);
     }
-    .meta-card:nth-child(2) { border-top-color: color-mix(in srgb, var(--vscode-charts-green, #89d185) 70%, var(--vscode-focusBorder, #3794ff)); }
-    .meta-card:nth-child(3) { border-top-color: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 75%, var(--vscode-focusBorder, #3794ff)); }
+    .meta-card:nth-child(2) { border-top-color: var(--verlato-green); }
+    .meta-card:nth-child(3) { border-top-color: var(--verlato-purple); }
+    .meta-card:nth-child(4) { border-top-color: var(--verlato-red); }
     .meta strong { display: block; font-size: 15px; color: var(--vscode-foreground); }
     .meta span, small, .item-meta, .empty { color: var(--vscode-descriptionForeground); font-size: 11px; }
     body[data-filter="visible"] .item[data-visibility="hidden"] { display: none; }
+    body[data-filter="hidden"] .item[data-visibility="visible"] { display: none; }
     body[data-filter="released"] .changes-panel { display: none; }
     body[data-filter="released"] .release-card[data-release-state="unreleased"] { display: none; }
     body[data-filter="unreleased"] .release-card[data-release-state="released"] { display: none; }
@@ -1511,6 +2326,24 @@ function styles(): string {
     }
     .item { padding: 6px 0 7px; border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.18)); }
     .item.hidden { opacity: .58; }
+    .hidden-notice {
+      display: grid;
+      grid-template-columns: 16px minmax(0, 1fr);
+      gap: 5px;
+      align-items: center;
+      margin: 4px 0;
+      padding: 4px 5px;
+      border-left: 2px solid var(--verlato-purple);
+      background: color-mix(in srgb, var(--verlato-purple) 10%, transparent);
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+    .hidden-notice .verlato-icon {
+      width: 14px;
+      height: 14px;
+      color: var(--verlato-purple);
+    }
     .item-head { display: flex; gap: 6px; align-items: baseline; }
     .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .badge { color: var(--vscode-descriptionForeground); font-size: 10px; }
@@ -1522,12 +2355,12 @@ function styles(): string {
     .item .badge.ready,
     .item .badge.accepted {
       color: var(--vscode-editor-background);
-      background: var(--vscode-charts-green, #89d185);
+      background: var(--verlato-green);
     }
     .item .badge.needs-review,
     .item .badge.edited {
       color: var(--vscode-editor-background);
-      background: var(--vscode-charts-yellow, #cca700);
+      background: color-mix(in srgb, var(--verlato-blue) 70%, var(--verlato-green));
     }
     .item .badge.hidden {
       color: var(--vscode-descriptionForeground);
@@ -1544,19 +2377,19 @@ function styles(): string {
     }
     .request .badge.running {
       color: var(--vscode-editor-background);
-      background: var(--vscode-charts-yellow, #cca700);
+      background: var(--verlato-blue);
     }
     .request .badge.completed {
       color: var(--vscode-editor-background);
-      background: var(--vscode-charts-green, #89d185);
+      background: var(--verlato-green);
     }
     .request .badge.failed {
       color: var(--vscode-button-foreground);
-      background: var(--vscode-errorForeground);
+      background: var(--verlato-red);
     }
     .request .badge.cancelled {
       color: var(--vscode-editor-background);
-      background: var(--vscode-charts-yellow, #cca700);
+      background: var(--verlato-neutral);
     }
     .spinner {
       width: 9px;
@@ -1564,15 +2397,23 @@ function styles(): string {
       border: 1.5px solid currentColor;
       border-top-color: transparent;
       border-radius: 999px;
-      animation: releasepilot-spin .8s linear infinite;
+      animation: verlato-spin .8s linear infinite;
     }
-    @keyframes releasepilot-spin {
+    @keyframes verlato-spin {
       to { transform: rotate(360deg); }
     }
     .item p { margin: 3px 0; color: var(--vscode-descriptionForeground); line-height: 1.35; }
     .actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-top: 5px; }
     .actions button { min-height: 22px; font-size: 11px; }
-    .suggestions { border-left: 2px solid var(--vscode-focusBorder, #3794ff); padding-left: 6px; background: color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 8%, transparent); }
+    body[data-model-busy="true"] button[data-action="suggestAll"],
+    body[data-model-busy="true"] button[data-action="suggest"],
+    body[data-model-busy="true"] button[data-action="regenerateSuggestion"],
+    body[data-model-busy="true"] button[data-action="regenerateAll"] {
+      opacity: .48;
+      cursor: progress;
+      pointer-events: none;
+    }
+    .suggestions { border-left: 2px solid var(--verlato-purple); padding-left: 6px; background: color-mix(in srgb, var(--verlato-purple) 8%, transparent); }
     .suggestion { padding: 6px 0; border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.18)); }
     .release-card {
       margin: 5px 0;
@@ -1629,10 +2470,15 @@ function styles(): string {
     }
     .release-row {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) max-content;
-      gap: 6px;
+      gap: 3px;
       padding: 3px 0;
       border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.12));
+      min-width: 0;
+    }
+    .release-row-main {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) max-content;
+      gap: 6px;
       min-width: 0;
     }
     .release-row span {
@@ -1647,6 +2493,35 @@ function styles(): string {
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .changeset-commits {
+      margin: 3px 0 0;
+      padding: 3px 5px;
+      border-left: 2px solid color-mix(in srgb, var(--verlato-blue) 70%, transparent);
+      background: color-mix(in srgb, var(--vscode-input-background, #1f1f1f) 72%, transparent);
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+    }
+    .changeset-commits summary {
+      padding: 0;
+      font-size: 10px;
+      text-transform: none;
+    }
+    .changeset-commits ol {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));
+      gap: 2px 8px;
+      margin: 4px 0 0;
+      padding-left: 16px;
+    }
+    .changeset-commits li { min-width: 0; }
+    .changeset-commits li span {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--vscode-descriptionForeground);
+    }
+    .changeset-commits code { font-size: 10px; color: var(--vscode-editor-foreground); }
     .release-commit .source-main {
       display: grid;
       grid-template-columns: minmax(46px, 64px) minmax(0, 1fr);
@@ -1676,12 +2551,16 @@ function styles(): string {
       border-left-color: color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 72%, var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.24)));
     }
     .sub-panel-title {
+      display: flex;
+      align-items: center;
+      gap: 5px;
       margin-bottom: 3px;
       color: var(--vscode-descriptionForeground);
       text-transform: uppercase;
       font-weight: 700;
       font-size: 10px;
     }
+    .sub-panel-title small { margin-left: auto; }
     .request code { display: block; color: var(--vscode-descriptionForeground); white-space: pre-wrap; word-break: break-word; font-size: 10px; }
     .activity {
       list-style: none;
@@ -1700,7 +2579,8 @@ function styles(): string {
       border-left: 2px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.24));
       background: color-mix(in srgb, var(--vscode-input-background, #1f1f1f) 88%, var(--vscode-focusBorder, #3794ff) 12%);
     }
-    .activity li.model { border-left-color: var(--vscode-focusBorder); }
+    .activity li.model { border-left-color: var(--verlato-purple); }
+    .activity li.process { border-left-color: var(--verlato-blue); }
     .activity time { color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; }
     .activity span { min-width: 0; overflow-wrap: anywhere; }
     .payload { margin-top: 3px; }
@@ -1738,6 +2618,7 @@ function styles(): string {
       background: var(--vscode-input-background);
       border-left: 2px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.24));
     }
+    .compare div:nth-child(2) { border-left-color: var(--verlato-purple); }
     .compare strong { color: var(--vscode-descriptionForeground); font-size: 10px; text-transform: uppercase; }
     .compare span { line-height: 1.35; overflow-wrap: anywhere; }
     .evidence, .rejected, .reasoning { margin-top: 4px; }
@@ -1805,6 +2686,42 @@ function styles(): string {
       background: var(--vscode-input-background);
       border: 1px solid var(--vscode-input-border, transparent);
       border-radius: 4px;
+    }
+    .base-tree-picker {
+      margin-top: 0;
+      margin-bottom: 5px;
+    }
+    .base-tree-menu {
+      max-height: 300px;
+      padding: 2px;
+    }
+    #base-tree {
+      display: block;
+      min-height: 28px;
+    }
+    .base-tree-row {
+      display: inline-grid;
+      grid-template-columns: 16px minmax(0, 1fr);
+      gap: 5px;
+      align-items: center;
+      min-width: 0;
+      max-width: 100%;
+      cursor: pointer;
+    }
+    .base-tree-row input {
+      width: 13px;
+      height: 13px;
+      margin: 0;
+    }
+    .base-tree-row span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .base-tree-item.duplicated-ref .base-tree-row span {
+      color: var(--vscode-charts-yellow, #cca700);
+      font-weight: 700;
     }
     .source-table-head,
     .source-row {
@@ -1943,7 +2860,36 @@ function styles(): string {
     }
     .selection-list span.auto-selected-chip {
       color: var(--vscode-editor-background);
-      background: color-mix(in srgb, var(--vscode-charts-green, #89d185) 78%, var(--vscode-focusBorder, #3794ff));
+      background: color-mix(in srgb, var(--verlato-green) 78%, var(--verlato-blue));
+    }
+    .empty-state {
+      display: grid;
+      grid-template-columns: 22px minmax(0, 1fr);
+      gap: 2px 7px;
+      align-items: center;
+      padding: 7px 6px;
+      border: 1px solid var(--verlato-border);
+      border-left: 2px solid color-mix(in srgb, var(--verlato-green) 65%, transparent);
+      background: color-mix(in srgb, var(--vscode-input-background, var(--verlato-panel)) 76%, transparent);
+    }
+    .empty-state .verlato-icon {
+      grid-row: 1 / span 2;
+      width: 18px;
+      height: 18px;
+    }
+    .empty-state strong {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--vscode-foreground, var(--verlato-text));
+      font-size: 12px;
+    }
+    .empty-state span {
+      min-width: 0;
+      color: var(--vscode-descriptionForeground, var(--verlato-neutral));
+      font-size: 11px;
+      line-height: 1.35;
     }
   `;
 }

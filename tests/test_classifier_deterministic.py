@@ -1,6 +1,6 @@
-from releasepilot.core.classifier import Classifier
-from releasepilot.core.models import ChangedFile, ChangeGroup, Commit, PullRequest
-from releasepilot.providers.base import ProviderRequest, ProviderResponse, ReleasePilotProvider
+from verlato.core.classifier import Classifier
+from verlato.core.models import ChangedFile, ChangeGroup, Commit, PullRequest
+from verlato.providers.base import ProviderRequest, ProviderResponse, VerlatoProvider
 
 
 def test_classifier_prefers_label_based_area():
@@ -301,7 +301,7 @@ def test_classifier_rejects_low_value_provider_summary():
     assert "provider-summary" not in " ".join(item.evidence.commit_signals)
 
 
-class _CapturingProvider(ReleasePilotProvider):
+class _CapturingProvider(VerlatoProvider):
     def __init__(self, summary: str) -> None:
         self.summary = summary
         self.summary_request: ProviderRequest | None = None

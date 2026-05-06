@@ -1,6 +1,6 @@
-# ReleasePilot VS Code Extension
+# Verlato VS Code Extension
 
-This extension is the first UI scaffold for ReleasePilot.
+Diff-first release notes. Understands your code changes. Writes your releases.
 
 ## Planned workflow
 
@@ -10,7 +10,7 @@ This extension is the first UI scaffold for ReleasePilot.
 
 ## Current scaffold
 
-- Activity Bar view for ReleasePilot release control
+- Activity Bar view for Verlato release control
 - Webview interface for draft sections, repository activity, and release actions
 - Repository activity view for branches, tags, recent commits, and release associations
 - CLI-backed client abstraction
@@ -53,21 +53,21 @@ npm run build
    code .
    ```
 
-5. Open the Run and Debug view, select `ReleasePilot Extension`, and start debugging.
-6. In the Extension Development Host window, open the `ReleasePilot` activity bar view and run `ReleasePilot: Scan Repository`.
+5. Open the Run and Debug view, select `Verlato Extension`, and start debugging.
+6. In the Extension Development Host window, open the `Verlato` activity bar view and run `Verlato: Scan Repository`.
 
-The default provider is local Ollama with `gemma4:latest`. Change it from `ReleasePilot: Change AI Model` or with these workspace settings:
+The default provider is local Ollama with `gemma4:latest`. Change it from `Verlato: Change AI Model` or with these workspace settings:
 
 ```json
-"releasepilot.modelProvider": "ollama",
-"releasepilot.ollamaModel": "gemma4:latest",
-"releasepilot.ollamaEndpoint": "http://127.0.0.1:11434/api/chat",
-"releasepilot.maxModelItems": 25
+"verlato.modelProvider": "ollama",
+"verlato.ollamaModel": "gemma4:latest",
+"verlato.ollamaEndpoint": "http://127.0.0.1:11434/api/chat",
+"verlato.maxModelItems": 25
 ```
 
-`releasepilot.maxModelItems` prevents a large comparison range from sending one LLM request per grouped change. Set it to `-1` only when you intentionally want no fanout guard.
+`verlato.maxModelItems` prevents a large comparison range from sending one LLM request per grouped change. Set it to `-1` only when you intentionally want no fanout guard.
 
-If the launch config does not appear, open `.vscode/launch.json` from the repo root and start the `ReleasePilot Extension` configuration from the editor's debug controls.
+If the launch config does not appear, open `.vscode/launch.json` from the repo root and start the `Verlato Extension` configuration from the editor's debug controls.
 
 ### Option 2: Install a local VSIX
 
@@ -97,31 +97,31 @@ Use this path when you want to test the extension as an installed extension inst
 
    ```bash
    cd ..
-   & "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd" --install-extension .\vscode-extension\releasepilot-vscode-0.0.1.vsix --force
+   & "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd" --install-extension .\vscode-extension\verlato-vscode-0.0.1.vsix --force
    ```
 
-5. Reload VS Code, open a repository, then run `ReleasePilot: Scan Repository`.
+5. Reload VS Code, open a repository, then run `Verlato: Scan Repository`.
 
-The extension looks for the ReleasePilot CLI in this order:
+The extension looks for the Verlato CLI in this order:
 
-1. The `releasepilot.cliPath` VS Code setting, if you set it.
-2. A workspace-local `.venv\Scripts\releasepilot.exe` on Windows, or `.venv/bin/releasepilot` on macOS/Linux.
-3. The installed extension's `.venv`, or during extension development, the checked-out ReleasePilot repo beside `vscode-extension/`.
-4. `releasepilot` on VS Code's inherited `PATH`.
+1. The `verlato.cliPath` VS Code setting, if you set it.
+2. A workspace-local `.venv\Scripts\verlato.exe` on Windows, or `.venv/bin/verlato` on macOS/Linux.
+3. The installed extension's `.venv`, or during extension development, the checked-out Verlato repo beside `vscode-extension/`.
+4. `verlato` on VS Code's inherited `PATH`.
 
-On Windows, the repo-level `scripts\install_vscode_extension.ps1` script installs the backend into the ReleasePilot checkout's `.venv` and writes the matching `releasepilot.cliPath` VS Code user setting. That setting is needed when you open the extension from another repository that does not have ReleasePilot installed in its own `.venv`.
+On Windows, the repo-level `scripts\install_vscode_extension.ps1` script installs the backend into the Verlato checkout's `.venv` and writes the matching `verlato.cliPath` VS Code user setting. That setting is needed when you open the extension from another repository that does not have Verlato installed in its own `.venv`.
 
-If scanning fails with `spawn releasepilot ENOENT`, install the backend into the
+If scanning fails with `spawn verlato ENOENT`, install the backend into the
 workspace virtual environment:
 
 ```bash
 .\.venv\Scripts\python.exe -m pip install -e .
 ```
 
-Or set `releasepilot.cliPath` to the full executable path, for example:
+Or set `verlato.cliPath` to the full executable path, for example:
 
 ```json
-"releasepilot.cliPath": "C:\\Users\\nickn\\OneDrive\\Documents\\GitHub\\release-pilot\\.venv\\Scripts\\releasepilot.exe"
+"verlato.cliPath": "C:\\Users\\nickn\\OneDrive\\Documents\\GitHub\\verlato\\.venv\\Scripts\\verlato.exe"
 ```
 
 On Windows, prefer the `code.cmd` command above if `code --list-extensions`
@@ -131,17 +131,17 @@ does not print anything. That means PowerShell is resolving `code` to
 To verify the extension is installed:
 
 ```bash
-& "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd" --list-extensions --show-versions | Select-String releasepilot
+& "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd" --list-extensions --show-versions | Select-String verlato
 ```
 
 To test a freshly packaged build, uninstall the existing local copy first:
 
 ```bash
-& "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd" --uninstall-extension releasepilot.releasepilot-vscode
+& "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd" --uninstall-extension verlato.verlato-vscode
 ```
 
 For agent-side MCP testing in the same workspace:
 
 - Install the optional MCP dependency:
   `python -m pip install -e .[mcp]`
-- Keep `.vscode/mcp.json` enabled so VS Code/Copilot can start the FastMCP server from `scripts/releasepilot_mcp_server.py:mcp`.
+- Keep `.vscode/mcp.json` enabled so VS Code/Copilot can start the FastMCP server from `scripts/verlato_mcp_server.py:mcp`.

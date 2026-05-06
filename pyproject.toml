@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "releasepilot"
+name = "verlato"
 version = "0.1.0"
-description = "PR-first changelog intelligence with conventional + diff evidence"
+description = "Diff-first release notes with conventional commit and intent inference"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
@@ -21,7 +21,7 @@ mcp = [
 ]
 
 [project.scripts]
-releasepilot = "releasepilot.cli.main:main"
+verlato = "verlato.cli.main:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

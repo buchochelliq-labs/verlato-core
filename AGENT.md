@@ -1,8 +1,8 @@
-# ReleasePilot Agent Guide
+# Verlato Agent Guide
 
 ## Purpose
 
-ReleasePilot turns git history and pull-request evidence into draftable release notes.
+Verlato turns git history and pull-request evidence into draftable release notes.
 The project exists to help teams scan a range, review grouped changes, generate notes,
 and safely apply those notes back into repo-managed files such as `CHANGELOG.md` and
 GitHub release-note drafts.

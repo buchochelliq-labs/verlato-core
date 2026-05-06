@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 
-import { ReleasePilotClient } from "../client/releasePilotClient";
+import { VerlatoClient } from "../client/verlatoClient";
 import {
   CommandRequestSnapshot,
   DraftDocument,
@@ -24,10 +24,11 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   private busy = false;
   private statusMessage: string | undefined;
   private errorMessage: string | undefined;
+  private pendingRender: NodeJS.Timeout | undefined;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly client: ReleasePilotClient,
+    private readonly client: VerlatoClient,
     private readonly previewPanel: PreviewPanel,
     private readonly onDidRefresh?: (
       document?: DraftDocument,
@@ -39,7 +40,13 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     this.modelSettings = client.getModelSettings();
     this.requests = client.getCommandRequests();
     this.client.onDidChangeRequests((requests) => {
+      const hadRunning = this.requests.some((request) => request.status === "running");
+      const hasRunning = requests.some((request) => request.status === "running");
       this.requests = requests;
+      if (hadRunning && hasRunning) {
+        this.scheduleRender();
+        return;
+      }
       this.render();
     });
   }
@@ -147,14 +154,17 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     if (message.type === "refresh") {
       await this.refreshRepository(true);
     }
+    if (message.type === "clearWorkingState") {
+      await this.clearWorkingState();
+    }
     if (message.type === "openSources") {
-      await vscode.commands.executeCommand("releasepilot.sources.focus");
+      await vscode.commands.executeCommand("verlato.sources.focus");
     }
     if (message.type === "openReleases") {
-      await vscode.commands.executeCommand("releasepilot.releases.focus");
+      await vscode.commands.executeCommand("verlato.releases.focus");
     }
     if (message.type === "changeModel") {
-      await vscode.commands.executeCommand("releasepilot.changeModel");
+      await vscode.commands.executeCommand("verlato.changeModel");
     }
     if (message.type === "togglePromptPayloads") {
       await this.togglePromptPayloads();
@@ -196,9 +206,9 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       }
       await handleNotificationAction(
         await showSuccessNotification(
-          `ReleasePilot loaded ${document.item_count} draft item(s).`,
-          showPreview ? "View Activity" : "Open ReleasePilot",
-          showPreview ? "Open ReleasePilot" : "View Activity",
+          `Verlato loaded ${document.item_count} draft item(s).`,
+          showPreview ? "View Activity" : "Open Verlato",
+          showPreview ? "Open Verlato" : "View Activity",
         ),
       );
     });
@@ -215,8 +225,8 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       if (showToast) {
         await handleNotificationAction(
           await showSuccessNotification(
-            `ReleasePilot found ${overview.branches.length} branch(es), ${overview.tags.length} tag(s), and ${overview.unpublishedCount} unpublished item(s).`,
-            "Open ReleasePilot",
+            `Verlato found ${overview.branches.length} branch(es), ${overview.tags.length} tag(s), and ${overview.unpublishedCount} unpublished item(s).`,
+            "Open Verlato",
             "View Activity",
           ),
         );
@@ -247,6 +257,26 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
           },
         },
       );
+    });
+  }
+
+  private async clearWorkingState(): Promise<void> {
+    const confirmed = await vscode.window.showWarningMessage(
+      "Clear unpublished Verlato draft and review state? Published release markers will be preserved.",
+      { modal: true },
+      "Clear Working State",
+    );
+    if (confirmed !== "Clear Working State") {
+      return;
+    }
+    await this.runBusy(async () => {
+      const result = await this.client.clearWorkingState();
+      const document = this.hasSelectedBase() ? await this.client.getDraft(this.range) : undefined;
+      const overview = await this.client.getRepositoryOverview();
+      this.suggestions = undefined;
+      this.statusMessage = `Cleared ${result.removed_working_items} working item(s); preserved ${result.preserved_published_items} published item(s).`;
+      this.refresh(document, overview, this.client.getModelSettings());
+      await handleNotificationAction(await showSuccessNotification(this.statusMessage, "Open Verlato", "View Activity"));
     });
   }
 
@@ -336,7 +366,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   private recordFeedback(event: string, itemId: string, metadata: Record<string, unknown> = {}): void {
     this.client.recordFeedback(event, itemId, metadata).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
-      vscode.window.showWarningMessage(`ReleasePilot feedback was not recorded: ${message}`);
+      vscode.window.showWarningMessage(`Verlato feedback was not recorded: ${message}`);
     });
   }
 
@@ -373,7 +403,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       await vscode.env.clipboard.writeText(promptPreview.prompt);
       const document = await vscode.workspace.openTextDocument({
         content: [
-          "# ReleasePilot Model Prompt",
+          "# Verlato Model Prompt",
           "",
           `Item: ${promptPreview.title}`,
           `Provider Hint: ${promptPreview.provider}`,
@@ -435,8 +465,8 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       await task();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message === "ReleasePilot command cancelled.") {
-        this.statusMessage = "Stopped current ReleasePilot command.";
+      if (message === "Verlato command cancelled.") {
+        this.statusMessage = "Stopped current Verlato command.";
       } else {
         this.errorMessage = message;
         await handleNotificationAction(await showErrorNotification(this.errorMessage, "View Activity"));
@@ -451,7 +481,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     if (!this.busy) {
       return;
     }
-    this.statusMessage = "Stopping current ReleasePilot command...";
+    this.statusMessage = "Stopping current Verlato command...";
     this.client.cancelActiveCommands();
     this.render();
   }
@@ -467,6 +497,10 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   }
 
   private render(): void {
+    if (this.pendingRender) {
+      clearTimeout(this.pendingRender);
+      this.pendingRender = undefined;
+    }
     if (!this.view) {
       return;
     }
@@ -485,6 +519,16 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
         vscode.Uri.joinPath(this.extensionUri, "media", "vendor", "vscode-elements.bundled.js"),
       ).toString(),
     });
+  }
+
+  private scheduleRender(): void {
+    if (this.pendingRender) {
+      return;
+    }
+    this.pendingRender = setTimeout(() => {
+      this.pendingRender = undefined;
+      this.render();
+    }, 250);
   }
 }
 

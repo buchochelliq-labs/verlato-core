@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from releasepilot.cli.main import main
+from verlato.cli.main import main
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -29,8 +29,9 @@ def test_scan_in_temp_repo(monkeypatch, tmp_path: Path):
     _git(repo, "commit", "-m", "feat: add app")
 
     monkeypatch.chdir(repo)
-    monkeypatch.setenv("RELEASEPILOT_PR_ADAPTER", "none")
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(repo / ".releasepilot_state.json"))
+    monkeypatch.setenv("VERLATO_PR_ADAPTER", "none")
+    monkeypatch.setenv("VERLATO_MODEL_PROVIDER", "stub")
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(repo / ".verlato_state.json"))
 
     rc = main(["scan", "--base", "v0.1.0", "--head", "HEAD"])
     assert rc == 0
@@ -55,8 +56,9 @@ def test_scan_from_latest_tag_marker(monkeypatch, tmp_path: Path):
     _git(repo, "commit", "-m", "feat: add app")
 
     monkeypatch.chdir(repo)
-    monkeypatch.setenv("RELEASEPILOT_PR_ADAPTER", "none")
-    monkeypatch.setenv("RELEASEPILOT_STATE_PATH", str(repo / ".releasepilot_state.json"))
+    monkeypatch.setenv("VERLATO_PR_ADAPTER", "none")
+    monkeypatch.setenv("VERLATO_MODEL_PROVIDER", "stub")
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(repo / ".verlato_state.json"))
 
     rc = main(["scan", "--from-latest-tag"])
     assert rc == 0

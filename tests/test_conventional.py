@@ -1,4 +1,4 @@
-from releasepilot.core.conventional import parse_conventional_commit
+from verlato.core.conventional import parse_conventional_commit
 
 
 def test_parse_feat():

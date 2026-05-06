@@ -193,6 +193,10 @@ cython_debug/
 
 # Local Codex memory
 .releasepilot_memory.json
+.verlato_memory.json
+
+# Local installer/cache scratch
+.tmp/
 
 # PyPI configuration file
 .pypirc

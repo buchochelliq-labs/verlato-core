@@ -1,11 +1,11 @@
 {
   "servers": {
-    "releasepilot": {
+    "verlato": {
       "type": "stdio",
       "command": "fastmcp",
       "args": [
         "run",
-        "${workspaceFolder}/scripts/releasepilot_mcp_server.py:mcp"
+        "${workspaceFolder}/scripts/verlato_mcp_server.py:mcp"
       ],
       "env": {
         "PYTHONIOENCODING": "utf-8"

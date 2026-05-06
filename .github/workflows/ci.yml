@@ -19,6 +19,6 @@ jobs:
       - name: Lint
         run: ruff check .
       - name: Type check
-        run: mypy releasepilot
+        run: mypy verlato
       - name: Tests
         run: pytest

@@ -1,5 +1,5 @@
-from releasepilot.core.diff_evidence import DiffEvidenceBuilder
-from releasepilot.core.models import ChangedFile
+from verlato.core.diff_evidence import DiffEvidenceBuilder
+from verlato.core.models import ChangedFile
 
 
 def test_diff_evidence_builder_summarizes_and_flags():

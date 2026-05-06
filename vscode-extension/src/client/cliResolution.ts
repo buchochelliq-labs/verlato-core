@@ -5,15 +5,15 @@ export interface ExecutableResolution {
   searched: string[];
 }
 
-export function resolveReleasePilotExecutable(options: {
+export function resolveVerlatoExecutable(options: {
   configuredPath: string;
   workspacePath: string;
   extensionPath: string;
   existsSync: (candidate: string) => boolean;
   platform?: NodeJS.Platform;
 }): ExecutableResolution {
-  const configuredPath = options.configuredPath || "releasepilot";
-  if (configuredPath !== "releasepilot") {
+  const configuredPath = options.configuredPath || "verlato";
+  if (configuredPath !== "verlato") {
     return { executable: configuredPath, searched: [configuredPath] };
   }
 
@@ -29,6 +29,6 @@ export function resolveReleasePilotExecutable(options: {
 
 export function getVenvExecutable(rootPath: string, platform: NodeJS.Platform = process.platform): string {
   return platform === "win32"
-    ? path.join(rootPath, ".venv", "Scripts", "releasepilot.exe")
-    : path.join(rootPath, ".venv", "bin", "releasepilot");
+    ? path.join(rootPath, ".venv", "Scripts", "verlato.exe")
+    : path.join(rootPath, ".venv", "bin", "verlato");
 }

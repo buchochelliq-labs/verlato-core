@@ -40,7 +40,7 @@ export class ReleaseReleasesViewProvider implements vscode.WebviewViewProvider {
   }
 
   reveal(): void {
-    void vscode.commands.executeCommand("releasepilot.releases.focus");
+    void vscode.commands.executeCommand("verlato.releases.focus");
   }
 
   private async handleMessage(message: ViewMessage): Promise<void> {
@@ -57,7 +57,7 @@ export class ReleaseReleasesViewProvider implements vscode.WebviewViewProvider {
   }
 
   private revealControl(): void {
-    void vscode.commands.executeCommand("releasepilot.control.focus");
+    void vscode.commands.executeCommand("verlato.control.focus");
   }
 
   private render(): void {

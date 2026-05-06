@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 
-from releasepilot.core.classifier import Classifier
-from releasepilot.core.models import ChangedFile, ChangeGroup, Commit, PullRequest
+from verlato.core.classifier import Classifier
+from verlato.core.models import ChangedFile, ChangeGroup, Commit, PullRequest
 
 
 def test_bad_commit_fixture_behaviors():

@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 
 import { registerCommands } from "./commands/registerCommands";
-import { ReleasePilotClient } from "./client/releasePilotClient";
+import { VerlatoClient } from "./client/verlatoClient";
 import { ReleaseSourcesProvider } from "./tree/releaseSourcesProvider";
 import { ReleaseActivityViewProvider } from "./webview/releaseActivityView";
 import { PreviewPanel } from "./webview/previewPanel";
@@ -14,8 +14,8 @@ export function activate(context: vscode.ExtensionContext): void {
     return;
   }
 
-  const output = vscode.window.createOutputChannel("ReleasePilot");
-  const client = new ReleasePilotClient(workspaceFolder, context.extensionPath, output);
+  const output = vscode.window.createOutputChannel("Verlato");
+  const client = new VerlatoClient(workspaceFolder, context.extensionPath, output);
   const previewPanel = new PreviewPanel();
   const releaseSourcesProvider = new ReleaseSourcesProvider();
   let releaseReleasesView: ReleaseReleasesViewProvider;
@@ -36,23 +36,23 @@ export function activate(context: vscode.ExtensionContext): void {
     getDocument: () => releaseControlView.getDocument(),
   };
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-  statusBarItem.command = "releasepilot.showServiceInfo";
-  statusBarItem.text = `ReleasePilot: ${client.getModelSettings().provider}`;
-  statusBarItem.tooltip = "ReleasePilot model and service information";
+  statusBarItem.command = "verlato.showServiceInfo";
+  statusBarItem.text = `Verlato: ${client.getModelSettings().provider}`;
+  statusBarItem.tooltip = "Verlato model and service information";
   statusBarItem.show();
 
   context.subscriptions.push(
     output,
     client,
     statusBarItem,
-    vscode.window.registerWebviewViewProvider("releasepilot.control", releaseControlView),
-    vscode.window.registerWebviewViewProvider("releasepilot.releases", releaseReleasesView),
-    vscode.window.registerWebviewViewProvider("releasepilot.activity", releaseActivityView),
-    vscode.window.createTreeView("releasepilot.sources", { treeDataProvider: releaseSourcesProvider }),
-    vscode.commands.registerCommand("releasepilot.openControl", () => {
-      void vscode.commands.executeCommand("releasepilot.control.focus");
+    vscode.window.registerWebviewViewProvider("verlato.control", releaseControlView),
+    vscode.window.registerWebviewViewProvider("verlato.releases", releaseReleasesView),
+    vscode.window.registerWebviewViewProvider("verlato.activity", releaseActivityView),
+    vscode.window.createTreeView("verlato.sources", { treeDataProvider: releaseSourcesProvider }),
+    vscode.commands.registerCommand("verlato.openControl", () => {
+      void vscode.commands.executeCommand("verlato.control.focus");
     }),
-    vscode.commands.registerCommand("releasepilot.openActivity", () => {
+    vscode.commands.registerCommand("verlato.openActivity", () => {
       releaseActivityView.reveal();
     }),
   );

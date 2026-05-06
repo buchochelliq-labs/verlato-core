@@ -78,7 +78,7 @@ class SourceGroupNode extends vscode.TreeItem {
   constructor(readonly labelText: string, readonly kind: string, readonly count: number) {
     super(labelText, vscode.TreeItemCollapsibleState.Expanded);
     this.description = String(count);
-    this.contextValue = `releasepilot.source.${kind}`;
+    this.contextValue = `verlato.source.${kind}`;
     this.iconPath = new vscode.ThemeIcon(groupIcon(kind));
   }
 }
@@ -88,7 +88,7 @@ class RefNode extends vscode.TreeItem {
     super(ref.name, vscode.TreeItemCollapsibleState.None);
     this.description = ref.detail;
     this.tooltip = `${kind}: ${ref.name}${ref.detail ? `\n${ref.detail}` : ""}`;
-    this.contextValue = `releasepilot.source.${kind}`;
+    this.contextValue = `verlato.source.${kind}`;
     this.iconPath = new vscode.ThemeIcon(kind === "tag" ? "tag" : "git-branch");
   }
 }
@@ -104,10 +104,10 @@ class CommitNode extends vscode.TreeItem {
       commit.prNumber ? `PR #${commit.prNumber}` : undefined,
       commit.release ? `Release: ${commit.release}` : "Unreleased",
     ].filter(Boolean).join("\n");
-    this.contextValue = `releasepilot.source.${kind}`;
+    this.contextValue = `verlato.source.${kind}`;
     this.iconPath = new vscode.ThemeIcon(kind === "pull-request" ? "git-pull-request" : "git-commit");
     this.command = {
-      command: "releasepilot.openCommit",
+      command: "verlato.openCommit",
       title: "Open Commit",
       arguments: [commit.sha],
     };
@@ -118,7 +118,7 @@ class ReleaseNode extends vscode.TreeItem {
   constructor(readonly version: string, itemCount: number, commitCount: number) {
     super(version, commitCount > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
     this.description = `${itemCount} item(s)`;
-    this.contextValue = "releasepilot.source.release";
+    this.contextValue = "verlato.source.release";
     this.iconPath = new vscode.ThemeIcon(version === "Unpublished" ? "circle-slash" : "package");
     this.tooltip = [
       `${version}: ${itemCount} release-note item(s)`,
@@ -130,7 +130,7 @@ class ReleaseNode extends vscode.TreeItem {
 class EmptyNode extends vscode.TreeItem {
   constructor(label: string) {
     super(label, vscode.TreeItemCollapsibleState.None);
-    this.contextValue = "releasepilot.source.empty";
+    this.contextValue = "verlato.source.empty";
     this.iconPath = new vscode.ThemeIcon("info");
   }
 }

@@ -2,21 +2,21 @@ import io
 import json
 from urllib import error
 
-from releasepilot.providers.base import ProviderRequest
-from releasepilot.providers.github_copilot import (
+from verlato.providers.base import ProviderRequest
+from verlato.providers.github_copilot import (
     DEFAULT_GITHUB_MODELS_ENDPOINT,
     DEFAULT_GITHUB_MODELS_MODEL,
     GITHUB_MODELS_API_VERSION,
     GitHubCopilotProvider,
 )
-from releasepilot.providers.model_logging import ModelLogRecord, ModelLogSink
+from verlato.providers.model_logging import ModelLogRecord, ModelLogSink
 
 
 def test_github_copilot_provider_uses_github_models_defaults(monkeypatch):
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
-    monkeypatch.delenv("RELEASEPILOT_GITHUB_MODEL", raising=False)
-    monkeypatch.delenv("RELEASEPILOT_GITHUB_MODELS_ENDPOINT", raising=False)
+    monkeypatch.delenv("VERLATO_GITHUB_MODEL", raising=False)
+    monkeypatch.delenv("VERLATO_GITHUB_MODELS_ENDPOINT", raising=False)
     monkeypatch.setattr(GitHubCopilotProvider, "_load_gh_cli_token", staticmethod(lambda: None))
 
     provider = GitHubCopilotProvider(token=None)
@@ -85,7 +85,7 @@ def test_github_copilot_provider_sends_github_models_headers(monkeypatch):
         captured["body"] = json.loads(req.data.decode("utf-8"))
         return FakeResponse()
 
-    monkeypatch.setattr("releasepilot.providers.github_copilot.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("verlato.providers.github_copilot.request.urlopen", fake_urlopen)
 
     provider = GitHubCopilotProvider(token="token", model="gpt-4o-mini", timeout_seconds=3.0)
     response = provider.summarize(ProviderRequest(task="summarize", prompt="Summarize this change"))
@@ -116,7 +116,7 @@ def test_github_copilot_provider_reports_auth_http_errors(monkeypatch):
             io.BytesIO(json.dumps({"message": "Resource not accessible by personal access token"}).encode("utf-8")),
         )
 
-    monkeypatch.setattr("releasepilot.providers.github_copilot.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("verlato.providers.github_copilot.request.urlopen", fake_urlopen)
 
     provider = GitHubCopilotProvider(token="token")
     response = provider.summarize(ProviderRequest(task="summarize", prompt="Summarize this change"))
@@ -130,7 +130,7 @@ def test_github_copilot_provider_reports_rate_limit_http_errors(monkeypatch):
     def fake_urlopen(req, timeout):
         raise error.HTTPError(req.full_url, 429, "Too Many Requests", {}, io.BytesIO(b""))
 
-    monkeypatch.setattr("releasepilot.providers.github_copilot.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("verlato.providers.github_copilot.request.urlopen", fake_urlopen)
 
     provider = GitHubCopilotProvider(token="token")
     response = provider.summarize(ProviderRequest(task="summarize", prompt="Summarize this change"))
@@ -159,7 +159,7 @@ def test_github_copilot_provider_accepts_pluggable_model_log_sink(monkeypatch):
                 b'"usage":{"prompt_tokens":11,"completion_tokens":4,"total_tokens":15}}'
             )
 
-    monkeypatch.setattr("releasepilot.providers.github_copilot.request.urlopen", lambda req, timeout: FakeResponse())
+    monkeypatch.setattr("verlato.providers.github_copilot.request.urlopen", lambda req, timeout: FakeResponse())
 
     provider = GitHubCopilotProvider(token="token", model="gpt-4o-mini", log_sink=CapturingSink())
     response = provider.summarize(ProviderRequest(task="summarize", prompt="Summarize this change"))
@@ -172,7 +172,7 @@ def test_github_copilot_provider_accepts_pluggable_model_log_sink(monkeypatch):
     }
     assert records
     record = records[0].to_otel_dict()
-    assert record["EventName"] == "releasepilot.model.github_copilot"
+    assert record["EventName"] == "verlato.model.github_copilot"
     assert record["Attributes"] == {"provider": "github-copilot", "model": "openai/gpt-4o-mini"}
 
 
@@ -190,7 +190,7 @@ def test_github_copilot_provider_preserves_model_reasoning(monkeypatch):
                 b'"reasoning_content":"Focused on the changed API behavior."}}]}'
             )
 
-    monkeypatch.setattr("releasepilot.providers.github_copilot.request.urlopen", lambda req, timeout: FakeResponse())
+    monkeypatch.setattr("verlato.providers.github_copilot.request.urlopen", lambda req, timeout: FakeResponse())
 
     provider = GitHubCopilotProvider(token="token", model="gpt-4o-mini")
     response = provider.summarize(ProviderRequest(task="summarize", prompt="Summarize this change"))
