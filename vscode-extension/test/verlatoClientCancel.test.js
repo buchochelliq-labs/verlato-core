@@ -183,6 +183,80 @@ test("preview suggestions passes configured parallelism to the CLI and environme
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_PARALLELISM, "4");
 });
 
+test("preview suggestions streams partial items before final stdout resolves", async () => {
+  const spawnCalls = [];
+  const child = makeChild(556);
+  const client = makeClient((command, args, options) => {
+    spawnCalls.push({ command, args, options });
+    return child;
+  });
+  const firstItem = {
+    item_id: "ci_a",
+    title: "First change",
+    current_summary: "Old first",
+    provider: "mock-local",
+    prompt_budget: { profile: "suggestion-conservative", prompt_chars: 1100 },
+    suggestions: ["First streamed suggestion"],
+  };
+  const secondItem = {
+    item_id: "ci_b",
+    title: "Second change",
+    current_summary: "Old second",
+    provider: "mock-local",
+    prompt_budget: { profile: "suggestion-conservative", prompt_chars: 900 },
+    suggestions: ["Second streamed suggestion"],
+  };
+  const partials = [];
+
+  const pending = client.previewDraftSuggestions({ base: "v1.0.0", head: "HEAD" }, undefined, (preview) => {
+    partials.push(preview);
+  });
+  await waitForSpawn(spawnCalls);
+
+  child.stderr.emit("data", `[verlato:suggestion] json ${JSON.stringify({
+    event: "suggestion_preview_started",
+    total: 2,
+    preview: {
+      base_ref: "v1.0.0",
+      head_ref: "HEAD",
+      provider: "mock",
+      count: 1,
+      performance: { parallelism: 2 },
+      items: [],
+    },
+  })}\n`);
+  child.stderr.emit("data", `[verlato:suggestion] json ${JSON.stringify({
+    event: "suggestion_item_result",
+    order: 1,
+    item_id: "ci_b",
+    item: secondItem,
+  })}\n`);
+  child.stderr.emit("data", `[verlato:suggestion] json ${JSON.stringify({
+    event: "suggestion_item_result",
+    order: 0,
+    item_id: "ci_a",
+    item: firstItem,
+  })}\n`);
+  child.stdout.emit("data", JSON.stringify({
+    base_ref: "v1.0.0",
+    head_ref: "HEAD",
+    provider: "mock",
+    count: 1,
+    items: [firstItem, secondItem],
+  }));
+  child.emit("close", 0);
+  const final = await pending;
+
+  assert.deepEqual(partials.map((preview) => preview.items.map((item) => item.item_id)), [
+    [],
+    ["ci_b"],
+    ["ci_a", "ci_b"],
+  ]);
+  assert.deepEqual(final.items.map((item) => item.item_id), ["ci_a", "ci_b"]);
+  assert.equal(partials[2].items[0].prompt_budget.prompt_chars, 1100);
+  assert.equal(client.getCommandRequests()[0].activity.some((entry) => entry.category === "suggestion"), true);
+});
+
 test("optional enrichment failures complete without failed request status", async () => {
   const child = makeChild(444);
   const client = makeClient(() => child);

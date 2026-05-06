@@ -73,6 +73,15 @@ def _progress_events(stderr: str) -> list[dict]:
     ]
 
 
+def _suggestion_events(stderr: str) -> list[dict]:
+    prefix = "[verlato:suggestion] json "
+    return [
+        json.loads(line.removeprefix(prefix))
+        for line in stderr.splitlines()
+        if line.startswith(prefix)
+    ]
+
+
 def test_load_config_defaults_without_file(monkeypatch, tmp_path: Path):
     monkeypatch.chdir(tmp_path)
 
@@ -826,9 +835,50 @@ def test_draft_suggest_preview_defaults_to_one_suggestion(monkeypatch, tmp_path:
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"])
 
     assert rc == 0
-    preview = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    preview = json.loads(captured.out)
     assert preview["count"] == 1
     assert preview["items"][0]["suggestions"] == ["Clarifies login guidance for users"]
+    assert "[verlato:suggestion]" not in captured.err
+
+
+def test_draft_suggest_streams_suggestion_events_when_traced(monkeypatch, tmp_path: Path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setenv("VERLATO_TRACE_PROGRESS", "1")
+    group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
+    target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
+
+    class VariantProvider:
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(
+                content="1. Clarifies login guidance for reviewers",
+                confidence=0.9,
+                model="mock-local",
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="mock-local")
+
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
+
+    rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"])
+    captured = capsys.readouterr()
+    preview = json.loads(captured.out)
+    events = _suggestion_events(captured.err)
+    item_events = [event for event in events if event["event"] == "suggestion_item_result"]
+
+    assert rc == 0
+    assert "[verlato:suggestion]" not in captured.out
+    assert events[0]["event"] == "suggestion_preview_started"
+    assert events[0]["preview"]["base_ref"] == "v1.0.0"
+    assert events[0]["preview"]["head_ref"] == "HEAD"
+    assert events[0]["preview"]["count"] == 1
+    assert events[0]["preview"]["items"] == []
+    assert item_events[0]["order"] == 0
+    assert item_events[0]["item_id"] == target_item.id
+    assert item_events[0]["item"] == preview["items"][0]
 
 
 def test_draft_suggest_preview_rejects_too_similar_candidates(monkeypatch, tmp_path: Path, capsys):
@@ -1381,6 +1431,7 @@ def test_draft_suggest_parallelism_preserves_target_order(monkeypatch, tmp_path:
     ]
     expected_ids = [Classifier().classify(group, "v1.0.0", "HEAD")[0].id for group in groups]
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERLATO_TRACE_PROGRESS", "1")
     monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: StaggeredProvider())
 
@@ -1396,10 +1447,60 @@ def test_draft_suggest_parallelism_preserves_target_order(monkeypatch, tmp_path:
         "--model-provider",
         "mock",
     ])
-    preview = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    preview = json.loads(captured.out)
+    result_events = [
+        event for event in _suggestion_events(captured.err)
+        if event["event"] == "suggestion_item_result"
+    ]
 
     assert rc == 0
     assert [item["item_id"] for item in preview["items"]] == expected_ids
+    assert [event["item_id"] for event in result_events] == [expected_ids[1], expected_ids[0]]
+    assert [event["item_id"] for event in sorted(result_events, key=lambda event: event["order"])] == expected_ids
+
+
+def test_draft_suggest_failure_event_keeps_prior_success_event(monkeypatch, tmp_path: Path, capsys):
+    class PartiallyFailingProvider:
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            if request.evidence["title"] == "Second change":
+                return ProviderResponse(content="", confidence=0.0, model="mock-local")
+            return ProviderResponse(
+                content="Clarifies release-note behavior for reviewers without delaying workflow.",
+                confidence=0.9,
+                model="mock-local",
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="mock-local")
+
+    groups = [
+        _mk_group(number=1, title="First change", commit_sha="a1", commit_message="first"),
+        _mk_group(number=2, title="Second change", commit_sha="b2", commit_message="second"),
+    ]
+    expected_ids = [Classifier().classify(group, "v1.0.0", "HEAD")[0].id for group in groups]
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERLATO_TRACE_PROGRESS", "1")
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: PartiallyFailingProvider())
+
+    try:
+        main(["draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preview", "--model-provider", "mock"])
+        raise AssertionError("draft suggest should fail when a target produces no suggestions")
+    except SystemExit as exc:
+        assert expected_ids[1] in str(exc)
+
+    captured = capsys.readouterr()
+    events = _suggestion_events(captured.err)
+    result_events = [event for event in events if event["event"] == "suggestion_item_result"]
+    failed_events = [event for event in events if event["event"] == "suggestion_item_failed"]
+
+    assert captured.out == ""
+    assert result_events[0]["item_id"] == expected_ids[0]
+    assert result_events[0]["item"]["item_id"] == expected_ids[0]
+    assert failed_events[0]["order"] == 1
+    assert failed_events[0]["item_id"] == expected_ids[1]
+    assert expected_ids[1] in failed_events[0]["message"]
 
 
 def test_draft_suggest_progress_reports_item_and_batch_counts(monkeypatch, tmp_path: Path, capsys):
@@ -1442,9 +1543,15 @@ def test_draft_suggest_progress_reports_item_and_batch_counts(monkeypatch, tmp_p
     assert preview["performance"]["parallelism"] == 1
     assert preview["performance"]["target_selection_ms"] >= 0
     assert preview["performance"]["preparation_ms"] >= 0
+    assert preview["performance"]["prompt_chars"] >= 0
     assert preview["performance"]["model_ms"] >= 0
     assert preview["performance"]["parse_ms"] >= 0
     assert preview["performance"]["total_ms"] >= 0
+    assert preview["performance"]["prompt_chars"] == sum(
+        item["prompt_budget"]["prompt_chars"] for item in preview["items"]
+    )
+    assert preview["items"][0]["prompt_budget"]["profile"] == "suggestion-conservative"
+    assert preview["items"][0]["prompt_budget"]["prompt_chars"] > 0
     assert preview["items"][0]["timings"]["evidence_ms"] >= 0
     assert preview["items"][0]["timings"]["prompt_ms"] >= 0
     assert preview["items"][0]["timings"]["model_ms"] >= 0
@@ -1479,6 +1586,7 @@ def test_draft_suggest_all_visible_zero_fanout_returns_no_suggestions(monkeypatc
     ]
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("VERLATO_MODEL_MAX_ITEMS", "0")
+    monkeypatch.setenv("VERLATO_TRACE_PROGRESS", "1")
     monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
     monkeypatch.setattr(
         "verlato.cli.main.build_provider",
@@ -1486,7 +1594,9 @@ def test_draft_suggest_all_visible_zero_fanout_returns_no_suggestions(monkeypatc
     )
 
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preview", "--model-provider", "mock"])
-    preview = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    preview = json.loads(captured.out)
+    suggestion_events = _suggestion_events(captured.err)
 
     assert rc == 0
     assert preview["visible_item_count"] == 1
@@ -1494,8 +1604,11 @@ def test_draft_suggest_all_visible_zero_fanout_returns_no_suggestions(monkeypatc
     assert preview["batch_size"] == 0
     assert preview["batch_count"] == 0
     assert preview["performance"]["parallelism"] == 1
+    assert preview["performance"]["prompt_chars"] == 0
     assert preview["performance"]["model_ms"] == 0
     assert preview["items"] == []
+    assert suggestion_events[0]["event"] == "suggestion_preview_started"
+    assert suggestion_events[0]["preview"]["items"] == []
 
 
 def test_draft_prompt_outputs_prompt_without_calling_provider(monkeypatch, tmp_path: Path, capsys):
@@ -1516,6 +1629,7 @@ def test_draft_prompt_outputs_prompt_without_calling_provider(monkeypatch, tmp_p
     assert prompt_preview["item_id"] == target_item.id
     assert prompt_preview["provider"] == "ollama"
     assert "Lead with what changed and why it matters" in prompt_preview["prompt"]
+    assert prompt_preview["prompt_budget"]["profile"] == "suggestion-conservative"
     assert prompt_preview["prompt_budget"]["prompt_chars"] == len(prompt_preview["prompt"])
     assert prompt_preview["prompt_budget"]["files_included"] == 1
 

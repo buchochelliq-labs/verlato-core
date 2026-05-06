@@ -731,14 +731,24 @@ test("renders Ollama timing diagnostics and queue warning for suggestions", () =
           current_summary: "A concise release note",
           provider: "ollama:gemma4:latest",
           timings: {
-            model_ms: 2200,
+            model_ms: 3000,
             queue_ms: 600,
             load_ms: 120,
-            prompt_eval_ms: 300,
+            prompt_eval_ms: 1400,
             eval_ms: 900,
             prompt_tokens: 30,
             eval_tokens: 15,
             tokens_per_second: 16.7,
+          },
+          prompt_budget: {
+            profile: "suggestion-conservative",
+            prompt_chars: 1720,
+            files_included: 8,
+            files_total: 14,
+            files_skipped: 6,
+            hunks_included: 2,
+            hunks_total: 7,
+            hunks_skipped: 5,
           },
           suggestions: ["Make API responses easier to inspect"],
         },
@@ -749,7 +759,7 @@ test("renders Ollama timing diagnostics and queue warning for suggestions", () =
   const html = buildReleaseReleasesHtml(state);
 
   assert.match(html, /Ollama queue time detected with parallelism 2/);
-  assert.match(html, /Ollama bottleneck: generation 900ms \| 16\.7 tok\/s \| 30\/15 tok/);
+  assert.match(html, /Ollama bottleneck: prompt eval 1\.4s \| 16\.7 tok\/s \| 30\/15 tok \| prompt 1\.7k chars \| files 8\/14 \| hunks 2\/7 \| skipped 6 files, 5 hunks/);
 });
 
 test("keeps request inspection out of the release control view", () => {
@@ -902,6 +912,48 @@ test("renders model activity newest first with raw output preserved", () => {
   assert.match(html, /Summarize the changed API behavior/);
   assert.match(html, /Raw output/);
   assert.doesNotMatch(html, /\[verlato:model\] provider=ollama task=suggest model=gemma4<\/span>/);
+});
+
+test("renders structured suggestion activity events", () => {
+  const html = buildReleaseActivityHtml({
+    modelSettings,
+    range,
+    busy: true,
+    requests: [
+      {
+        id: 46,
+        command: "verlato",
+        args: ["draft", "suggest", "--all-visible"],
+        label: "draft suggest",
+        status: "running",
+        startedAt: "2026-05-03T12:00:00.000Z",
+        stdout: "",
+        stderr: [
+          `[verlato:suggestion] json ${JSON.stringify({
+            event: "suggestion_preview_started",
+            total: 2,
+            preview: { base_ref: "v1.0.0", head_ref: "HEAD", provider: "mock", count: 1, items: [] },
+          })}`,
+          `[verlato:suggestion] json ${JSON.stringify({
+            event: "suggestion_item_result",
+            order: 0,
+            item_id: "ci_1",
+            item: {
+              item_id: "ci_1",
+              title: "Improve API",
+              current_summary: "Old summary",
+              provider: "mock-local",
+              suggestions: ["Improves API release note wording"],
+            },
+          })}`,
+        ].join("\n"),
+      },
+    ],
+  });
+
+  assert.match(html, /Suggestion preview started for 2 item\(s\)/);
+  assert.match(html, /Generated suggestion for ci_1/);
+  assert.match(html, /<li class="suggestion">/);
 });
 
 test("renders semantic status badge colors and running spinner hooks", () => {

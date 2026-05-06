@@ -275,6 +275,7 @@ def test_provider_summary_prompt_reports_budget():
     )
 
     assert result.budget["prompt_chars"] == len(result.prompt)
+    assert result.budget["profile"] == "summary"
     assert result.budget["files_included"] == 12
     assert result.budget["files_total"] == 14
     assert result.budget["files_skipped"] == 2
@@ -282,6 +283,76 @@ def test_provider_summary_prompt_reports_budget():
     assert result.budget["commits_total"] == 4
     assert result.budget["commits_skipped"] == 1
     assert result.budget["pr_body_chars_included"] <= 503
+
+
+def test_suggestion_prompt_profile_uses_conservative_budget():
+    files = [
+        ChangedFile(
+            path=f"src/module_{index:02}.py",
+            status="modified",
+            patch=(
+                "@@ -1,2 +1,2 @@\n"
+                f"-old behavior {index}\n"
+                f"+new behavior {index}\n"
+                "@@ -20,2 +20,2 @@\n"
+                f"-old fallback {index}\n"
+                f"+new fallback {index}\n"
+            ),
+        )
+        for index in range(10)
+    ]
+    group = ChangeGroup(
+        pr=PullRequest(number=8, title="Improve modules", body="body " * 200, files=files),
+        commits=[
+            Commit(sha="a", message="update one"),
+            Commit(sha="b", message="update two"),
+            Commit(sha="c", message="update three"),
+            Commit(sha="d", message="update four"),
+        ],
+    )
+    classifier = Classifier()
+    diff = classifier.diff_builder.build(group.pr.files)
+
+    result = classifier._build_summary_prompt_with_budget(
+        title="Improve modules",
+        labels=["backend"],
+        pr_body=group.pr.body,
+        diff=diff,
+        commits=group.commits,
+        suggestion_count=3,
+        kind="changed",
+        audience="external",
+        tone="technical",
+        style_guidance="Use precise product language.",
+        project_vocabulary=["Release Control"],
+        banned_phrases=["nice things"],
+        prompt_profile="suggestion",
+    )
+
+    assert result.budget["prompt_chars"] == len(result.prompt)
+    assert result.budget["profile"] == "suggestion-conservative"
+    assert result.budget["files_included"] == 8
+    assert result.budget["files_total"] == 10
+    assert result.budget["files_skipped"] == 2
+    assert result.budget["commits_included"] == 2
+    assert result.budget["commits_total"] == 4
+    assert result.budget["commits_skipped"] == 2
+    assert result.budget["pr_body_chars_included"] <= 243
+    assert result.budget["hunk_files_included"] == 2
+    assert result.budget["hunk_files_total"] == 10
+    assert result.budget["hunks_included"] == 2
+    assert result.budget["hunks_total"] == 20
+    assert result.budget["hunk_chars_included"] <= 320
+    assert result.budget["hunk_chars_total"] >= result.budget["hunk_chars_included"]
+    assert result.budget["hunk_chars_skipped"] > 0
+    assert "Return exactly 3 distinct complete release-note options" in result.prompt
+    assert "Tone: precise engineering wording" in result.prompt
+    assert "Project style guidance: Use precise product language." in result.prompt
+    assert "Preferred project vocabulary: Release Control" in result.prompt
+    assert "Avoid these phrases exactly: nice things" in result.prompt
+    assert "update one; update two; ... and 2 more" in result.prompt
+    assert "update three" not in result.prompt
+    assert "src/module_08.py" not in result.prompt
 
 
 def test_classifier_rejects_low_value_provider_summary():

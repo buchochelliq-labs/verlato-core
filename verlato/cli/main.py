@@ -50,6 +50,7 @@ class _SuggestionWork:
     evidence: dict[str, object]
     source_evidence: list[dict[str, str]]
     prompt_sha: str
+    prompt_budget: dict[str, object]
     suggestion_count: int
     suggestion_tone: str
     suggestion_style: dict[str, object]
@@ -227,6 +228,14 @@ def _trace_progress(
         event["unit"] = unit
     event.update({key: value for key, value in attributes.items() if value is not None})
     print_stderr_line("[verlato:progress] json " + json.dumps(event, sort_keys=True))
+
+
+def _trace_suggestion_event(event: str, **attributes: object) -> None:
+    if not _trace_progress_enabled():
+        return
+    payload: dict[str, object] = {"event": event}
+    payload.update({key: value for key, value in attributes.items() if value is not None})
+    print_stderr_line("[verlato:suggestion] json " + json.dumps(payload, sort_keys=True))
 
 
 def _group_progress_detail(group: ChangeGroup) -> str:
@@ -866,6 +875,35 @@ def _preview_draft_model_suggestions(
         parallelism=suggestion_parallelism,
         all_visible=all_visible,
     )
+    _trace_suggestion_event(
+        "suggestion_preview_started",
+        preview={
+            "base_ref": base,
+            "head_ref": head,
+            "provider": effective_model_provider or "configured",
+            "count": suggestion_count,
+            "tone": suggestion_tone,
+            "style_profile": suggestion_style,
+            "performance": {
+                "parallelism": suggestion_parallelism,
+                "target_selection_ms": target_selection_ms,
+                "preparation_ms": 0,
+                "prompt_chars": 0,
+                "model_ms": 0,
+                "parse_ms": 0,
+                "total_ms": 0,
+            },
+            "visible_item_count": visible_target_count,
+            "fanout_guard": max_model_items,
+            "batch_size": batch_size,
+            "batch_count": len(target_batches),
+            "items": [],
+        },
+        total=total_targets,
+        batch_size=batch_size,
+        batch_total=len(target_batches),
+        fanout_guard=max_model_items,
+    )
 
     if not any(target_batches):
         _trace_progress("suggestions_ready", "No model suggestions requested", current=0, total=0, unit="item")
@@ -881,6 +919,7 @@ def _preview_draft_model_suggestions(
                 "parallelism": suggestion_parallelism,
                 "target_selection_ms": target_selection_ms,
                 "preparation_ms": 0,
+                "prompt_chars": 0,
                 "model_ms": 0,
                 "parse_ms": 0,
                 "total_ms": total_ms,
@@ -904,11 +943,12 @@ def _preview_draft_model_suggestions(
     items: list[dict[str, object]] = []
     completed_count = 0
     preparation_ms = 0
+    prompt_chars = 0
     model_ms = 0
     parse_ms = 0
 
     def prepare_work(order: int, group: ChangeGroup, baseline_item: ChangeItem, batch_index: int) -> _SuggestionWork:
-        nonlocal preparation_ms
+        nonlocal preparation_ms, prompt_chars
         item_number = order + 1
         item_start = perf_counter()
         _trace_progress(
@@ -955,8 +995,11 @@ def _preview_draft_model_suggestions(
             style_guidance=str(suggestion_style["guidance"]),
             project_vocabulary=list(suggestion_style["project_vocabulary"]),
             banned_phrases=list(suggestion_style["banned_phrases"]),
+            prompt_profile="suggestion",
         )
         prompt = prompt_result.prompt
+        prompt_budget = dict(prompt_result.budget)
+        prompt_chars += int(prompt_budget.get("prompt_chars", len(prompt)))
         evidence = {
             "title": baseline_item.content.title,
             "item_id": baseline_item.id,
@@ -995,6 +1038,7 @@ def _preview_draft_model_suggestions(
             evidence=evidence,
             source_evidence=source_evidence,
             prompt_sha=prompt_sha,
+            prompt_budget=prompt_budget,
             suggestion_count=suggestion_count,
             suggestion_tone=suggestion_tone,
             suggestion_style=suggestion_style,
@@ -1024,6 +1068,32 @@ def _preview_draft_model_suggestions(
             model_ms=result.model_ms,
             queue_ms=timings.get("queue_ms") if isinstance(timings, dict) else None,
         )
+        event_item = dict(result.item)
+        event_item.pop("batch", None)
+        _trace_suggestion_event(
+            "suggestion_item_result",
+            order=result.order,
+            item_id=result.item["item_id"],
+            current=completed_count,
+            total=total_targets,
+            batch=result.item.get("batch"),
+            batch_total=len(target_batches),
+            item=event_item,
+        )
+
+    def record_failure(work: _SuggestionWork, exc: BaseException) -> None:
+        code = exc.code if isinstance(exc, SystemExit) else exc
+        message = str(code) if code is not None else exc.__class__.__name__
+        _trace_suggestion_event(
+            "suggestion_item_failed",
+            order=work.order,
+            item_id=work.baseline_item.id,
+            message=message,
+            current=completed_count,
+            total=total_targets,
+            batch=work.batch,
+            batch_total=len(target_batches),
+        )
 
     for batch_index, batch in enumerate(target_batches, start=1):
         _trace_progress(
@@ -1046,7 +1116,11 @@ def _preview_draft_model_suggestions(
             for batch_offset, (group, baseline_item) in enumerate(batch):
                 order = len(items) + batch_offset
                 work = prepare_work(order, group, baseline_item, batch_index)
-                result = _run_suggestion_model_work(provider, provider_classifier, work)
+                try:
+                    result = _run_suggestion_model_work(provider, provider_classifier, work)
+                except (Exception, SystemExit) as exc:
+                    record_failure(work, exc)
+                    raise
                 batch_results[result.order] = result
                 record_result(result)
         else:
@@ -1059,7 +1133,11 @@ def _preview_draft_model_suggestions(
                     future_to_work[executor.submit(_run_suggestion_model_work, provider, provider_classifier, work)] = work
                 try:
                     for future in as_completed(future_to_work):
-                        result = future.result()
+                        try:
+                            result = future.result()
+                        except (Exception, SystemExit) as exc:
+                            record_failure(future_to_work[future], exc)
+                            raise
                         batch_results[result.order] = result
                         record_result(result)
                 except BaseException:
@@ -1088,13 +1166,14 @@ def _preview_draft_model_suggestions(
         "count": suggestion_count,
         "tone": suggestion_tone,
         "style_profile": suggestion_style,
-        "performance": {
-            "parallelism": suggestion_parallelism,
-            "target_selection_ms": target_selection_ms,
-            "preparation_ms": preparation_ms,
-            "model_ms": model_ms,
-            "parse_ms": parse_ms,
-            "total_ms": total_ms,
+            "performance": {
+                "parallelism": suggestion_parallelism,
+                "target_selection_ms": target_selection_ms,
+                "preparation_ms": preparation_ms,
+                "prompt_chars": prompt_chars,
+                "model_ms": model_ms,
+                "parse_ms": parse_ms,
+                "total_ms": total_ms,
         },
         "visible_item_count": visible_target_count,
         "fanout_guard": max_model_items,
@@ -1180,6 +1259,7 @@ def _run_suggestion_model_work(provider, provider_classifier: Classifier, work: 
         "provider_metadata": response.metadata,
         "provider_reasoning": provider_reasoning,
         "source_evidence": work.source_evidence,
+        "prompt_budget": work.prompt_budget,
         "suggestion_details": suggestion_details,
         "rejected_candidates": rejected_candidates,
         "suggestions": suggestions,
@@ -1507,11 +1587,12 @@ def _trace_model_suggest_stage(stage: str, detail: str) -> None:
     _trace_model_line(f"[verlato:model] suggest stage={stage} {detail}", event=stage.replace("-", "_"))
 
 
-def _trace_model_prompt_budget(budget: dict[str, int]) -> None:
+def _trace_model_prompt_budget(budget: dict[str, object]) -> None:
     if not _trace_model_enabled():
         return
     _trace_model_line(
         "[verlato:model] prompt-budget "
+        f"profile={budget.get('profile', 'summary')} "
         f"chars={budget.get('prompt_chars', 0)} "
         f"files={budget.get('files_included', 0)}/{budget.get('files_total', 0)} "
         f"commits={budget.get('commits_included', 0)}/{budget.get('commits_total', 0)} "
@@ -2056,6 +2137,7 @@ def _build_draft_model_prompt(
         style_guidance=str(suggestion_style["guidance"]),
         project_vocabulary=list(suggestion_style["project_vocabulary"]),
         banned_phrases=list(suggestion_style["banned_phrases"]),
+        prompt_profile="suggestion",
     )
     return {
         "item_id": draft_item.id,

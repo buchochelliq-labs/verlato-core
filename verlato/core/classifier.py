@@ -26,12 +26,53 @@ MAX_PROMPT_DIFF_SUMMARY_CHARS = 650
 MAX_PROMPT_HUNK_FILES = 3
 MAX_PROMPT_HUNKS_PER_FILE = 2
 MAX_PROMPT_HUNK_CHARS = 220
+SUGGEST_PROMPT_CHANGED_FILES = 8
+SUGGEST_PROMPT_COMMITS = 2
+SUGGEST_PROMPT_PR_BODY_CHARS = 240
+SUGGEST_PROMPT_DIFF_SUMMARY_CHARS = 420
+SUGGEST_PROMPT_HUNK_FILES = 2
+SUGGEST_PROMPT_HUNKS_PER_FILE = 1
+SUGGEST_PROMPT_HUNK_CHARS = 160
+
+
+@dataclass(frozen=True)
+class PromptBudgetProfile:
+    name: str
+    changed_files: int
+    commits: int
+    pr_body_chars: int
+    diff_summary_chars: int
+    hunk_files: int
+    hunks_per_file: int
+    hunk_chars: int
 
 
 @dataclass(frozen=True)
 class SummaryPrompt:
     prompt: str
-    budget: dict[str, int]
+    budget: dict[str, int | str]
+
+
+SUMMARY_PROMPT_PROFILE = PromptBudgetProfile(
+    name="summary",
+    changed_files=MAX_PROMPT_CHANGED_FILES,
+    commits=MAX_PROMPT_COMMITS,
+    pr_body_chars=MAX_PROMPT_PR_BODY_CHARS,
+    diff_summary_chars=MAX_PROMPT_DIFF_SUMMARY_CHARS,
+    hunk_files=MAX_PROMPT_HUNK_FILES,
+    hunks_per_file=MAX_PROMPT_HUNKS_PER_FILE,
+    hunk_chars=MAX_PROMPT_HUNK_CHARS,
+)
+SUGGESTION_PROMPT_PROFILE = PromptBudgetProfile(
+    name="suggestion-conservative",
+    changed_files=SUGGEST_PROMPT_CHANGED_FILES,
+    commits=SUGGEST_PROMPT_COMMITS,
+    pr_body_chars=SUGGEST_PROMPT_PR_BODY_CHARS,
+    diff_summary_chars=SUGGEST_PROMPT_DIFF_SUMMARY_CHARS,
+    hunk_files=SUGGEST_PROMPT_HUNK_FILES,
+    hunks_per_file=SUGGEST_PROMPT_HUNKS_PER_FILE,
+    hunk_chars=SUGGEST_PROMPT_HUNK_CHARS,
+)
 
 
 def _summary_tone_instruction(tone: str) -> str:
@@ -43,6 +84,13 @@ def _summary_tone_instruction(tone: str) -> str:
         "customer-facing": "plain customer-facing wording that emphasizes user-visible value and avoids internal jargon.",
     }
     return instructions.get(normalized, instructions["release-note"])
+
+
+def _prompt_budget_profile(name: str) -> PromptBudgetProfile:
+    normalized = (name or "summary").strip().lower()
+    if normalized in {"suggest", "suggestion", "suggestion-conservative"}:
+        return SUGGESTION_PROMPT_PROFILE
+    return SUMMARY_PROMPT_PROFILE
 
 
 class Classifier:
@@ -321,6 +369,7 @@ class Classifier:
         style_guidance: str = "",
         project_vocabulary: list[str] | None = None,
         banned_phrases: list[str] | None = None,
+        prompt_profile: str = "summary",
     ) -> str:
         return self._build_summary_prompt_with_budget(
             title=title,
@@ -335,6 +384,7 @@ class Classifier:
             style_guidance=style_guidance,
             project_vocabulary=project_vocabulary,
             banned_phrases=banned_phrases,
+            prompt_profile=prompt_profile,
         ).prompt
 
     def _build_summary_prompt_with_budget(
@@ -352,38 +402,41 @@ class Classifier:
         style_guidance: str = "",
         project_vocabulary: list[str] | None = None,
         banned_phrases: list[str] | None = None,
+        prompt_profile: str = "summary",
     ) -> SummaryPrompt:
-        commit_subjects = [commit.message.splitlines()[0] for commit in commits[:MAX_PROMPT_COMMITS]]
+        profile = _prompt_budget_profile(prompt_profile)
+        commit_subjects = [commit.message.splitlines()[0] for commit in commits[:profile.commits]]
         commit_lines = "; ".join(commit_subjects) or "none"
-        if len(commits) > MAX_PROMPT_COMMITS:
-            commit_lines += f"; ... and {len(commits) - MAX_PROMPT_COMMITS} more"
+        if len(commits) > profile.commits:
+            commit_lines += f"; ... and {len(commits) - profile.commits} more"
         label_text = ", ".join(labels) if labels else "none"
         file_statuses = sorted(diff.file_statuses.items())
-        included_files = file_statuses[:MAX_PROMPT_CHANGED_FILES]
+        included_files = file_statuses[:profile.changed_files]
         file_lines = "\n".join(
             f"- {status} {path}" for path, status in included_files
         ) or "- none"
-        if len(file_statuses) > MAX_PROMPT_CHANGED_FILES:
-            file_lines += f"\n- ... and {len(file_statuses) - MAX_PROMPT_CHANGED_FILES} more"
+        if len(file_statuses) > profile.changed_files:
+            file_lines += f"\n- ... and {len(file_statuses) - profile.changed_files} more"
         hunk_lines = []
         total_hunk_files = len(diff.representative_hunks)
         total_hunks = sum(len(hunks) for hunks in diff.representative_hunks.values())
+        total_hunk_chars = sum(len(hunk) for hunks in diff.representative_hunks.values() for hunk in hunks)
         included_hunk_files = 0
         included_hunks = 0
         included_hunk_chars = 0
-        for path, hunks in list(diff.representative_hunks.items())[:MAX_PROMPT_HUNK_FILES]:
+        for path, hunks in list(diff.representative_hunks.items())[:profile.hunk_files]:
             included_hunk_files += 1
             hunk_lines.append(f"{path}:")
-            for hunk in hunks[:MAX_PROMPT_HUNKS_PER_FILE]:
-                compact_hunk = _truncate_prompt_text(hunk, MAX_PROMPT_HUNK_CHARS)
+            for hunk in hunks[:profile.hunks_per_file]:
+                compact_hunk = _truncate_prompt_text(hunk, profile.hunk_chars)
                 included_hunks += 1
                 included_hunk_chars += len(compact_hunk)
                 hunk_lines.append(f"  {compact_hunk}")
-            if len(hunks) > MAX_PROMPT_HUNKS_PER_FILE:
-                hunk_lines.append(f"  ... and {len(hunks) - MAX_PROMPT_HUNKS_PER_FILE} more hunk(s)")
+            if len(hunks) > profile.hunks_per_file:
+                hunk_lines.append(f"  ... and {len(hunks) - profile.hunks_per_file} more hunk(s)")
         hunk_text = "\n".join(hunk_lines) or "none"
-        pr_body_text = _truncate_prompt_text(pr_body.strip(), MAX_PROMPT_PR_BODY_CHARS) or "none"
-        diff_summary = _truncate_prompt_text(diff.summary, MAX_PROMPT_DIFF_SUMMARY_CHARS)
+        pr_body_text = _truncate_prompt_text(pr_body.strip(), profile.pr_body_chars) or "none"
+        diff_summary = _truncate_prompt_text(diff.summary, profile.diff_summary_chars)
         context_bits = []
         if kind:
             context_bits.append(f"kind={kind}")
@@ -432,6 +485,7 @@ class Classifier:
         return SummaryPrompt(
             prompt=prompt,
             budget={
+                "profile": profile.name,
                 "prompt_chars": len(prompt),
                 "files_included": len(included_files),
                 "files_total": len(file_statuses),
@@ -452,6 +506,8 @@ class Classifier:
                 "hunks_total": total_hunks,
                 "hunks_skipped": max(total_hunks - included_hunks, 0),
                 "hunk_chars_included": included_hunk_chars,
+                "hunk_chars_total": total_hunk_chars,
+                "hunk_chars_skipped": max(total_hunk_chars - included_hunk_chars, 0),
             },
         )
 

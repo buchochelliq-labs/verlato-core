@@ -8,12 +8,14 @@ import {
   ApplyResult,
   ClearWorkingStateResult,
   ClientStatus,
+  CommandLogEntry,
   CommandRequestSnapshot,
   CommandRequestStatus,
   DraftDocument,
   DraftItem,
   DraftPromptPreview,
   DraftRangeRequest,
+  DraftSuggestionItem,
   DraftSuggestionPreview,
   ModelSettings,
   RepositoryCommit,
@@ -22,6 +24,9 @@ import {
   RepositoryRef,
   ReviewUpdateRequest,
 } from "./types";
+
+type CommandActivityHandler = (entry: CommandLogEntry) => void;
+type SuggestionPartialHandler = (preview: DraftSuggestionPreview) => void;
 
 export class VerlatoClient implements vscode.Disposable {
   private readonly onDidChangeStatusEmitter = new vscode.EventEmitter<ClientStatus>();
@@ -126,8 +131,21 @@ export class VerlatoClient implements vscode.Disposable {
     ]);
   }
 
-  async previewDraftSuggestions(request: DraftRangeRequest, itemId?: string): Promise<DraftSuggestionPreview> {
+  async previewDraftSuggestions(
+    request: DraftRangeRequest,
+    itemId?: string,
+    onPartial?: SuggestionPartialHandler,
+  ): Promise<DraftSuggestionPreview> {
     const settings = this.getModelSettings();
+    const partialState = createSuggestionPartialState(request, settings);
+    const onActivity = onPartial
+      ? (entry: CommandLogEntry) => {
+        const preview = mergeSuggestionActivity(partialState, entry);
+        if (preview) {
+          onPartial(preview);
+        }
+      }
+      : undefined;
     return this.runJsonCommand<DraftSuggestionPreview>([
       "draft",
       "suggest",
@@ -143,7 +161,7 @@ export class VerlatoClient implements vscode.Disposable {
       "--tone",
       settings.suggestionTone,
       ...(itemId ? ["--id", itemId] : ["--all-visible"]),
-    ]);
+    ], { onActivity });
   }
 
   async recordFeedback(event: string, itemId: string, metadata: Record<string, unknown> = {}): Promise<void> {
@@ -318,12 +336,18 @@ export class VerlatoClient implements vscode.Disposable {
     ].join("\n");
   }
 
-  private async runJsonCommand<T>(args: string[]): Promise<T> {
-    const { stdout } = await this.runCommand(args);
+  private async runJsonCommand<T>(
+    args: string[],
+    options: { onActivity?: CommandActivityHandler } = {},
+  ): Promise<T> {
+    const { stdout } = await this.runCommand(args, options);
     return JSON.parse(stdout) as T;
   }
 
-  private async runCommand(args: string[]): Promise<{ stdout: string; stderr: string }> {
+  private async runCommand(
+    args: string[],
+    options: { onActivity?: CommandActivityHandler } = {},
+  ): Promise<{ stdout: string; stderr: string }> {
     const resolution = this.resolveExecutable();
     const executable = resolution.executable;
     this.output.appendLine(`$ ${executable} ${args.join(" ")}`);
@@ -334,6 +358,7 @@ export class VerlatoClient implements vscode.Disposable {
       env: await this.buildEnvironment(args),
       label: args.slice(0, 2).join(" "),
       missingExecutableMessage: `Verlato CLI was not found. Tried: ${resolution.searched.join(", ")}. Install the backend package or set verlato.cliPath to the full path of verlato.exe.`,
+      onActivity: options.onActivity,
     });
     if (result.stderr) {
       this.output.appendLine(result.stderr);
@@ -486,6 +511,7 @@ export class VerlatoClient implements vscode.Disposable {
     label: string;
     missingExecutableMessage?: string;
     optionalFailure?: boolean;
+    onActivity?: CommandActivityHandler;
   }): Promise<{ stdout: string; stderr: string }> {
     const request = this.startRequest(options.command, options.args, options.label);
     const abortController = this.trackCommandController(request.id);
@@ -505,12 +531,12 @@ export class VerlatoClient implements vscode.Disposable {
       child.stderr.setEncoding("utf8");
       child.stdout.on("data", (chunk: string) => {
         stdout += chunk;
-        this.appendRequestOutput(request.id, "stdout", chunk);
+        this.appendRequestOutput(request.id, "stdout", chunk, options.onActivity);
       });
       child.stderr.on("data", (chunk: string) => {
         stderr += chunk;
         this.output.appendLine(chunk);
-        this.appendRequestOutput(request.id, "stderr", chunk);
+        this.appendRequestOutput(request.id, "stderr", chunk, options.onActivity);
       });
       child.on("error", (error: NodeJS.ErrnoException) => {
         if (settled) {
@@ -605,15 +631,30 @@ export class VerlatoClient implements vscode.Disposable {
     return request;
   }
 
-  private appendRequestOutput(id: number, stream: "stdout" | "stderr", chunk: string): void {
+  private appendRequestOutput(
+    id: number,
+    stream: "stdout" | "stderr",
+    chunk: string,
+    onActivity?: CommandActivityHandler,
+  ): void {
     const request = this.commandRequests.get(id);
     if (!request) {
       return;
     }
+    const activityEntries = this.buildActivityEntries(id, stream, chunk);
+    if (onActivity) {
+      for (const entry of activityEntries) {
+        try {
+          onActivity(entry);
+        } catch (error) {
+          this.output.appendLine(`Unable to process Verlato activity event: ${String(error)}`);
+        }
+      }
+    }
     const next = {
       ...request,
       [stream]: trimRequestOutput(request[stream] + chunk),
-      activity: trimActivity(mergeStreamActivity([...(request.activity ?? []), ...this.buildActivityEntries(id, stream, chunk)])),
+      activity: trimActivity(mergeStreamActivity([...(request.activity ?? []), ...activityEntries])),
     };
     this.commandRequests.set(id, next);
     this.scheduleRequestEmit();
@@ -897,12 +938,132 @@ function formatModelSettings(settings: ModelSettings): string {
   return `${settings.provider}${model}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; parallelism: ${settings.suggestionParallelism}; tone: ${settings.suggestionTone}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
 }
 
-function activityCategory(line: string): "model" | "progress" | "process" {
+interface SuggestionPartialState {
+  fallback: DraftSuggestionPreview;
+  preview?: DraftSuggestionPreview;
+  itemOrders: Map<string, number>;
+}
+
+function createSuggestionPartialState(
+  request: DraftRangeRequest,
+  settings: ModelSettings,
+): SuggestionPartialState {
+  return {
+    fallback: {
+      base_ref: request.base,
+      head_ref: request.head ?? "HEAD",
+      provider: settings.provider,
+      count: settings.suggestionCount,
+      tone: settings.suggestionTone,
+      performance: {
+        parallelism: settings.suggestionParallelism,
+      },
+      items: [],
+    },
+    itemOrders: new Map(),
+  };
+}
+
+function mergeSuggestionActivity(
+  state: SuggestionPartialState,
+  entry: CommandLogEntry,
+): DraftSuggestionPreview | undefined {
+  if (entry.category !== "suggestion") {
+    return undefined;
+  }
+  const attrs = entry.attributes ?? {};
+  if (entry.event === "suggestion_preview_started") {
+    const preview = coerceSuggestionPreview(attrs.preview, state.fallback);
+    if (!preview) {
+      return undefined;
+    }
+    state.preview = preview;
+    state.itemOrders.clear();
+    preview.items.forEach((item, index) => state.itemOrders.set(item.item_id, index));
+    return state.preview;
+  }
+  if (entry.event !== "suggestion_item_result") {
+    return undefined;
+  }
+  const item = coerceSuggestionItem(attrs.item);
+  if (!item) {
+    return undefined;
+  }
+  const order = typeof attrs.order === "number" && Number.isFinite(attrs.order)
+    ? attrs.order
+    : state.itemOrders.get(item.item_id) ?? state.itemOrders.size;
+  state.itemOrders.set(item.item_id, order);
+  const preview = state.preview ?? state.fallback;
+  const itemsById = new Map(preview.items.map((candidate) => [candidate.item_id, candidate]));
+  itemsById.set(item.item_id, item);
+  state.preview = {
+    ...preview,
+    items: [...itemsById.values()].sort((left, right) => {
+      const leftOrder = state.itemOrders.get(left.item_id) ?? Number.MAX_SAFE_INTEGER;
+      const rightOrder = state.itemOrders.get(right.item_id) ?? Number.MAX_SAFE_INTEGER;
+      return leftOrder - rightOrder;
+    }),
+  };
+  return state.preview;
+}
+
+function coerceSuggestionPreview(
+  value: unknown,
+  fallback: DraftSuggestionPreview,
+): DraftSuggestionPreview | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const items = Array.isArray(value.items)
+    ? value.items.map(coerceSuggestionItem).filter((item): item is DraftSuggestionItem => Boolean(item))
+    : [];
+  return {
+    base_ref: typeof value.base_ref === "string" ? value.base_ref : fallback.base_ref,
+    head_ref: typeof value.head_ref === "string" ? value.head_ref : fallback.head_ref,
+    provider: typeof value.provider === "string" ? value.provider : fallback.provider,
+    count: typeof value.count === "number" ? value.count : fallback.count,
+    tone: typeof value.tone === "string" ? value.tone : fallback.tone,
+    style_profile: isRecord(value.style_profile)
+      ? value.style_profile as DraftSuggestionPreview["style_profile"]
+      : fallback.style_profile,
+    visible_item_count: typeof value.visible_item_count === "number" ? value.visible_item_count : fallback.visible_item_count,
+    fanout_guard: typeof value.fanout_guard === "number" ? value.fanout_guard : fallback.fanout_guard,
+    batch_size: typeof value.batch_size === "number" ? value.batch_size : fallback.batch_size,
+    batch_count: typeof value.batch_count === "number" ? value.batch_count : fallback.batch_count,
+    performance: isRecord(value.performance)
+      ? value.performance as DraftSuggestionPreview["performance"]
+      : fallback.performance,
+    items,
+  };
+}
+
+function coerceSuggestionItem(value: unknown): DraftSuggestionItem | undefined {
+  if (!isRecord(value) || typeof value.item_id !== "string" || !Array.isArray(value.suggestions)) {
+    return undefined;
+  }
+  const suggestions = value.suggestions.filter((suggestion): suggestion is string => typeof suggestion === "string");
+  if (!suggestions.length) {
+    return undefined;
+  }
+  return {
+    ...(value as unknown as DraftSuggestionItem),
+    item_id: value.item_id,
+    title: typeof value.title === "string" ? value.title : value.item_id,
+    current_summary: typeof value.current_summary === "string" ? value.current_summary : "",
+    provider: typeof value.provider === "string" ? value.provider : "configured",
+    suggestions,
+  };
+}
+
+function activityCategory(line: string): "model" | "progress" | "suggestion" | "process" {
   if (line.startsWith("[verlato:model]")) {
     return "model";
   }
   if (line.startsWith("[verlato:progress]")) {
     return "progress";
+  }
+  if (line.startsWith("[verlato:suggestion]")) {
+    return "suggestion";
   }
   return "process";
 }
@@ -916,6 +1077,10 @@ function parseActivityLine(line: string): {
   const progress = parseProgressActivityLine(line);
   if (progress) {
     return progress;
+  }
+  const suggestion = parseSuggestionActivityLine(line);
+  if (suggestion) {
+    return suggestion;
   }
   const jsonPrefix = "[verlato:model] json ";
   if (!line.startsWith(jsonPrefix)) {
@@ -968,6 +1133,47 @@ function parseProgressActivityLine(line: string): {
       attributes: {},
     };
   }
+}
+
+function parseSuggestionActivityLine(line: string): {
+  message: string;
+  event: string;
+  attributes: Record<string, unknown>;
+} | undefined {
+  const jsonPrefix = "[verlato:suggestion] json ";
+  if (!line.startsWith(jsonPrefix)) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(line.slice(jsonPrefix.length)) as Record<string, unknown>;
+    const event = typeof parsed.event === "string" ? parsed.event : "suggestion";
+    return {
+      message: suggestionActivityMessage(event, parsed, line),
+      event,
+      attributes: parsed,
+    };
+  } catch {
+    return {
+      message: line,
+      event: "suggestion",
+      attributes: {},
+    };
+  }
+}
+
+function suggestionActivityMessage(event: string, attrs: Record<string, unknown>, fallback: string): string {
+  const itemId = typeof attrs.item_id === "string" ? attrs.item_id : undefined;
+  if (event === "suggestion_preview_started") {
+    const total = typeof attrs.total === "number" ? ` for ${attrs.total} item(s)` : "";
+    return `Suggestion preview started${total}`;
+  }
+  if (event === "suggestion_item_result") {
+    return itemId ? `Generated suggestion for ${itemId}` : "Generated suggestion";
+  }
+  if (event === "suggestion_item_failed") {
+    return itemId ? `Suggestion failed for ${itemId}` : "Suggestion failed";
+  }
+  return fallback;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

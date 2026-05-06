@@ -298,8 +298,19 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     let successMessage: string | undefined;
+    this.suggestions = undefined;
+    this.onDidRefresh?.(this.document, this.overview, this.modelSettings, this.suggestions);
     await this.runBusy(async () => {
-      const suggestions = await this.client.previewDraftSuggestions(this.range, itemId);
+      const suggestions = await this.client.previewDraftSuggestions(this.range, itemId, (partial) => {
+        this.suggestions = partial;
+        if (partial.items.length) {
+          this.statusMessage = itemId
+            ? "Generated a partial suggestion."
+            : `Generated suggestions for ${partial.items.length} item(s) so far.`;
+        }
+        this.render();
+        this.onDidRefresh?.(this.document, this.overview, this.modelSettings, this.suggestions);
+      });
       this.suggestions = suggestions;
       this.onDidRefresh?.(this.document, this.overview, this.modelSettings, this.suggestions);
       const generatedCount = suggestions.items[0]?.suggestions.length ?? 0;

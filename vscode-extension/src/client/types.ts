@@ -103,7 +103,7 @@ export interface DraftPromptPreview {
   tone?: string;
   style_profile?: SuggestionStyleProfile;
   prompt: string;
-  prompt_budget?: Record<string, number>;
+  prompt_budget?: DraftPromptBudget;
 }
 
 export interface RepositoryRef {
@@ -183,10 +183,37 @@ export interface DraftSuggestionItem {
   provider_metadata?: Record<string, unknown>;
   provider_reasoning?: string;
   source_evidence?: DraftSuggestionEvidence[];
+  prompt_budget?: DraftPromptBudget;
   suggestion_details?: DraftSuggestionDetail[];
   rejected_candidates?: DraftRejectedSuggestion[];
   timings?: DraftSuggestionTimings;
   suggestions: string[];
+}
+
+export interface DraftPromptBudget {
+  profile?: string;
+  prompt_chars?: number;
+  files_included?: number;
+  files_total?: number;
+  files_skipped?: number;
+  commits_included?: number;
+  commits_total?: number;
+  commits_skipped?: number;
+  pr_body_chars_included?: number;
+  pr_body_chars_total?: number;
+  pr_body_chars_skipped?: number;
+  diff_summary_chars_included?: number;
+  diff_summary_chars_total?: number;
+  diff_summary_chars_skipped?: number;
+  hunk_files_included?: number;
+  hunk_files_total?: number;
+  hunk_files_skipped?: number;
+  hunks_included?: number;
+  hunks_total?: number;
+  hunks_skipped?: number;
+  hunk_chars_included?: number;
+  hunk_chars_total?: number;
+  hunk_chars_skipped?: number;
 }
 
 export interface DraftSuggestionTimings {
@@ -254,6 +281,7 @@ export interface DraftSuggestionPerformance {
   parallelism?: number;
   target_selection_ms?: number;
   preparation_ms?: number;
+  prompt_chars?: number;
   model_ms?: number;
   parse_ms?: number;
   total_ms?: number;
@@ -287,7 +315,7 @@ export interface CommandRequestSnapshot {
 export interface CommandLogEntry {
   id: number;
   stream: "stdout" | "stderr";
-  category: "model" | "progress" | "process";
+  category: "model" | "progress" | "suggestion" | "process";
   message: string;
   receivedAt: string;
   event?: string;

@@ -142,6 +142,32 @@ function makeClient(overrides = {}) {
   };
 }
 
+function suggestionPreview(text, itemId = "ci_1") {
+  return {
+    base_ref: "v1.0.0",
+    head_ref: "HEAD",
+    provider: "mock",
+    count: 1,
+    items: [
+      {
+        item_id: itemId,
+        title: "Improve API",
+        current_summary: "Old API summary",
+        provider: "mock-local",
+        prompt_budget: {
+          profile: "suggestion-conservative",
+          prompt_chars: 1200,
+          files_included: 4,
+          files_total: 6,
+          hunks_included: 1,
+          hunks_total: 2,
+        },
+        suggestions: [text],
+      },
+    ],
+  };
+}
+
 function makeProvider(ReleaseControlViewProvider, client) {
   const htmlSnapshots = [];
   const webview = {
@@ -241,6 +267,65 @@ test("error notifications do not keep the control view busy", async () => {
     assert.match(html, />Generate release notes<\/button>/);
     assert.doesNotMatch(html, /Running Verlato/);
     assert.doesNotMatch(html, /class="stop" data-action="cancel"/);
+  } finally {
+    resolveNotification(undefined);
+    await suggestPromise;
+  }
+});
+
+test("control view renders partial suggestions while the request is running", async () => {
+  let resolveSuggest;
+  const { ReleaseControlViewProvider } = loadControlViewWithVscodeMock(makeVscodeMock());
+  const client = makeClient({
+    previewDraftSuggestions(_request, _itemId, onPartial) {
+      onPartial(suggestionPreview("First streamed suggestion"));
+      return new Promise((resolve) => {
+        resolveSuggest = resolve;
+      });
+    },
+  });
+  const { provider, htmlSnapshots } = makeProvider(ReleaseControlViewProvider, client);
+
+  const suggestPromise = provider.handleMessage({ type: "suggestAll" });
+  await waitFor(() => /First streamed suggestion/.test(htmlSnapshots.at(-1) ?? ""));
+
+  resolveSuggest(suggestionPreview("Final suggestion"));
+  await suggestPromise;
+
+  assert.match(htmlSnapshots.at(-1), /Final suggestion/);
+});
+
+test("control view keeps partial suggestions visible when a later item fails", async () => {
+  let resolveNotification;
+  let notificationCalls = 0;
+  const notificationPromise = new Promise((resolve) => {
+    resolveNotification = resolve;
+  });
+  const vscodeMock = makeVscodeMock({
+    window: {
+      ...makeVscodeMock().window,
+      showErrorMessage() {
+        notificationCalls += 1;
+        return notificationPromise;
+      },
+    },
+  });
+  const { ReleaseControlViewProvider } = loadControlViewWithVscodeMock(vscodeMock);
+  const client = makeClient({
+    previewDraftSuggestions(_request, _itemId, onPartial) {
+      onPartial(suggestionPreview("Completed before failure"));
+      return Promise.reject(new Error("No model suggestions were produced for draft item ci_2."));
+    },
+  });
+  const { provider, htmlSnapshots } = makeProvider(ReleaseControlViewProvider, client);
+
+  const suggestPromise = provider.handleMessage({ type: "suggestAll" });
+  await waitFor(() => notificationCalls === 1);
+
+  try {
+    const html = htmlSnapshots.at(-1);
+    assert.match(html, /Completed before failure/);
+    assert.match(html, /No model suggestions were produced for draft item ci_2/);
   } finally {
     resolveNotification(undefined);
     await suggestPromise;

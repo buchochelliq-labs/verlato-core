@@ -1171,24 +1171,89 @@ function renderOllamaQueueWarning(preview: DraftSuggestionPreview): string {
 
 function renderSuggestionDiagnostics(item: DraftSuggestionItem): string {
   const timings = item.timings;
+  const budgetText = formatSuggestionPromptBudget(item.prompt_budget, timings);
   if (!timings || !item.provider.startsWith("ollama:")) {
-    return "";
+    return budgetText
+      ? `<small class="suggestion-diagnostics">Prompt budget: ${escapeHtml(budgetText)}</small>`
+      : "";
   }
-  const candidates = [
-    { label: "queue", value: timings.queue_ms },
-    { label: "load", value: timings.load_ms },
-    { label: "prompt eval", value: timings.prompt_eval_ms },
-    { label: "generation", value: timings.eval_ms },
-  ].filter((entry): entry is { label: string; value: number } => typeof entry.value === "number" && entry.value > 0);
+  const candidates = suggestionTimingCandidates(timings);
   if (!candidates.length) {
-    return "";
+    return budgetText
+      ? `<small class="suggestion-diagnostics">Prompt budget: ${escapeHtml(budgetText)}</small>`
+      : "";
   }
   const dominant = candidates.reduce((best, entry) => entry.value > best.value ? entry : best, candidates[0]);
   const tokenRate = typeof timings.tokens_per_second === "number" ? ` | ${timings.tokens_per_second.toFixed(1)} tok/s` : "";
   const tokenCounts = typeof timings.prompt_tokens === "number" || typeof timings.eval_tokens === "number"
     ? ` | ${timings.prompt_tokens ?? 0}/${timings.eval_tokens ?? 0} tok`
     : "";
-  return `<small class="suggestion-diagnostics">Ollama bottleneck: ${escapeHtml(dominant.label)} ${formatDurationMs(dominant.value)}${tokenRate}${tokenCounts}</small>`;
+  const promptBudget = budgetText ? ` | prompt ${budgetText}` : "";
+  return `<small class="suggestion-diagnostics">Ollama bottleneck: ${escapeHtml(dominant.label)} ${formatDurationMs(dominant.value)}${tokenRate}${tokenCounts}${escapeHtml(promptBudget)}</small>`;
+}
+
+function suggestionTimingCandidates(timings: DraftSuggestionItem["timings"]): { label: string; value: number }[] {
+  if (!timings) {
+    return [];
+  }
+  return [
+    { label: "queue", value: timings.queue_ms },
+    { label: "load", value: timings.load_ms },
+    { label: "prompt eval", value: timings.prompt_eval_ms },
+    { label: "generation", value: timings.eval_ms },
+  ].filter((entry): entry is { label: string; value: number } => typeof entry.value === "number" && entry.value > 0);
+}
+
+function formatSuggestionPromptBudget(
+  budget: DraftSuggestionItem["prompt_budget"],
+  timings?: DraftSuggestionItem["timings"],
+): string {
+  if (!budget) {
+    return "";
+  }
+  const parts: string[] = [];
+  if (typeof budget.prompt_chars === "number") {
+    parts.push(`${formatCompactCount(budget.prompt_chars)} chars`);
+  }
+  parts.push(...formatBudgetRatio("files", budget.files_included, budget.files_total));
+  parts.push(...formatBudgetRatio("hunks", budget.hunks_included, budget.hunks_total));
+  if (isPromptEvalDominant(timings)) {
+    const skipped = [
+      formatSkippedBudget("files", budget.files_skipped),
+      formatSkippedBudget("hunks", budget.hunks_skipped),
+    ].filter(Boolean);
+    if (skipped.length) {
+      parts.push(`skipped ${skipped.join(", ")}`);
+    }
+  }
+  return parts.join(" | ");
+}
+
+function formatBudgetRatio(label: string, included?: number, total?: number): string[] {
+  if (typeof included !== "number" || typeof total !== "number" || total <= 0) {
+    return [];
+  }
+  return [`${label} ${included}/${total}`];
+}
+
+function formatSkippedBudget(label: string, skipped?: number): string {
+  return typeof skipped === "number" && skipped > 0 ? `${skipped} ${label}` : "";
+}
+
+function isPromptEvalDominant(timings?: DraftSuggestionItem["timings"]): boolean {
+  const candidates = suggestionTimingCandidates(timings);
+  if (!candidates.length) {
+    return false;
+  }
+  const dominant = candidates.reduce((best, entry) => entry.value > best.value ? entry : best, candidates[0]);
+  return dominant.label === "prompt eval";
+}
+
+function formatCompactCount(value: number): string {
+  if (Math.abs(value) < 1000) {
+    return String(Math.round(value));
+  }
+  return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)}k`;
 }
 
 function renderReleasesPanel(state: ReleaseReleasesRenderState, modelBusy = false): string {
@@ -1609,12 +1674,15 @@ function formatPayloadLabel(entry: NonNullable<CommandRequestSnapshot["activity"
   return `Payload${chars}${entry.attributes?.redacted ? " redacted" : ""}`;
 }
 
-function activityCategory(line: string): "model" | "progress" | "process" {
+function activityCategory(line: string): "model" | "progress" | "suggestion" | "process" {
   if (line.startsWith("[verlato:model]")) {
     return "model";
   }
   if (line.startsWith("[verlato:progress]")) {
     return "progress";
+  }
+  if (line.startsWith("[verlato:suggestion]")) {
+    return "suggestion";
   }
   return "process";
 }
@@ -1628,6 +1696,10 @@ function parseActivityLine(line: string): {
   const progress = parseProgressActivityLine(line);
   if (progress) {
     return progress;
+  }
+  const suggestion = parseSuggestionActivityLine(line);
+  if (suggestion) {
+    return suggestion;
   }
   const jsonPrefix = "[verlato:model] json ";
   if (!line.startsWith(jsonPrefix)) {
@@ -1680,6 +1752,47 @@ function parseProgressActivityLine(line: string): {
       attributes: {},
     };
   }
+}
+
+function parseSuggestionActivityLine(line: string): {
+  message: string;
+  event: string;
+  attributes: Record<string, unknown>;
+} | undefined {
+  const jsonPrefix = "[verlato:suggestion] json ";
+  if (!line.startsWith(jsonPrefix)) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(line.slice(jsonPrefix.length)) as Record<string, unknown>;
+    const event = typeof parsed.event === "string" ? parsed.event : "suggestion";
+    return {
+      message: suggestionActivityMessage(event, parsed, line),
+      event,
+      attributes: parsed,
+    };
+  } catch {
+    return {
+      message: line,
+      event: "suggestion",
+      attributes: {},
+    };
+  }
+}
+
+function suggestionActivityMessage(event: string, attrs: Record<string, unknown>, fallback: string): string {
+  const itemId = typeof attrs.item_id === "string" ? attrs.item_id : undefined;
+  if (event === "suggestion_preview_started") {
+    const total = typeof attrs.total === "number" ? ` for ${attrs.total} item(s)` : "";
+    return `Suggestion preview started${total}`;
+  }
+  if (event === "suggestion_item_result") {
+    return itemId ? `Generated suggestion for ${itemId}` : "Generated suggestion";
+  }
+  if (event === "suggestion_item_failed") {
+    return itemId ? `Suggestion failed for ${itemId}` : "Suggestion failed";
+  }
+  return fallback;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
