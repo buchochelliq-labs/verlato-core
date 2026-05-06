@@ -158,6 +158,21 @@ function makeClient(overrides = {}) {
         },
       });
     },
+    warmupOllama() {
+      return Promise.resolve({
+        schema: "ollama_doctor.v1",
+        provider: "ollama",
+        config: { model: "mock-model" },
+        probes: [],
+        summary: {
+          status: "ok",
+          bottleneck: "healthy",
+          warmed_up: true,
+          diagnostics: ["Warmup completed in 100ms."],
+          recommendations: ["No obvious Ollama bottleneck was detected by the probe."],
+        },
+      });
+    },
     ...overrides,
   };
 }
@@ -394,6 +409,54 @@ test("control view runs and renders Ollama doctor diagnostics", async () => {
   assert.match(html, /warning \| prompt eval/);
   assert.match(html, /prompt 900ms/);
   assert.match(html, /Reduce prompt budget further/);
+});
+
+test("control view runs and renders Ollama warmup", async () => {
+  let warmupCalls = 0;
+  const { ReleaseControlViewProvider } = loadControlViewWithVscodeMock(makeVscodeMock());
+  const client = makeClient({
+    warmupOllama() {
+      warmupCalls += 1;
+      return Promise.resolve({
+        schema: "ollama_doctor.v1",
+        provider: "ollama",
+        config: { model: "gemma4:latest" },
+        probes: [
+          {
+            name: "warmup",
+            purpose: "warmup",
+            ok: true,
+            elapsed_ms: 220,
+            prompt_chars: 120,
+            timings: { model_ms: 220, load_ms: 180 },
+          },
+          {
+            name: "single",
+            ok: true,
+            elapsed_ms: 80,
+            prompt_chars: 120,
+            timings: { model_ms: 80, eval_ms: 30 },
+          },
+        ],
+        summary: {
+          status: "ok",
+          bottleneck: "healthy",
+          warmed_up: true,
+          diagnostics: ["Ollama probe completed in 80ms with no obvious bottleneck.", "Warmup completed in 220ms and absorbed 180ms of model load time."],
+          recommendations: ["No obvious Ollama bottleneck was detected by the probe."],
+        },
+      });
+    },
+  });
+  const { provider, htmlSnapshots } = makeProvider(ReleaseControlViewProvider, client);
+
+  await provider.handleMessage({ type: "warmupOllama" });
+
+  assert.equal(warmupCalls, 1);
+  const html = htmlSnapshots.at(-1);
+  assert.match(html, /Ollama warmup completed/);
+  assert.match(html, /ok \| healthy \| warmed/);
+  assert.match(html, /absorbed 180ms/);
 });
 
 test("control view keeps partial suggestions visible when a later item fails", async () => {

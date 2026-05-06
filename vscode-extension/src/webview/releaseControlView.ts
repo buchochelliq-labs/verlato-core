@@ -174,6 +174,9 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     if (message.type === "diagnoseOllama") {
       await this.diagnoseOllama();
     }
+    if (message.type === "warmupOllama") {
+      await this.warmupOllama();
+    }
     if (message.type === "togglePromptPayloads") {
       await this.togglePromptPayloads();
     }
@@ -327,6 +330,22 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       const result = await this.client.diagnoseOllama();
       this.ollamaDoctor = result;
       this.statusMessage = `Ollama health: ${result.summary.status} (${result.summary.bottleneck}).`;
+      successMessage = this.statusMessage;
+      this.render();
+    }, { errorActions: ["View Activity", "Change Model"] });
+    if (successMessage) {
+      await handleNotificationAction(await showSuccessNotification(successMessage, "Open Verlato", "View Activity"));
+    }
+  }
+
+  private async warmupOllama(): Promise<void> {
+    let successMessage: string | undefined;
+    await this.runBusy(async () => {
+      const result = await this.client.warmupOllama();
+      this.ollamaDoctor = result;
+      this.statusMessage = result.summary.warmed_up
+        ? `Ollama warmup completed (${result.summary.bottleneck}).`
+        : `Ollama warmup finished with ${result.summary.status}.`;
       successMessage = this.statusMessage;
       this.render();
     }, { errorActions: ["View Activity", "Change Model"] });

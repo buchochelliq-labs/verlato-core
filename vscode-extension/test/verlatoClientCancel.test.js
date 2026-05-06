@@ -255,6 +255,37 @@ test("diagnose Ollama invokes doctor command with parallel probe when configured
   assert.equal(result.schema, "ollama_doctor.v1");
 });
 
+test("warmup Ollama invokes doctor warmup command", async () => {
+  const spawnCalls = [];
+  const child = makeChild(560);
+  const client = makeClient((command, args, options) => {
+    spawnCalls.push({ command, args, options });
+    return child;
+  });
+
+  const pending = client.warmupOllama();
+  await waitForSpawn(spawnCalls);
+  child.stdout.emit("data", JSON.stringify({
+    schema: "ollama_doctor.v1",
+    provider: "ollama",
+    config: { model: "gemma4:latest" },
+    probes: [{ name: "warmup", purpose: "warmup", ok: true, elapsed_ms: 120, prompt_chars: 90 }],
+    summary: {
+      status: "ok",
+      bottleneck: "healthy",
+      warmed_up: true,
+      diagnostics: ["Warmup completed in 120ms."],
+      recommendations: [],
+    },
+  }));
+  child.emit("close", 0);
+  const result = await pending;
+
+  assert.deepEqual(spawnCalls[0].args, ["doctor", "ollama", "--warmup"]);
+  assert.equal(spawnCalls[0].options.env.VERLATO_MODEL_PROVIDER, "ollama");
+  assert.equal(result.summary.warmed_up, true);
+});
+
 test("preview suggestions streams partial items before final stdout resolves", async () => {
   const spawnCalls = [];
   const child = makeChild(558);

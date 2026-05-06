@@ -789,15 +789,19 @@ test("renders Ollama doctor health recommendations", () => {
       summary: {
         status: "warning",
         bottleneck: "queue",
+        warmed_up: true,
         diagnostics: ["Ollama queue time reached 700ms during the probe."],
         recommendations: ["Set OLLAMA_NUM_PARALLEL before starting Ollama if your hardware has memory for parallel requests."],
+        recommended_settings: { suggestion_parallelism: 1 },
       },
     },
   });
 
   assert.match(html, /Model health/);
-  assert.match(html, /warning \| queue/);
+  assert.match(html, /Warm model/);
+  assert.match(html, /warning \| queue \| warmed/);
   assert.match(html, /queue 700ms/);
+  assert.match(html, /try parallelism 1/);
   assert.match(html, /OLLAMA_NUM_PARALLEL/);
 });
 

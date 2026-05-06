@@ -323,6 +323,7 @@ export interface OllamaDoctorConfig {
 
 export interface OllamaDoctorProbe {
   name: string;
+  purpose?: "warmup" | "measure" | string;
   ok: boolean;
   error?: string | null;
   elapsed_ms: number;
@@ -336,8 +337,13 @@ export interface OllamaDoctorProbe {
 export interface OllamaDoctorSummary {
   status: "ok" | "warning" | "error";
   bottleneck: "healthy" | "unavailable" | "queue" | "load" | "prompt_eval" | "generation";
+  warmed_up?: boolean;
   diagnostics: string[];
   recommendations: string[];
+  recommended_settings?: {
+    suggestion_parallelism?: number;
+    suggest_num_predict?: number;
+  };
 }
 
 export type ClientMode = "cli";

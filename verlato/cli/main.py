@@ -158,6 +158,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run two tiny Ollama suggestion probes concurrently to detect server queueing.",
     )
+    doctor_ollama.add_argument(
+        "--warmup",
+        action="store_true",
+        help="Run a tiny suggestion-style warmup request before measuring Ollama health.",
+    )
 
     model_logs = sub.add_parser("model-logs")
     model_logs_sub = model_logs.add_subparsers(dest="model_logs_command", required=True)
@@ -596,7 +601,7 @@ def _ollama_doctor_prompt() -> str:
     )
 
 
-def _run_ollama_doctor(*, parallel_probe: bool = False) -> dict[str, object]:
+def _run_ollama_doctor(*, parallel_probe: bool = False, warmup: bool = False) -> dict[str, object]:
     config = _load_config()
     suggestion_parallelism = _resolve_suggestion_parallelism(config.suggestion_parallelism)
     provider = build_provider(config.provider, mode="ollama")
@@ -612,7 +617,10 @@ def _run_ollama_doctor(*, parallel_probe: bool = False) -> dict[str, object]:
         },
     )
     config_snapshot = _ollama_doctor_config(provider, request, suggestion_parallelism)
-    probes = [_run_ollama_doctor_probe(provider, request, name="single")]
+    probes = []
+    if warmup:
+        probes.append(_run_ollama_doctor_probe(provider, request, name="warmup", purpose="warmup"))
+    probes.append(_run_ollama_doctor_probe(provider, request, name="single"))
     if parallel_probe:
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="verlato-ollama-doctor") as executor:
             futures = [
@@ -620,13 +628,14 @@ def _run_ollama_doctor(*, parallel_probe: bool = False) -> dict[str, object]:
                 executor.submit(_run_ollama_doctor_probe, provider, request, name="parallel-b"),
             ]
             probes.extend(future.result() for future in as_completed(futures))
-        probes[1:] = sorted(probes[1:], key=lambda probe: str(probe.get("name") or ""))
+        parallel_start = 2 if warmup else 1
+        probes[parallel_start:] = sorted(probes[parallel_start:], key=lambda probe: str(probe.get("name") or ""))
     return {
         "schema": "ollama_doctor.v1",
         "provider": "ollama",
         "config": config_snapshot,
         "probes": probes,
-        "summary": _summarize_ollama_doctor(probes, config_snapshot),
+        "summary": _summarize_ollama_doctor(probes, config_snapshot, warmup_requested=warmup),
     }
 
 
@@ -653,7 +662,13 @@ def _ollama_doctor_config(provider: object, request: ProviderRequest, suggestion
     }
 
 
-def _run_ollama_doctor_probe(provider, request: ProviderRequest, *, name: str) -> dict[str, object]:
+def _run_ollama_doctor_probe(
+    provider,
+    request: ProviderRequest,
+    *,
+    name: str,
+    purpose: str = "measure",
+) -> dict[str, object]:
     started = perf_counter()
     try:
         response = provider.summarize(request)
@@ -661,6 +676,7 @@ def _run_ollama_doctor_probe(provider, request: ProviderRequest, *, name: str) -
         elapsed_ms = _elapsed_ms(started)
         return {
             "name": name,
+            "purpose": purpose,
             "ok": False,
             "error": str(exc),
             "elapsed_ms": elapsed_ms,
@@ -674,6 +690,7 @@ def _run_ollama_doctor_probe(provider, request: ProviderRequest, *, name: str) -
     ok, error_message = _ollama_probe_status(response)
     return {
         "name": name,
+        "purpose": purpose,
         "ok": ok,
         "error": error_message,
         "elapsed_ms": elapsed_ms,
@@ -700,27 +717,53 @@ def _ollama_probe_status(response: ProviderResponse) -> tuple[bool, str | None]:
     return True, None
 
 
-def _summarize_ollama_doctor(probes: list[dict[str, object]], config_snapshot: dict[str, object]) -> dict[str, object]:
+def _summarize_ollama_doctor(
+    probes: list[dict[str, object]],
+    config_snapshot: dict[str, object],
+    *,
+    warmup_requested: bool = False,
+) -> dict[str, object]:
     ok_probes = [probe for probe in probes if probe.get("ok") is True]
     if not ok_probes:
         diagnostics = [str(probe.get("error") or "Ollama probe failed") for probe in probes]
         return {
             "status": "error",
             "bottleneck": "unavailable",
+            "warmed_up": False,
             "diagnostics": diagnostics,
             "recommendations": [
                 "Check that Ollama is running and reachable at the configured endpoint.",
                 "Confirm the configured model is pulled and the endpoint matches Ollama's /api/chat route.",
             ],
+            "recommended_settings": {},
         }
-    bottleneck, diagnostic = _ollama_doctor_bottleneck(ok_probes)
-    recommendations = _ollama_doctor_recommendations(bottleneck, config_snapshot)
+    warmup_probe = next((probe for probe in probes if probe.get("purpose") == "warmup"), None)
+    measured_probes = [
+        probe
+        for probe in ok_probes
+        if probe.get("purpose") != "warmup"
+    ] or ok_probes
+    bottleneck, diagnostic = _ollama_doctor_bottleneck(measured_probes)
+    diagnostics = [diagnostic]
+    warmup_ok = bool(warmup_probe and warmup_probe.get("ok") is True)
+    if warmup_requested:
+        diagnostics.append(_ollama_warmup_diagnostic(warmup_probe))
+    context_diagnostic = _ollama_context_diagnostic(config_snapshot)
+    if context_diagnostic:
+        diagnostics.append(context_diagnostic)
+    recommendations = _ollama_doctor_recommendations(
+        bottleneck,
+        config_snapshot,
+        warmup_requested=warmup_requested,
+    )
     status = "ok" if bottleneck == "healthy" else "warning"
     return {
         "status": status,
         "bottleneck": bottleneck,
-        "diagnostics": [diagnostic],
+        "warmed_up": warmup_ok,
+        "diagnostics": diagnostics,
         "recommendations": recommendations,
+        "recommended_settings": _ollama_doctor_recommended_settings(bottleneck, config_snapshot),
     }
 
 
@@ -746,21 +789,32 @@ def _ollama_doctor_bottleneck(probes: list[dict[str, object]]) -> tuple[str, str
     return "healthy", f"Ollama probe completed in {model_ms}ms with no obvious bottleneck."
 
 
-def _ollama_doctor_recommendations(bottleneck: str, config_snapshot: dict[str, object]) -> list[str]:
+def _ollama_doctor_recommendations(
+    bottleneck: str,
+    config_snapshot: dict[str, object],
+    *,
+    warmup_requested: bool = False,
+) -> list[str]:
     parallelism = config_snapshot.get("suggestion_parallelism")
     if bottleneck == "queue":
-        return [
-            f"Lower Verlato suggestion parallelism from {parallelism} if the local server is serializing requests.",
+        recommendations = [
+            _ollama_parallelism_recommendation(parallelism),
             "Set OLLAMA_NUM_PARALLEL before starting Ollama if your hardware has memory for parallel requests.",
+            "Keep OLLAMA_CONTEXT_LENGTH or VERLATO_OLLAMA_NUM_CTX conservative because each parallel slot uses memory.",
         ]
+        return recommendations
     if bottleneck == "load":
-        return [
+        recommendations = [
             "Keep the model warm with VERLATO_OLLAMA_KEEP_ALIVE or provider.keep_alive.",
-            "Run a small warmup request before large all-visible suggestion runs.",
+            "Use verlato doctor ollama --warmup or the VS Code Warm model action before large all-visible suggestion runs.",
         ]
+        if warmup_requested:
+            recommendations.append("Warmup was requested; if load time remains high, raise keep_alive or check memory pressure.")
+        return recommendations
     if bottleneck == "prompt_eval":
         return [
             "Reduce prompt budget further or inspect prompt budget telemetry for files/hunks that dominate.",
+            _ollama_context_recommendation(config_snapshot),
             "Consider a later multi-item batching pass if prompt eval remains the main cost.",
         ]
     if bottleneck == "generation":
@@ -774,6 +828,53 @@ def _ollama_doctor_recommendations(bottleneck: str, config_snapshot: dict[str, o
             "Confirm the configured model is pulled and available to Ollama.",
         ]
     return ["No obvious Ollama bottleneck was detected by the probe."]
+
+
+def _ollama_doctor_recommended_settings(
+    bottleneck: str,
+    config_snapshot: dict[str, object],
+) -> dict[str, object]:
+    parallelism = config_snapshot.get("suggestion_parallelism")
+    settings: dict[str, object] = {}
+    if bottleneck == "queue" and isinstance(parallelism, int) and parallelism > 1:
+        settings["suggestion_parallelism"] = 1
+    suggest_cap = config_snapshot.get("suggest_num_predict_effective")
+    if bottleneck == "generation" and isinstance(suggest_cap, int) and suggest_cap > 96:
+        settings["suggest_num_predict"] = 96
+    return settings
+
+
+def _ollama_warmup_diagnostic(probe: dict[str, object] | None) -> str:
+    if not probe:
+        return "Warmup was requested but no warmup probe was recorded."
+    if probe.get("ok") is not True:
+        return f"Warmup failed: {probe.get('error') or 'Ollama returned no usable content'}."
+    timings = probe.get("timings")
+    load_ms = timings.get("load_ms") if isinstance(timings, dict) else None
+    elapsed_ms = probe.get("elapsed_ms")
+    if isinstance(load_ms, int) and load_ms > 0:
+        return f"Warmup completed in {elapsed_ms}ms and absorbed {load_ms}ms of model load time."
+    return f"Warmup completed in {elapsed_ms}ms."
+
+
+def _ollama_context_diagnostic(config_snapshot: dict[str, object]) -> str | None:
+    num_ctx = config_snapshot.get("num_ctx")
+    if isinstance(num_ctx, int) and num_ctx >= 8192:
+        return f"Configured num_ctx is {num_ctx}; large contexts increase memory use and can limit parallel requests."
+    return None
+
+
+def _ollama_parallelism_recommendation(parallelism: object) -> str:
+    if isinstance(parallelism, int) and parallelism > 1:
+        return f"Lower Verlato suggestion parallelism from {parallelism} to 1 if Ollama is serializing requests."
+    return "Keep Verlato suggestion parallelism at 1 unless Ollama is configured for server-side parallelism."
+
+
+def _ollama_context_recommendation(config_snapshot: dict[str, object]) -> str:
+    num_ctx = config_snapshot.get("num_ctx")
+    if isinstance(num_ctx, int) and num_ctx >= 8192:
+        return f"Configured num_ctx is {num_ctx}; lower it if suggestion prompts do not need that much context."
+    return "Avoid oversized OLLAMA_CONTEXT_LENGTH or VERLATO_OLLAMA_NUM_CTX values until prompt eval is healthy."
 
 
 def _max_probe_timing(probes: list[dict[str, object]], key: str) -> int:
@@ -2825,7 +2926,7 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(str(exc)) from exc
 
     if args.command == "doctor" and args.doctor_command == "ollama":
-        print(json.dumps(_run_ollama_doctor(parallel_probe=args.parallel_probe), indent=2))
+        print(json.dumps(_run_ollama_doctor(parallel_probe=args.parallel_probe, warmup=args.warmup), indent=2))
         return 0
 
     if args.command == "model-logs" and args.model_logs_command == "export":

@@ -352,8 +352,58 @@ def test_ollama_doctor_command_emits_json(monkeypatch, tmp_path: Path, capsys):
     assert result["summary"]["bottleneck"] == "healthy"
 
 
+def test_ollama_doctor_warmup_runs_before_measured_probe(monkeypatch, tmp_path: Path, capsys):
+    monkeypatch.chdir(tmp_path)
+
+    class WarmupProvider:
+        endpoint = "http://127.0.0.1:11434/api/chat"
+        model = "doctor-model"
+        timeout_seconds = 15.0
+        stream = False
+        keep_alive = "10m"
+        num_ctx = None
+        num_predict = None
+        suggest_num_predict = None
+        suggest_think = False
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            self.calls += 1
+            metadata = (
+                {"total_duration": 2_000_000_000, "load_duration": 1_700_000_000}
+                if self.calls == 1
+                else {"total_duration": 80_000_000, "eval_duration": 40_000_000}
+            )
+            return ProviderResponse(
+                content="Adds a model health check for suggestion performance.",
+                confidence=0.9,
+                model="ollama:doctor-model",
+                metadata=metadata,
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:doctor-model")
+
+    provider = WarmupProvider()
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
+
+    rc = main(["doctor", "ollama", "--warmup"])
+    result = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert provider.calls == 2
+    assert [probe["name"] for probe in result["probes"]] == ["warmup", "single"]
+    assert [probe["purpose"] for probe in result["probes"]] == ["warmup", "measure"]
+    assert result["summary"]["warmed_up"] is True
+    assert result["summary"]["bottleneck"] == "healthy"
+    assert "absorbed 1700ms" in result["summary"]["diagnostics"][1]
+
+
 def test_ollama_doctor_classifies_common_bottlenecks(monkeypatch, tmp_path: Path):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERLATO_SUGGESTION_PARALLELISM", "3")
 
     class DoctorProvider:
         endpoint = "http://127.0.0.1:11434/api/chat"
@@ -414,6 +464,43 @@ def test_ollama_doctor_classifies_common_bottlenecks(monkeypatch, tmp_path: Path
         assert result["summary"]["bottleneck"] == expected
         assert result["summary"]["status"] == "warning"
         assert result["summary"]["recommendations"]
+        if expected == "queue":
+            assert result["summary"]["recommended_settings"]["suggestion_parallelism"] == 1
+            assert any("parallelism" in item for item in result["summary"]["recommendations"])
+
+
+def test_ollama_doctor_warns_about_large_context_when_prompt_eval_dominates(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+
+    class ContextProvider:
+        endpoint = "http://127.0.0.1:11434/api/chat"
+        model = "doctor-model"
+        timeout_seconds = 15.0
+        stream = False
+        keep_alive = "10m"
+        num_ctx = 16384
+        num_predict = None
+        suggest_num_predict = None
+        suggest_think = False
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(
+                content="Adds a model health check for suggestion performance.",
+                confidence=0.9,
+                model="ollama:doctor-model",
+                metadata={"total_duration": 1_000_000_000, "prompt_eval_duration": 800_000_000},
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:doctor-model")
+
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: ContextProvider())
+
+    result = _run_ollama_doctor()
+
+    assert result["summary"]["bottleneck"] == "prompt_eval"
+    assert any("num_ctx is 16384" in diagnostic for diagnostic in result["summary"]["diagnostics"])
+    assert any("lower it" in item for item in result["summary"]["recommendations"])
 
 
 def test_ollama_doctor_reports_unavailable_provider(monkeypatch, tmp_path: Path):

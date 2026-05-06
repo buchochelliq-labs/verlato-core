@@ -220,6 +220,7 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets
       if (action === 'cancelRequest') vscode.postMessage({ type: 'cancelRequest', requestId: Number(button.dataset.request) });
       if (action === 'changeModel') vscode.postMessage({ type: 'changeModel' });
       if (action === 'diagnoseOllama') vscode.postMessage({ type: 'diagnoseOllama' });
+      if (action === 'warmupOllama') vscode.postMessage({ type: 'warmupOllama' });
       if (action === 'setTone') vscode.postMessage({ type: 'setTone', tone: button.dataset.tone });
       if (action === 'togglePromptPayloads') vscode.postMessage({ type: 'togglePromptPayloads' });
       if (action === 'toggleReasoningPayloads') vscode.postMessage({ type: 'toggleReasoningPayloads' });
@@ -1112,6 +1113,10 @@ function renderModelPanel(state: ReleaseControlRenderState): string {
       <span>Model health</span>
       <small>Run</small>
     </button>
+    <button class="telemetry-toggle" data-action="warmupOllama">
+      <span>Warm model</span>
+      <small>Run</small>
+    </button>
     ${renderOllamaDoctor(state.ollamaDoctor)}
   </details>`;
 }
@@ -1160,12 +1165,26 @@ function renderOllamaDoctor(result: OllamaDoctorResult | undefined): string {
     typeof timings?.eval_ms === "number" && timings.eval_ms > 0 ? `gen ${formatDurationMs(timings.eval_ms)}` : "",
   ].filter(Boolean).join(" | ");
   const recommendations = result.summary.recommendations.slice(0, 2);
+  const settings = renderDoctorRecommendedSettings(result.summary.recommended_settings);
+  const diagnostics = result.summary.diagnostics.slice(0, 2);
   return `<div class="doctor-result ${escapeHtml(result.summary.status)}">
-    <div><strong>Ollama health</strong><span>${escapeHtml(result.summary.status)} | ${escapeHtml(result.summary.bottleneck.replace("_", " "))}</span></div>
+    <div><strong>Ollama health</strong><span>${escapeHtml(result.summary.status)} | ${escapeHtml(result.summary.bottleneck.replace("_", " "))}${result.summary.warmed_up ? " | warmed" : ""}</span></div>
     ${timingParts ? `<small>${escapeHtml(timingParts)}</small>` : ""}
-    ${result.summary.diagnostics[0] ? `<small>${escapeHtml(result.summary.diagnostics[0])}</small>` : ""}
+    ${diagnostics.map((diagnostic) => `<small>${escapeHtml(diagnostic)}</small>`).join("")}
+    ${settings ? `<small>${escapeHtml(settings)}</small>` : ""}
     ${recommendations.length ? `<ul>${recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
   </div>`;
+}
+
+function renderDoctorRecommendedSettings(settings: OllamaDoctorResult["summary"]["recommended_settings"]): string {
+  if (!settings) {
+    return "";
+  }
+  const parts = [
+    typeof settings.suggestion_parallelism === "number" ? `try parallelism ${settings.suggestion_parallelism}` : "",
+    typeof settings.suggest_num_predict === "number" ? `try suggest cap ${settings.suggest_num_predict}` : "",
+  ].filter(Boolean);
+  return parts.length ? `Recommendation: ${parts.join(", ")}` : "";
 }
 
 function renderSuggestions(preview: DraftSuggestionPreview | undefined, modelBusy = false): string {

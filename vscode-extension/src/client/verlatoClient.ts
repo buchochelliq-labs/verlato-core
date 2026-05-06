@@ -204,6 +204,10 @@ export class VerlatoClient implements vscode.Disposable {
     ]);
   }
 
+  async warmupOllama(): Promise<OllamaDoctorResult> {
+    return this.runJsonCommand<OllamaDoctorResult>(["doctor", "ollama", "--warmup"]);
+  }
+
   async getRepositoryOverview(): Promise<RepositoryOverview> {
     const [branchesRaw, tagsRaw, commitsRaw, state] = await Promise.all([
       this.runGitCommand(["branch", "--format=%(refname:short)%09%(objectname:short)"]),
