@@ -187,6 +187,7 @@ class ModelNode extends vscode.TreeItem {
     this.description = settings.provider === "ollama" ? settings.model : undefined;
     this.tooltip = [
       `Provider: ${settings.provider}`,
+      `Service mode: ${settings.serviceMode}`,
       `Model: ${settings.model}`,
       `Suggestion model: ${settings.suggestionModel || "same as main"}`,
       `Endpoint: ${settings.endpoint}`,

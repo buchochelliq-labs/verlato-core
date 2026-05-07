@@ -177,6 +177,15 @@
           "default": "verlato",
           "description": "Path to the Verlato CLI executable."
         },
+        "verlato.serviceMode": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "cli"
+          ],
+          "description": "Use the built-in local stdio service for core editor flows when possible, or force direct CLI commands."
+        },
         "verlato.modelProvider": {
           "type": "string",
           "default": "ollama",

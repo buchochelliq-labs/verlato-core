@@ -1088,7 +1088,7 @@ function renderModelPanel(state: ReleaseControlRenderState): string {
     <summary class="section-title">${renderIcon("intent")}<span>INTENT INFERENCE</span><small>${escapeHtml(state.modelSettings.provider)}</small></summary>
     <button class="model" data-action="changeModel" title="${escapeHtml(modelDetail(state.modelSettings))}">
       <span>${escapeHtml(state.modelSettings.provider)}</span>
-      <small>${escapeHtml(state.modelSettings.provider === "ollama" ? state.modelSettings.model : `fanout ${state.modelSettings.maxModelItems}`)}</small>
+      <small>${escapeHtml(`${state.modelSettings.provider === "ollama" ? state.modelSettings.model : `fanout ${state.modelSettings.maxModelItems}`} | service ${state.modelSettings.serviceMode}`)}</small>
     </button>
     <div class="tone-row">
       ${["release-note", "concise", "technical", "customer-facing"].map((tone) => `<button class="${state.modelSettings.suggestionTone === tone ? "selected" : ""}" data-action="setTone" data-tone="${tone}">${escapeHtml(tone)}</button>`).join("")}
@@ -1141,6 +1141,7 @@ function modelDetail(settings: ModelSettings): string {
     : `fanout guard ${settings.maxModelItems}`;
   return [
     `Provider: ${settings.provider}`,
+    `Service mode: ${settings.serviceMode}`,
     `Model: ${providerDetail}`,
     `Suggestion model: ${suggestionModel}`,
     `Tone: ${settings.suggestionTone}`,

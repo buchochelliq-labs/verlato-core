@@ -59,6 +59,7 @@ npm run build
 The default provider is local Ollama with `gemma4:latest`. Change it from `Verlato: Change AI Model` or with these workspace settings:
 
 ```json
+"verlato.serviceMode": "auto",
 "verlato.modelProvider": "ollama",
 "verlato.ollamaModel": "gemma4:latest",
 "verlato.ollamaSuggestionModel": "",
@@ -72,6 +73,7 @@ The default provider is local Ollama with `gemma4:latest`. Change it from `Verla
 "verlato.suggestionInstantProvisional": true
 ```
 
+`verlato.serviceMode` defaults to `auto`, which uses the built-in `verlato service` JSON-lines stdio process for core draft/review/state/feedback flows and falls back to direct CLI commands if the service is unavailable. Set it to `cli` to force the older one-command-per-action path.
 `verlato.maxModelItems` prevents a large comparison range from sending one LLM request per grouped change. Set it to `-1` only when you intentionally want no fanout guard.
 `verlato.ollamaSuggestionModel` can point suggestions at a smaller/faster local model while summaries and classification keep using `verlato.ollamaModel`; leave it empty to use the main model.
 `verlato.suggestionParallelism` controls how many draft suggestion preview requests may run at once.

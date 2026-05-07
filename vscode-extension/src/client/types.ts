@@ -162,6 +162,7 @@ export interface RepositoryOverview {
 }
 
 export interface ModelSettings {
+  serviceMode: "auto" | "cli" | string;
   provider: string;
   model: string;
   suggestionModel: string;
@@ -440,7 +441,7 @@ export interface OllamaDoctorSummary {
   };
 }
 
-export type ClientMode = "cli";
+export type ClientMode = "cli" | "service-starting" | "service" | "service-degraded" | "service-unavailable";
 
 export interface ClientStatus {
   mode: ClientMode;

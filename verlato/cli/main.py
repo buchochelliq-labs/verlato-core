@@ -206,6 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("--include-provenance", action="store_true")
 
     sub.add_parser("serve")
+    sub.add_parser("service")
 
     doctor = sub.add_parser("doctor")
     doctor_sub = doctor.add_subparsers(dest="doctor_command", required=True)
@@ -4537,6 +4538,11 @@ def main(argv: list[str] | None = None) -> int:
             return run_mcp_stdio()
         except RuntimeError as exc:
             raise SystemExit(str(exc)) from exc
+
+    if args.command == "service":
+        from verlato.service_stdio import run_service_stdio
+
+        return run_service_stdio()
 
     if args.command == "doctor" and args.doctor_command == "ollama":
         print(

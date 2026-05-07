@@ -1,10 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+from dataclasses import asdict, dataclass
 
 from verlato import __version__
+from verlato.cli.main import (
+    _append_feedback_event,
+    _build_suggestion_cache_store,
+    _update_draft_review,
+    build_draft_document,
+    run_scan,
+)
 from verlato.config import load_config
-from verlato.cli.main import _update_draft_review, build_draft_document, run_scan
 from verlato.core.drafts import DraftDocument, DraftItem, DraftSection, DraftService, DraftTarget
 from verlato.state.store import StateStore
 
@@ -95,6 +102,19 @@ class MCPService:
         )
         return result.to_dict()
 
+    def apply_draft_request(
+        self,
+        *,
+        request: ReleasePreviewRequest,
+        target_name: str,
+        target_path: str | None = None,
+    ) -> dict:
+        return self.apply_draft_document(
+            document=self.build_draft_document(request),
+            target_name=target_name,
+            target_path=target_path,
+        )
+
     def update_review_state(
         self,
         *,
@@ -104,14 +124,18 @@ class MCPService:
         status: str | None = None,
         summary: str | None = None,
         reviewer: str | None = None,
+        model_provider: str | None = None,
+        summary_provenance: dict[str, object] | None = None,
     ) -> dict:
-        _update_draft_review(
+        self.update_review_change_item(
             base=base,
             head=head,
             item_id=item_id,
             status=status,
             summary=summary,
             reviewer=reviewer,
+            model_provider=model_provider,
+            summary_provenance=summary_provenance,
         )
         document = self.get_draft_document(ReleasePreviewRequest(base=base, head=head))
         for section in document["sections"]:
@@ -119,6 +143,30 @@ class MCPService:
                 if item["id"] == item_id:
                     return item
         raise KeyError(f"Updated review item {item_id} not found in draft document")
+
+    def update_review_change_item(
+        self,
+        *,
+        base: str,
+        head: str = "HEAD",
+        item_id: str,
+        status: str | None = None,
+        summary: str | None = None,
+        reviewer: str | None = None,
+        model_provider: str | None = None,
+        summary_provenance: dict[str, object] | None = None,
+    ) -> dict:
+        updated = _update_draft_review(
+            base=base,
+            head=head,
+            item_id=item_id,
+            status=status,
+            summary=summary,
+            reviewer=reviewer,
+            model_provider=model_provider,
+            summary_provenance=summary_provenance,
+        )
+        return updated.to_dict()
 
     def request_model_input(
         self,
@@ -148,6 +196,48 @@ class MCPService:
     def reconcile_preview(self, base: str, head: str = "HEAD") -> dict:
         unpublished = self.list_unpublished_changes(base=base, head=head)
         return {"count": len(unpublished), "unpublished": unpublished}
+
+    def state_show(self) -> dict:
+        return {"items": [asdict(item) for item in self._store().load().items]}
+
+    def clear_working_state(self) -> dict:
+        store = self._store()
+        state = store.load()
+        kept_items = [item for item in state.items if item.published]
+        removed_ids = {item.id for item in state.items if not item.published}
+        removed_feedback_count = 0
+        if removed_ids:
+            filtered_feedback = []
+            for event in state.feedback_events:
+                if event.get("item_id") in removed_ids:
+                    removed_feedback_count += 1
+                    continue
+                filtered_feedback.append(event)
+            state.feedback_events = filtered_feedback
+        removed_count = len(state.items) - len(kept_items)
+        state.items = kept_items
+        store.save(state)
+        return {
+            "removed_working_items": removed_count,
+            "removed_feedback_events": removed_feedback_count,
+            "preserved_published_items": len(kept_items),
+        }
+
+    def clear_suggestion_cache(self) -> dict:
+        cache = _build_suggestion_cache_store(load_config())
+        removed_count = cache.clear()
+        return {
+            "removed_entries": removed_count,
+            "path": str(cache.path),
+        }
+
+    def record_feedback(self, *, event: str, item_id: str, metadata: dict[str, object] | None = None) -> dict:
+        _append_feedback_event(event=event, item_id=item_id, metadata=metadata or {})
+        return {"recorded": True, "event": event, "item_id": item_id}
+
+    def _store(self) -> StateStore:
+        config = load_config()
+        return StateStore(path=os.getenv("VERLATO_STATE_PATH", config.state_path))
 
     def _draft_document_from_dict(self, data: dict) -> DraftDocument:
         return DraftDocument(

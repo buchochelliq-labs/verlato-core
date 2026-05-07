@@ -49,6 +49,8 @@ This document captures the current MVP architecture and should be reviewed befor
   - Shared service interface used by MCP tools.
 - `verlato/mcp/server.py`
   - MCP tool registration and stdio server entrypoint for VS Code/Copilot.
+- `verlato/service_stdio.py`
+  - Built-in JSON-lines stdio service used by the VS Code extension for core local editor flows without requiring FastMCP.
 
 ## Data flow
 
@@ -73,6 +75,7 @@ For model-assisted suggestion previews, `draft suggest --preview` builds a bound
 - **Feedback events** live in `.verlato_state.json` as lean records by default. Full text is opt-in, and export is handled by the dedicated `feedback export` command.
 - **Model telemetry export** normalizes CLI and provider debug logs into a structured JSON document while preserving default redaction.
 - **MCP tool surface** gives agent clients a stable, discoverable set of release-note operations.
+- **Built-in editor service** reuses the MCP service layer for local VS Code draft/review/state operations, while model-heavy streaming flows can continue through direct CLI commands until they have a service event transport.
 
 ## Near-term architecture improvements
 
@@ -81,4 +84,4 @@ For model-assisted suggestion previews, `draft suggest --preview` builds a bound
 - Use local feedback aggregates to suggest prompt/style adjustments without persisting raw prompt payloads by default.
 - Add DuckDB/Delta-backed analytical storage for larger repositories and feedback/model telemetry exploration.
 - Introduce richer evidence scoring and confidence calibration.
-- Expand the local stdio server into a richer multi-client or networked transport.
+- Expand the local service and MCP transports into richer multi-client or networked transports.

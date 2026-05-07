@@ -7,6 +7,7 @@ const test = require("node:test");
 function loadClientWithSpawnMock(spawnMock, configValues = {}) {
   const originalLoad = Module._load;
   delete require.cache[require.resolve("../dist/client/verlatoClient")];
+  delete require.cache[require.resolve("../dist/client/verlatoServiceClient")];
   Module._load = function patchedLoad(request, parent, isMain) {
     if (request === "vscode") {
       return {
@@ -60,7 +61,7 @@ function makeClient(spawnMock, configValues = {}) {
   );
 }
 
-function makeChild(pid = 12345) {
+function makeChild(pid = 12345, onStdinWrite) {
   const child = new EventEmitter();
   const stdout = new EventEmitter();
   const stderr = new EventEmitter();
@@ -68,6 +69,18 @@ function makeChild(pid = 12345) {
   stderr.setEncoding = () => {};
   child.stdout = stdout;
   child.stderr = stderr;
+  child.stdin = {
+    write(data, callback) {
+      if (onStdinWrite) {
+        onStdinWrite(String(data));
+      }
+      if (callback) {
+        callback();
+      }
+      return true;
+    },
+    end() {},
+  };
   child.pid = pid;
   child.killed = false;
   child.kill = () => {
@@ -84,6 +97,26 @@ async function waitForSpawn(spawnCalls) {
     await new Promise((resolve) => setImmediate(resolve));
   }
   assert.fail("Timed out waiting for spawn.");
+}
+
+async function waitForSpawnCount(spawnCalls, count) {
+  for (let index = 0; index < 30; index += 1) {
+    if (spawnCalls.length >= count) {
+      return;
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail(`Timed out waiting for ${count} spawn calls.`);
+}
+
+async function waitForWriteCount(writes, count) {
+  for (let index = 0; index < 30; index += 1) {
+    if (writes.length >= count) {
+      return;
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail(`Timed out waiting for ${count} service writes.`);
 }
 
 test("cancelCommand kills the tracked Windows process tree before aborting", () => {
@@ -328,7 +361,7 @@ test("clear suggestion cache invokes the state command", async () => {
   const client = makeClient((command, args, options) => {
     spawnCalls.push({ command, args, options });
     return child;
-  });
+  }, { serviceMode: "cli" });
 
   const pending = client.clearSuggestionCache();
   await waitForSpawn(spawnCalls);
@@ -338,6 +371,120 @@ test("clear suggestion cache invokes the state command", async () => {
 
   assert.deepEqual(spawnCalls[0].args, ["state", "clear-suggestion-cache"]);
   assert.equal(result.removed_entries, 2);
+});
+
+test("service mode auto uses stdio service for core flows", async () => {
+  const spawnCalls = [];
+  const writes = [];
+  let serviceChild;
+  serviceChild = makeChild(600, (data) => {
+    writes.push(data);
+    const request = JSON.parse(data);
+    const result = request.method === "health"
+      ? { status: "ok", version: "0.1.0" }
+      : { removed_entries: 3, path: ".verlato_suggestion_cache.json" };
+    serviceChild.stdout.emit("data", `${JSON.stringify({ id: request.id, ok: true, result })}\n`);
+  });
+  const client = makeClient((command, args, options) => {
+    spawnCalls.push({ command, args, options });
+    return serviceChild;
+  }, { serviceMode: "auto" });
+
+  const result = await client.clearSuggestionCache();
+
+  assert.deepEqual(spawnCalls.map((call) => call.args), [["service"]]);
+  assert.equal(JSON.parse(writes[0]).method, "health");
+  assert.equal(JSON.parse(writes[1]).method, "state.clear_suggestion_cache");
+  assert.equal(result.removed_entries, 3);
+  assert.equal(client.getCommandRequests()[0].command, "verlato-service");
+  assert.equal(client.getCommandRequests()[0].status, "completed");
+  assert.equal(client.lastStatus.label, "Verlato: Service");
+});
+
+test("service start failure falls back to CLI", async () => {
+  const spawnCalls = [];
+  const serviceChild = makeChild(601);
+  const cliChild = makeChild(602);
+  const client = makeClient((command, args, options) => {
+    spawnCalls.push({ command, args, options });
+    if (args[0] === "service") {
+      setImmediate(() => serviceChild.emit("error", new Error("service unavailable")));
+      return serviceChild;
+    }
+    return cliChild;
+  }, { serviceMode: "auto" });
+
+  const pending = client.clearSuggestionCache();
+  await waitForSpawnCount(spawnCalls, 2);
+  cliChild.stdout.emit("data", JSON.stringify({ removed_entries: 1, path: ".verlato_suggestion_cache.json" }));
+  cliChild.emit("close", 0);
+  const result = await pending;
+
+  assert.deepEqual(spawnCalls.map((call) => call.args), [["service"], ["state", "clear-suggestion-cache"]]);
+  assert.equal(result.removed_entries, 1);
+  assert.equal(client.lastStatus.label, "Verlato: CLI fallback");
+});
+
+test("service request failure retries through CLI once", async () => {
+  const spawnCalls = [];
+  const writes = [];
+  let serviceChild;
+  const cliChild = makeChild(604);
+  serviceChild = makeChild(603, (data) => {
+    writes.push(data);
+    const request = JSON.parse(data);
+    const response = request.method === "health"
+      ? { id: request.id, ok: true, result: { status: "ok" } }
+      : { id: request.id, ok: false, error: { code: "handler_error", message: "service handler failed" } };
+    serviceChild.stdout.emit("data", `${JSON.stringify(response)}\n`);
+  });
+  const client = makeClient((command, args, options) => {
+    spawnCalls.push({ command, args, options });
+    return args[0] === "service" ? serviceChild : cliChild;
+  }, { serviceMode: "auto" });
+
+  const pending = client.clearWorkingState();
+  await waitForSpawnCount(spawnCalls, 2);
+  cliChild.stdout.emit("data", JSON.stringify({
+    removed_working_items: 1,
+    removed_feedback_events: 0,
+    preserved_published_items: 2,
+  }));
+  cliChild.emit("close", 0);
+  const result = await pending;
+
+  assert.equal(JSON.parse(writes[1]).method, "state.clear_working");
+  assert.deepEqual(spawnCalls.map((call) => call.args), [["service"], ["state", "clear-working"]]);
+  assert.equal(result.preserved_published_items, 2);
+  assert.equal(serviceChild.killed, true);
+  assert.equal(client.lastStatus.label, "Verlato: CLI fallback");
+});
+
+test("cancelling a service-backed request stops service and marks request cancelled", async () => {
+  const spawnCalls = [];
+  const writes = [];
+  let serviceChild;
+  serviceChild = makeChild(605, (data) => {
+    writes.push(data);
+    const request = JSON.parse(data);
+    if (request.method === "health") {
+      serviceChild.stdout.emit("data", `${JSON.stringify({ id: request.id, ok: true, result: { status: "ok" } })}\n`);
+    }
+  });
+  const client = makeClient((command, args, options) => {
+    spawnCalls.push({ command, args, options });
+    return serviceChild;
+  }, { serviceMode: "auto" });
+
+  const pending = client.getDraft({ base: "v1.0.0", head: "HEAD" });
+  await waitForWriteCount(writes, 2);
+  client.cancelActiveCommands();
+  await assert.rejects(pending, /cancelled/);
+
+  const request = client.getCommandRequests()[0];
+  assert.equal(serviceChild.killed, true);
+  assert.equal(request.command, "verlato-service");
+  assert.equal(request.status, "cancelled");
 });
 
 test("diagnose Ollama invokes doctor command with parallel probe when configured", async () => {

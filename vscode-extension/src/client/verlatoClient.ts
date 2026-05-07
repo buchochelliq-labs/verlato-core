@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 
 import { ExecutableResolution, resolveVerlatoExecutable } from "./cliResolution";
 import { resolveCommandModelProvider, shouldAttachGithubToken } from "./modelEnvironment";
+import { VerlatoServiceClient } from "./verlatoServiceClient";
 import {
   ApplyResult,
   ClearSuggestionCacheResult,
@@ -42,6 +43,8 @@ export class VerlatoClient implements vscode.Disposable {
   private readonly activeCommandChildren = new Map<number, ChildProcessWithoutNullStreams>();
   private readonly commandRequests = new Map<number, CommandRequestSnapshot>();
   private readonly activityRemainders = new Map<string, string>();
+  private serviceClient: VerlatoServiceClient | undefined;
+  private serviceStartFailed = false;
   private pendingRequestEmit: NodeJS.Timeout | undefined;
   private nextCommandId = 1;
   private nextActivityId = 1;
@@ -55,7 +58,7 @@ export class VerlatoClient implements vscode.Disposable {
   }
 
   async getDraft(request: DraftRangeRequest): Promise<DraftDocument> {
-    return this.runJsonCommand<DraftDocument>([
+    const args = [
       "draft",
       "json",
       "--base",
@@ -66,11 +69,17 @@ export class VerlatoClient implements vscode.Disposable {
       request.version ?? "Unreleased",
       ...(request.includeConfidence ? ["--include-confidence"] : []),
       ...(request.includeProvenance ? ["--include-provenance"] : []),
-    ]);
+    ];
+    return this.runServiceJson<DraftDocument>(
+      "draft.get",
+      { request: serviceDraftRequest(request) },
+      "service draft.get",
+      () => this.runJsonCommand<DraftDocument>(args),
+    );
   }
 
   async previewDraft(request: DraftRangeRequest): Promise<string> {
-    const { stdout } = await this.runCommand([
+    const args = [
       "draft",
       "preview",
       "--base",
@@ -81,12 +90,20 @@ export class VerlatoClient implements vscode.Disposable {
       request.version ?? "Unreleased",
       ...(request.includeConfidence ? ["--include-confidence"] : []),
       ...(request.includeProvenance ? ["--include-provenance"] : []),
-    ]);
-    return stdout;
+    ];
+    return this.runServiceJson<string>(
+      "draft.preview",
+      { request: serviceDraftRequest(request) },
+      "service draft.preview",
+      async () => {
+        const { stdout } = await this.runCommand(args);
+        return stdout;
+      },
+    );
   }
 
   async applyDraft(request: DraftRangeRequest, target: "changelog" | "github-release"): Promise<ApplyResult> {
-    return this.runJsonCommand<ApplyResult>([
+    const args = [
       "draft",
       "apply",
       "--base",
@@ -97,7 +114,13 @@ export class VerlatoClient implements vscode.Disposable {
       request.version ?? "Unreleased",
       "--target",
       target,
-    ]);
+    ];
+    return this.runServiceJson<ApplyResult>(
+      "draft.apply",
+      { request: serviceDraftRequest(request), target },
+      "service draft.apply",
+      () => this.runJsonCommand<ApplyResult>(args),
+    );
   }
 
   async reviewDraftItem(
@@ -105,7 +128,7 @@ export class VerlatoClient implements vscode.Disposable {
     itemId: string,
     update: ReviewUpdateRequest,
   ): Promise<DraftItem> {
-    return this.runJsonCommand<DraftItem>([
+    const args = [
       "draft",
       "review",
       "--base",
@@ -118,7 +141,20 @@ export class VerlatoClient implements vscode.Disposable {
       ...(update.summary !== undefined ? ["--summary", update.summary] : []),
       ...(update.summaryProvenance ? ["--summary-provenance-json", JSON.stringify(update.summaryProvenance)] : []),
       ...(update.reviewer ? ["--reviewer", update.reviewer] : []),
-    ]);
+    ];
+    return this.runServiceJson<DraftItem>(
+      "draft.review",
+      {
+        request: serviceDraftRequest(request),
+        item_id: itemId,
+        status: update.status,
+        summary: update.summary,
+        reviewer: update.reviewer,
+        summary_provenance: update.summaryProvenance,
+      },
+      "service draft.review",
+      () => this.runJsonCommand<DraftItem>(args),
+    );
   }
 
   async getModelPrompt(request: DraftRangeRequest, itemId: string): Promise<DraftPromptPreview> {
@@ -172,24 +208,39 @@ export class VerlatoClient implements vscode.Disposable {
   }
 
   async recordFeedback(event: string, itemId: string, metadata: Record<string, unknown> = {}): Promise<void> {
-    await this.runJsonCommand<Record<string, never>>([
-      "feedback",
-      "record",
-      "--event",
-      event,
-      "--item-id",
-      itemId,
-      "--metadata-json",
-      JSON.stringify(metadata),
-    ]);
+    await this.runServiceJson<Record<string, never>>(
+      "feedback.record",
+      { event, item_id: itemId, metadata },
+      "service feedback.record",
+      () => this.runJsonCommand<Record<string, never>>([
+        "feedback",
+        "record",
+        "--event",
+        event,
+        "--item-id",
+        itemId,
+        "--metadata-json",
+        JSON.stringify(metadata),
+      ]),
+    );
   }
 
   async clearWorkingState(): Promise<ClearWorkingStateResult> {
-    return this.runJsonCommand<ClearWorkingStateResult>(["state", "clear-working"]);
+    return this.runServiceJson<ClearWorkingStateResult>(
+      "state.clear_working",
+      {},
+      "service state.clear_working",
+      () => this.runJsonCommand<ClearWorkingStateResult>(["state", "clear-working"]),
+    );
   }
 
   async clearSuggestionCache(): Promise<ClearSuggestionCacheResult> {
-    return this.runJsonCommand<ClearSuggestionCacheResult>(["state", "clear-suggestion-cache"]);
+    return this.runServiceJson<ClearSuggestionCacheResult>(
+      "state.clear_suggestion_cache",
+      {},
+      "service state.clear_suggestion_cache",
+      () => this.runJsonCommand<ClearSuggestionCacheResult>(["state", "clear-suggestion-cache"]),
+    );
   }
 
   async diagnoseOllama(): Promise<OllamaDoctorResult> {
@@ -239,6 +290,7 @@ export class VerlatoClient implements vscode.Disposable {
     const config = vscode.workspace.getConfiguration("verlato");
     const provider = config.get<string>("modelProvider") || "ollama";
     return {
+      serviceMode: config.get<string>("serviceMode") || "auto",
       provider,
       model: config.get<string>("ollamaModel") || "gemma4:latest",
       suggestionModel: config.get<string>("ollamaSuggestionModel") || "",
@@ -265,9 +317,13 @@ export class VerlatoClient implements vscode.Disposable {
       ollamaStreamResponses: config.get<boolean>("ollamaStreamResponses") ?? true,
     };
   }
-
   async updateModelSettings(settings: Partial<ModelSettings>): Promise<void> {
     const config = vscode.workspace.getConfiguration("verlato");
+    if (settings.serviceMode !== undefined) {
+      await config.update("serviceMode", settings.serviceMode, vscode.ConfigurationTarget.Workspace);
+      this.stopService("Verlato service mode changed.");
+      this.serviceStartFailed = false;
+    }
     if (settings.provider !== undefined) {
       await config.update("modelProvider", settings.provider, vscode.ConfigurationTarget.Workspace);
     }
@@ -349,15 +405,20 @@ export class VerlatoClient implements vscode.Disposable {
     this.output.appendLine(`Extension: ${this.extensionPath}`);
     this.output.appendLine(`Verlato CLI: ${resolution.executable}`);
     this.output.appendLine(`Model: ${formatModelSettings(modelSettings)}`);
-    this.emitStatus({
-      mode: "cli",
-      label: `Verlato: ${modelSettings.provider}`,
-      detail: `Workspace: ${this.workspaceFolder.uri.fsPath}\nCLI: ${resolution.executable}\nModel: ${formatModelSettings(modelSettings)}`,
-    });
+    if (modelSettings.serviceMode === "cli") {
+      this.emitCliStatus("Using direct CLI commands");
+      return;
+    }
+    try {
+      await this.ensureService();
+    } catch (error) {
+      this.markServiceDegraded(error);
+    }
   }
 
   dispose(): void {
     this.cancelActiveCommands();
+    this.stopService("Verlato client disposed.");
     if (this.pendingRequestEmit) {
       clearTimeout(this.pendingRequestEmit);
       this.pendingRequestEmit = undefined;
@@ -387,9 +448,82 @@ export class VerlatoClient implements vscode.Disposable {
       `Workspace: ${this.workspaceFolder.uri.fsPath}`,
       `Extension: ${this.extensionPath}`,
       `CLI: ${resolution.executable}`,
+      `Service: ${this.lastStatus.label}`,
       `Model: ${formatModelSettings(this.getModelSettings())}`,
       `Searched: ${resolution.searched.join(", ")}`,
     ].join("\n");
+  }
+
+  private async runServiceJson<T>(
+    method: string,
+    params: Record<string, unknown>,
+    label: string,
+    fallback: () => Promise<T>,
+  ): Promise<T> {
+    if (this.getModelSettings().serviceMode === "cli") {
+      return fallback();
+    }
+    const request = this.startRequest("verlato-service", [method], label);
+    const abortController = this.trackCommandController(request.id);
+    const onAbort = () => this.stopService("Verlato service request cancelled.");
+    abortController.signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      const service = await this.ensureService();
+      const result = await service.request<T>(method, params, abortController.signal);
+      this.finishRequest(request.id, "completed", { exitCode: 0 });
+      return result;
+    } catch (error) {
+      const cancelled = abortController.signal.aborted || (error instanceof Error && /cancelled/i.test(error.message));
+      this.finishRequest(request.id, cancelled ? "cancelled" : "failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (cancelled) {
+        throw new Error("Verlato command cancelled.");
+      }
+      this.stopService("Verlato service request failed.");
+      this.markServiceDegraded(error);
+      return fallback();
+    } finally {
+      abortController.signal.removeEventListener("abort", onAbort);
+      this.activeCommandControllers.delete(request.id);
+    }
+  }
+
+  private async ensureService(): Promise<VerlatoServiceClient> {
+    if (this.getModelSettings().serviceMode === "cli") {
+      throw new Error("Service mode is disabled.");
+    }
+    if (this.serviceClient?.isRunning) {
+      return this.serviceClient;
+    }
+    if (this.serviceStartFailed) {
+      throw new Error("Verlato service start previously failed.");
+    }
+    const resolution = this.resolveExecutable();
+    this.emitServiceStarting();
+    const service = new VerlatoServiceClient(
+      resolution.executable,
+      ["service"],
+      this.workspaceFolder.uri.fsPath,
+      await this.buildEnvironment(["service"]),
+      this.output,
+    );
+    this.serviceClient = service;
+    try {
+      await service.request("health");
+    } catch (error) {
+      this.serviceStartFailed = true;
+      this.serviceClient = undefined;
+      service.stop("Verlato service failed to start.");
+      throw error;
+    }
+    this.emitServiceReady();
+    return service;
+  }
+
+  private stopService(reason: string): void {
+    this.serviceClient?.stop(reason);
+    this.serviceClient = undefined;
   }
 
   private async runJsonCommand<T>(
@@ -529,7 +663,12 @@ export class VerlatoClient implements vscode.Disposable {
 
   private async readState(): Promise<StatePayload> {
     try {
-      const state = await this.runJsonCommand<StatePayload>(["state", "show"]);
+      const state = await this.runServiceJson<StatePayload>(
+        "state.show",
+        {},
+        "service state.show",
+        () => this.runJsonCommand<StatePayload>(["state", "show"]),
+      );
       return { items: state.items ?? [] };
     } catch (error) {
       this.output.appendLine(`Verlato state unavailable: ${String(error)}`);
@@ -551,6 +690,44 @@ export class VerlatoClient implements vscode.Disposable {
   private emitStatus(status: ClientStatus): void {
     this.lastStatus = status;
     this.onDidChangeStatusEmitter.fire(status);
+  }
+
+  private emitCliStatus(detail: string): void {
+    const resolution = this.lastResolution ?? this.resolveExecutable();
+    this.emitStatus({
+      mode: "cli",
+      label: "Verlato: CLI",
+      detail: `Workspace: ${this.workspaceFolder.uri.fsPath}\nCLI: ${resolution.executable}\n${detail}\nModel: ${formatModelSettings(this.getModelSettings())}`,
+    });
+  }
+
+  private emitServiceStarting(): void {
+    const resolution = this.lastResolution ?? this.resolveExecutable();
+    this.emitStatus({
+      mode: "service-starting",
+      label: "Verlato: Service starting",
+      detail: `Workspace: ${this.workspaceFolder.uri.fsPath}\nCLI: ${resolution.executable}\nStarting local stdio service...`,
+    });
+  }
+
+  private emitServiceReady(): void {
+    const resolution = this.lastResolution ?? this.resolveExecutable();
+    this.emitStatus({
+      mode: "service",
+      label: "Verlato: Service",
+      detail: `Workspace: ${this.workspaceFolder.uri.fsPath}\nCLI: ${resolution.executable}\nModel: ${formatModelSettings(this.getModelSettings())}`,
+    });
+  }
+
+  private markServiceDegraded(error: unknown): void {
+    const resolution = this.lastResolution ?? this.resolveExecutable();
+    const message = error instanceof Error ? error.message : String(error);
+    this.output.appendLine(`Verlato service unavailable; falling back to CLI: ${message}`);
+    this.emitStatus({
+      mode: "service-degraded",
+      label: "Verlato: CLI fallback",
+      detail: `Workspace: ${this.workspaceFolder.uri.fsPath}\nCLI: ${resolution.executable}\nService: ${message}\nUsing direct CLI fallback.`,
+    });
   }
 
   private trackCommandController(requestId: number): AbortController {
@@ -861,6 +1038,16 @@ function trimActivity<T>(entries: T[]): T[] {
   return entries.length > 80 ? entries.slice(entries.length - 80) : entries;
 }
 
+function serviceDraftRequest(request: DraftRangeRequest): Record<string, unknown> {
+  return {
+    base: request.base,
+    head: request.head ?? "HEAD",
+    version: request.version ?? "Unreleased",
+    include_confidence: Boolean(request.includeConfidence),
+    include_provenance: Boolean(request.includeProvenance),
+  };
+}
+
 interface StatePayload {
   items: StateItem[];
 }
@@ -986,6 +1173,7 @@ function mapPrByCommit(items: StateItem[]): Map<string, number> {
 }
 
 function formatModelSettings(settings: ModelSettings): string {
+  const service = `service: ${settings.serviceMode}`;
   const model = settings.provider === "ollama" ? `/${settings.model}` : "";
   const suggestionModel = settings.provider === "ollama" && settings.suggestionModel.trim()
     ? `; suggestion model: ${settings.suggestionModel.trim()}`
@@ -1002,7 +1190,7 @@ function formatModelSettings(settings: ModelSettings): string {
   const warm = settings.provider === "ollama" ? `; cache warm: ${settings.suggestionAutoWarmCache ? "on" : "off"}` : "";
   const instant = settings.suggestionInstantProvisional ? "; instant provisional on" : "";
   const adaptive = settings.suggestionAdaptiveRecommendations ? "; adaptive advice on" : "";
-  return `${settings.provider}${model}${suggestionModel}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; parallelism: ${settings.suggestionParallelism}; batch size: ${settings.suggestionBatchSize}; prompt profile: ${settings.suggestionPromptProfile}; tone: ${settings.suggestionTone}${warm}${instant}${adaptive}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
+  return `${settings.provider}${model}${suggestionModel}; ${service}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; parallelism: ${settings.suggestionParallelism}; batch size: ${settings.suggestionBatchSize}; prompt profile: ${settings.suggestionPromptProfile}; tone: ${settings.suggestionTone}${warm}${instant}${adaptive}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
 }
 
 function suggestModelArgs(settings: ModelSettings): string[] {

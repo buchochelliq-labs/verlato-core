@@ -90,6 +90,7 @@ verlato draft prompt --base <ref> --head <ref> --id <item-id>
 verlato draft json --base <ref> --head <ref> --version v1.2.0
 verlato draft apply --base <ref> --head <ref> --target changelog --version v1.2.0
 verlato draft review --base <ref> --id <item-id> --status ready --reviewer alice
+verlato service
 verlato serve
 verlato render --format github-release --version v1.2.0
 verlato render --format changelog --version v1.2.0
@@ -213,7 +214,8 @@ Agent guidance:
 
 Editor integration:
 
-- The bundled VS Code extension uses one-off `verlato` CLI commands for its current UI workflow.
+- The bundled VS Code extension uses `verlato service`, a built-in JSON-lines stdio service, for core draft/review/state/feedback flows when `verlato.serviceMode` is `auto` (the default). If the service cannot start, the extension falls back to one-off CLI commands and shows a degraded status.
+- Model-heavy flows such as `draft suggest`, Ollama doctor/warmup, and realtime model telemetry still use direct CLI commands in this first service pass.
 - The repo includes [.vscode/mcp.json](.vscode/mcp.json) so VS Code/Copilot can attach to the FastMCP server from the workspace.
 - The MCP server exposes these tool names:
   - `verlato_service_health`
@@ -234,7 +236,7 @@ MCP setup:
 
 - Install the optional FastMCP v3+ dependency with `python -m pip install -e .[mcp]`.
 - The checked-in [.vscode/mcp.json](.vscode/mcp.json) runs `fastmcp run ${workspaceFolder}/scripts/verlato_mcp_server.py:mcp`.
-- Start the MCP server manually with `verlato serve` if you are not using the workspace config.
+- Start the MCP server manually with `verlato serve` if you are not using the workspace config. This is separate from the extension's built-in `verlato service` transport and still requires FastMCP.
 
 VS Code extension local testing:
 
