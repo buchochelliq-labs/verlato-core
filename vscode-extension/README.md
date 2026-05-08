@@ -66,22 +66,22 @@ The default provider is local Ollama with `gemma4:latest`. Change it from `Verla
 "verlato.ollamaEndpoint": "http://127.0.0.1:11434/api/chat",
 "verlato.maxModelItems": 25,
 "verlato.suggestionParallelism": 2,
-"verlato.suggestionBatchSize": 2,
-"verlato.suggestionAutoWarmCache": true,
+"verlato.suggestionBatchSize": 5,
+"verlato.suggestionStrategy": "auto",
+"verlato.suggestionAutoWarmCache": false,
 "verlato.suggestionPromptProfile": "conservative",
-"verlato.suggestionAdaptiveRecommendations": false,
-"verlato.suggestionInstantProvisional": true
+"verlato.suggestionAdaptiveRecommendations": false
 ```
 
 `verlato.serviceMode` defaults to `auto`, which uses the built-in `verlato service` JSON-lines stdio process for core draft/review/state/feedback flows and falls back to direct CLI commands if the service is unavailable. Set it to `cli` to force the older one-command-per-action path.
 `verlato.maxModelItems` prevents a large comparison range from sending one LLM request per grouped change. Set it to `-1` only when you intentionally want no fanout guard.
 `verlato.ollamaSuggestionModel` can point suggestions at a smaller/faster local model while summaries and classification keep using `verlato.ollamaModel`; leave it empty to use the main model.
 `verlato.suggestionParallelism` controls how many draft suggestion preview requests may run at once.
-`verlato.suggestionBatchSize` controls how many uncached Ollama suggestion items can share one structured model request; non-Ollama providers still run item-by-item.
-`verlato.suggestionAutoWarmCache` quietly warms the local suggestion cache after a draft loads when the active provider is Ollama; turn it off if you only want model calls after clicking Suggest.
+`verlato.suggestionBatchSize` controls how many uncached suggestion items can share one structured model request. `verlato.suggestionStrategy` defaults to `auto`, which uses full-diff structured JSON batches for capable providers; `instant` has been removed because suggestions must be backed by diff evidence and a model response.
+`verlato.suggestionAutoWarmCache` quietly warms the local suggestion cache after a draft loads when the active provider is Ollama; it is off by default so foreground Suggest never waits on hidden background work.
 `verlato.suggestionPromptProfile` chooses the suggestion prompt budget: `conservative`, `lean`, or `minimal`; `conservative` is the default.
 `verlato.suggestionAdaptiveRecommendations` shows opt-in suggestion performance advice from preview and doctor telemetry without changing settings.
-`verlato.suggestionInstantProvisional` shows local evidence-based provisional candidates before cache or Ollama results arrive. These candidates are marked provisional, include an advisory confidence badge, and never skip or replace the authoritative provider/cache result on their own.
+Set `verlato.modelProvider` to `litellm` for the recommended BYOM proxy path, `plugin` for an audited external-command adapter, or `codex-cli`/`claude-code` for locally authenticated agent CLIs instead of Ollama.
 The Intent Inference panel includes Model health and Warm model actions for Ollama. Model health runs a tiny suggestion-style probe, reads `/api/ps` through the configured endpoint, and optionally enriches the result with `ollama ps` processor details when the CLI is available. Warm model runs the same style of tiny request before larger suggestion runs. If Ollama diagnostics show queue time, set server variables such as `OLLAMA_NUM_PARALLEL`, `OLLAMA_MAX_QUEUE`, and `OLLAMA_CONTEXT_LENGTH` before starting Ollama; the extension can only tune Verlato's client-side request fanout.
 
 If the launch config does not appear, open `.vscode/launch.json` from the repo root and start the `Verlato Extension` configuration from the editor's debug controls.

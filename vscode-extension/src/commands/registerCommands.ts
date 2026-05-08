@@ -368,7 +368,7 @@ async function changeModelSettings(
 ): Promise<void> {
   const current = client.getModelSettings();
   const provider = await vscode.window.showQuickPick(
-    ["ollama", "configured", "github-copilot", "mock", "stub"],
+    ["ollama", "litellm", "plugin", "configured", "github-copilot", "codex-cli", "claude-code", "mock", "stub"],
     {
       title: "Verlato AI provider",
       placeHolder: "Choose the provider used for summaries and classification assists",
@@ -455,14 +455,24 @@ async function changeModelSettings(
     return;
   }
   const suggestionBatchSizeRaw = await vscode.window.showInputBox({
-    prompt: "Maximum uncached Ollama suggestion items per request (1-2)",
+    prompt: "Maximum uncached Ollama suggestion items per request (1-5)",
     value: String(current.suggestionBatchSize),
     validateInput: (value) => {
       const parsed = Number(value);
-      return Number.isInteger(parsed) && parsed >= 1 && parsed <= 2 ? undefined : "Enter an integer from 1 to 2.";
+      return Number.isInteger(parsed) && parsed >= 1 && parsed <= 5 ? undefined : "Enter an integer from 1 to 5.";
     },
   });
   if (suggestionBatchSizeRaw === undefined) {
+    return;
+  }
+  const suggestionStrategy = await vscode.window.showQuickPick(
+    ["auto", "single", "paired", "full-diff-json"],
+    {
+      title: "Suggestion strategy",
+      placeHolder: "Choose how Verlato sends suggestion evidence to the model",
+    },
+  );
+  if (!suggestionStrategy) {
     return;
   }
   const suggestionPromptProfile = await vscode.window.showQuickPick(
@@ -483,16 +493,6 @@ async function changeModelSettings(
     },
   );
   if (!adaptiveChoice) {
-    return;
-  }
-  const instantProvisionalChoice = await vscode.window.showQuickPick(
-    ["enabled", "disabled"],
-    {
-      title: "Instant provisional suggestions",
-      placeHolder: "Show local suggestions while AI results are still running",
-    },
-  );
-  if (!instantProvisionalChoice) {
     return;
   }
   const suggestionTone = await vscode.window.showQuickPick(
@@ -516,9 +516,9 @@ async function changeModelSettings(
     suggestionCount: Number(suggestionCountRaw),
     suggestionParallelism: Number(suggestionParallelismRaw),
     suggestionBatchSize: Number(suggestionBatchSizeRaw),
+    suggestionStrategy,
     suggestionPromptProfile,
     suggestionAdaptiveRecommendations: adaptiveChoice === "enabled",
-    suggestionInstantProvisional: instantProvisionalChoice === "enabled",
     suggestionTone,
   });
   await client.initialize();

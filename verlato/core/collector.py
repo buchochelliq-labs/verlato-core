@@ -13,7 +13,7 @@ class Collector:
         self.pr_adapter = pr_adapter
 
     def collect_commits(self, base: str, head: str) -> list[Commit]:
-        cmd = ["git", "log", "--pretty=format:%H%x09%s%x09%an", f"{base}..{head}"]
+        cmd = ["git", "log", "--first-parent", "--pretty=format:%H%x09%s%x09%an", f"{base}..{head}"]
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
         commits: list[Commit] = []
         for line in result.stdout.splitlines():

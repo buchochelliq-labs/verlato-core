@@ -580,7 +580,18 @@ class Classifier:
         if not normalized:
             return "empty"
         lowered = normalized.lower()
-        if lowered.startswith(("[github-copilot-", "[ollama-", "[stub-")):
+        if lowered.startswith(
+            (
+                "[github-copilot-",
+                "[ollama-",
+                "[codex-cli-",
+                "[claude-code-",
+                "[litellm-",
+                "[plugin-",
+                "[fallback-",
+                "[stub-",
+            )
+        ):
             return "provider-error-marker"
         if lowered.startswith("mock summary:"):
             return "mock-prompt-echo"
@@ -595,7 +606,17 @@ class Classifier:
 
     def _is_provider_error(self, content: str) -> bool:
         lowered = (content or "").strip().lower()
-        return lowered.startswith(("[github-copilot-", "[ollama-"))
+        return lowered.startswith(
+            (
+                "[github-copilot-",
+                "[ollama-",
+                "[codex-cli-",
+                "[claude-code-",
+                "[litellm-",
+                "[plugin-",
+                "[fallback-",
+            )
+        )
 
     def _classify_area(self, labels: list[str], files_by_area: dict[str, list[str]]) -> str:
         for label in labels:

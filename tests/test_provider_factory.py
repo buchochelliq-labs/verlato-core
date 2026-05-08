@@ -1,9 +1,9 @@
 from verlato.config import ProviderConfig
+from verlato.providers.cli_agents import ClaudeCodeProvider, CodexCliProvider
 from verlato.providers.factory import build_provider
 from verlato.providers.github_copilot import GitHubCopilotProvider
 from verlato.providers.mock import MockProvider
 from verlato.providers.ollama import OllamaProvider
-from verlato.providers.stub import StubProvider
 
 
 def test_provider_factory_defaults_to_ollama(monkeypatch):
@@ -19,6 +19,16 @@ def test_provider_factory_builds_mock(monkeypatch):
 def test_provider_factory_builds_github_copilot(monkeypatch):
     monkeypatch.setenv("VERLATO_MODEL_PROVIDER", "github-copilot")
     assert isinstance(build_provider(), GitHubCopilotProvider)
+
+
+def test_provider_factory_builds_codex_cli(monkeypatch):
+    monkeypatch.setenv("VERLATO_MODEL_PROVIDER", "codex-cli")
+    assert isinstance(build_provider(), CodexCliProvider)
+
+
+def test_provider_factory_builds_claude_code(monkeypatch):
+    monkeypatch.setenv("VERLATO_MODEL_PROVIDER", "claude-code")
+    assert isinstance(build_provider(), ClaudeCodeProvider)
 
 
 def test_provider_factory_builds_ollama(monkeypatch):

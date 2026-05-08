@@ -37,12 +37,17 @@ from verlato.providers.model_logging import (
 from verlato.state.store import StateStore
 from verlato.state.suggestion_cache import CachedSuggestion, SuggestionCacheBackend, build_suggestion_cache_backend
 
-MODEL_PROVIDER_CHOICES = ["stub", "mock", "ollama", "github-copilot"]
+MODEL_PROVIDER_CHOICES = ["stub", "mock", "ollama", "litellm", "plugin", "github-copilot", "codex-cli", "claude-code"]
 SUGGESTION_TONE_CHOICES = ["release-note", "concise", "technical", "customer-facing"]
 SUGGESTION_PROMPT_PROFILE_CHOICES = ["conservative", "lean", "minimal"]
+SUGGESTION_STRATEGY_CHOICES = ["auto", "single", "paired", "full-diff-json"]
 MAX_SUGGESTION_PARALLELISM = 8
-MAX_SUGGESTION_BATCH_SIZE = 2
+MAX_SUGGESTION_BATCH_SIZE = 5
 SUGGESTION_CACHE_PROMPT_PROFILE = "suggestion-conservative"
+SINGLE_SUGGESTION_PROMPT_SHAPE = "single-prompt-v1"
+PAIRED_SUGGESTION_PROMPT_SHAPE = "paired-prepared-prompt-v1"
+FULL_DIFF_SUGGESTION_PROMPT_SHAPE = "full-diff-json-v1"
+FULL_DIFF_BATCH_PROMPT_CHAR_GUARD = 80_000
 
 
 @dataclass
@@ -60,6 +65,12 @@ class _SuggestionWork:
     prompt_sha: str
     prompt_budget: dict[str, object]
     cache_key: str
+    strategy: str
+    prompt_shape: str
+    full_diff_item: dict[str, object] | None
+    full_diff_file_count: int
+    full_diff_patch_chars: int
+    full_diff_missing_patch_count: int
     suggestion_count: int
     suggestion_tone: str
     suggestion_style: dict[str, object]
@@ -79,6 +90,10 @@ class _SuggestionResult:
     model_call_count: int = 0
     batched_model_calls: int = 0
     single_model_calls: int = 0
+    bulk_model_calls: int = 0
+    fallback_single_calls: int = 0
+    fallback_item_count: int = 0
+    full_diff_prompt_chars: int = 0
 
 
 @dataclass
@@ -88,6 +103,8 @@ class _SuggestionBatchOutcome:
     model_ms: int = 0
     model_call_count: int = 0
     batched_model_calls: int = 0
+    bulk_model_calls: int = 0
+    full_diff_prompt_chars: int = 0
 
 
 class _SuggestionWorkFailure(Exception):
@@ -111,11 +128,15 @@ class _SuggestionBatchFallback(Exception):
         model_ms: int = 0,
         model_call_count: int = 0,
         batched_model_calls: int = 0,
+        bulk_model_calls: int = 0,
+        full_diff_prompt_chars: int = 0,
     ) -> None:
         self.works = works
         self.model_ms = model_ms
         self.model_call_count = model_call_count
         self.batched_model_calls = batched_model_calls
+        self.bulk_model_calls = bulk_model_calls
+        self.full_diff_prompt_chars = full_diff_prompt_chars
         super().__init__("Batch suggestion response could not be used.")
 
 
@@ -168,13 +189,9 @@ def build_parser() -> argparse.ArgumentParser:
     draft_suggest.add_argument("--count", type=int)
     draft_suggest.add_argument("--parallelism", type=int)
     draft_suggest.add_argument("--batch-size", type=int)
+    draft_suggest.add_argument("--strategy", choices=SUGGESTION_STRATEGY_CHOICES)
     draft_suggest.add_argument("--prompt-profile", choices=SUGGESTION_PROMPT_PROFILE_CHOICES)
     draft_suggest.add_argument("--adaptive-recommendations", action="store_true")
-    draft_suggest.add_argument(
-        "--instant-provisional",
-        action="store_true",
-        help="Emit local provisional suggestion events on stderr before provider results.",
-    )
     draft_suggest.add_argument("--suggest-model")
     draft_suggest.add_argument("--no-cache", action="store_true")
     draft_suggest.add_argument("--refresh-cache", action="store_true")
@@ -229,6 +246,14 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_ollama.add_argument(
         "--suggest-model",
         help="Use a specific Ollama model for the suggestion-style health probe.",
+    )
+    doctor_model = doctor_sub.add_parser("model")
+    doctor_model.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Override the configured model provider.")
+    doctor_model.add_argument("--suggest-model", help="Use a specific model for the suggestion-style health probe.")
+    doctor_model.add_argument(
+        "--timeout-seconds",
+        type=float,
+        help="Advisory timeout budget used to label slow probes. Provider-specific timeouts still come from config/env.",
     )
 
     model_logs = sub.add_parser("model-logs")
@@ -501,7 +526,7 @@ def _resolve_suggest_model_provider(model_provider: str | None) -> str | None:
 
 
 def _suggestion_batching_allowed_for_provider(provider_mode: str | None) -> bool:
-    return (provider_mode or "").strip().lower() in {"ollama", "local"}
+    return (provider_mode or "").strip().lower() in {"ollama", "local", "litellm", "plugin", "external-plugin"}
 
 
 def _build_provider_for_suggestion(config: ProviderConfig, *, mode: str | None, suggest_model: str | None):
@@ -532,7 +557,7 @@ def _provider_effective_model(provider: object, task: str) -> str:
 
 def _provider_model_context(provider: object, provider_mode: str | None) -> dict[str, object]:
     normalized_mode = (provider_mode or "").strip().lower()
-    if normalized_mode not in {"ollama", "local"}:
+    if normalized_mode not in {"ollama", "local", "litellm", "plugin", "external-plugin"}:
         return {}
     model = str(getattr(provider, "model", "") or "")
     suggest_model = _normalized_suggest_model(getattr(provider, "suggest_model", None))
@@ -651,6 +676,35 @@ def _resolve_suggestion_batch_size(configured: int, requested: int | None = None
     return max(1, min(value, MAX_SUGGESTION_BATCH_SIZE))
 
 
+def _resolve_suggestion_strategy(configured: str, requested: str | None = None) -> str:
+    raw = requested or os.getenv("VERLATO_SUGGESTION_STRATEGY") or configured or "auto"
+    strategy = str(raw).strip().lower()
+    if strategy == "instant":
+        raise SystemExit(
+            "The instant suggestion strategy has been removed. "
+            "Use --strategy auto so suggestions are generated from Verlato-built diff evidence."
+        )
+    return strategy if strategy in SUGGESTION_STRATEGY_CHOICES else "auto"
+
+
+def _effective_suggestion_strategy(strategy: str, provider_mode: str | None) -> str:
+    normalized = _resolve_suggestion_strategy(strategy)
+    provider_allows_batch = _suggestion_batching_allowed_for_provider(provider_mode)
+    if normalized == "auto":
+        return "full-diff-json" if provider_allows_batch else "single"
+    if normalized in {"paired", "full-diff-json"} and not provider_allows_batch:
+        return "single"
+    return normalized
+
+
+def _suggestion_prompt_shape(strategy: str) -> str:
+    if strategy == "full-diff-json":
+        return FULL_DIFF_SUGGESTION_PROMPT_SHAPE
+    if strategy == "paired":
+        return PAIRED_SUGGESTION_PROMPT_SHAPE
+    return SINGLE_SUGGESTION_PROMPT_SHAPE
+
+
 def _resolve_suggestion_prompt_profile(configured: str, requested: str | None = None) -> str:
     raw = requested or os.getenv("VERLATO_SUGGESTION_PROMPT_PROFILE") or configured or "conservative"
     profile = str(raw).strip().lower()
@@ -661,15 +715,6 @@ def _resolve_suggestion_adaptive_recommendations(configured: bool, requested: bo
     if requested:
         return True
     raw = os.getenv("VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS")
-    if raw is None:
-        return bool(configured)
-    return _parse_bool(raw, default=bool(configured))
-
-
-def _resolve_suggestion_instant_provisional(configured: bool, requested: bool = False) -> bool:
-    if requested:
-        return True
-    raw = os.getenv("VERLATO_SUGGESTION_INSTANT_PROVISIONAL")
     if raw is None:
         return bool(configured)
     return _parse_bool(raw, default=bool(configured))
@@ -827,6 +872,7 @@ def _run_ollama_doctor(
                 "suggestion_count": _resolve_suggestion_count(config.suggestion_count),
                 "suggestion_parallelism": suggestion_parallelism,
                 "suggestion_batch_size": _resolve_suggestion_batch_size(config.suggestion_batch_size),
+                "suggestion_strategy": _resolve_suggestion_strategy(config.suggestion_strategy),
                 "cache_warming": None,
             },
             timing_sources=probes,
@@ -1091,6 +1137,176 @@ def _ollama_probe_status(response: ProviderResponse) -> tuple[bool, str | None]:
     if lowered.startswith("[ollama-empty]") or not content:
         return False, content or "[ollama-empty] no content"
     return True, None
+
+
+def _run_model_doctor(
+    *,
+    model_provider: str | None = None,
+    suggest_model: str | None = None,
+    timeout_seconds: float | None = None,
+) -> dict[str, object]:
+    config = _load_config()
+    provider_mode = model_provider or _resolve_suggest_model_provider(None) or config.provider.name
+    provider = _build_provider_for_suggestion(config.provider, mode=provider_mode, suggest_model=suggest_model)
+    item_id = "doctor_model"
+    prompt = _build_full_diff_suggestion_batch_prompt(
+        [
+            _doctor_suggestion_work(
+                item_id=item_id,
+                provider_mode=provider_mode,
+                suggestion_tone=_resolve_suggestion_tone(config.suggestion_tone),
+                suggestion_style=_resolve_suggestion_style(config),
+            )
+        ]
+    )
+    request_data = ProviderRequest(
+        task="suggest",
+        prompt=prompt,
+        evidence={
+            "doctor": True,
+            "strategy": "full-diff-json",
+            "prompt_shape": FULL_DIFF_SUGGESTION_PROMPT_SHAPE,
+            "item_ids": [item_id],
+            "item_count": 1,
+            "suggestion_count": 1,
+            "full_diff_file_count": 1,
+            "full_diff_patch_chars": 86,
+            "missing_patch_count": 0,
+        },
+        response_format=_suggestion_batch_response_format(1),
+    )
+    started = perf_counter()
+    try:
+        response = provider.summarize(request_data)
+        elapsed_ms = _elapsed_ms(started)
+    except BaseException as exc:
+        elapsed_ms = _elapsed_ms(started)
+        return {
+            "schema": "model_doctor.v1",
+            "provider": provider_mode,
+            "ok": False,
+            "status": "error",
+            "warnings": ["provider probe raised an exception"],
+            "error": str(exc),
+            "elapsed_ms": elapsed_ms,
+            "prompt_chars": len(prompt),
+        }
+    parsed = _parse_suggestion_batch_json(response.content)
+    provider_error = Classifier()._is_provider_error(response.content)
+    valid = bool(parsed and parsed.get(item_id)) and not provider_error
+    warnings: list[str] = []
+    budget_ms = int((timeout_seconds or config.provider.timeout_seconds or 10.0) * 1000)
+    if elapsed_ms >= budget_ms:
+        warnings.append(f"probe exceeded the advisory timeout budget ({budget_ms}ms)")
+    elif elapsed_ms >= 5000:
+        warnings.append("cold probe was slow; the selected suggest model may not feel responsive")
+    elif elapsed_ms >= 2000:
+        warnings.append("warm response may feel sluggish for editor suggestions")
+    if provider_error:
+        warnings.append("provider returned an error marker")
+    if not parsed:
+        warnings.append("provider did not return valid structured JSON")
+    elif not parsed.get(item_id):
+        warnings.append("provider structured JSON omitted the requested item")
+    return {
+        "schema": "model_doctor.v1",
+        "provider": provider_mode,
+        **_provider_model_context(provider, provider_mode),
+        "ok": valid,
+        "status": "ok" if valid and not warnings else "warning" if valid else "error",
+        "warnings": warnings,
+        "elapsed_ms": elapsed_ms,
+        "prompt_chars": len(prompt),
+        "model": response.model,
+        "content_chars": len(response.content),
+        "metadata": response.metadata,
+    }
+
+
+def _doctor_suggestion_work(
+    *,
+    item_id: str,
+    provider_mode: str,
+    suggestion_tone: str,
+    suggestion_style: dict[str, object],
+) -> _SuggestionWork:
+    from verlato.core.models import ChangeItem, Classification, Content, Evidence, SourceRef
+
+    item = ChangeItem(
+        id=item_id,
+        source=SourceRef(pr_number=None, commit_shas=["doctor"], base_ref="doctor-base", head_ref="doctor-head"),
+        content=Content(
+            title="Doctor model diff probe",
+            summary="Checks whether the selected model can produce structured suggestions from diff evidence.",
+        ),
+        classification=Classification(kind="changed", area="general", audience="external", semver="patch"),
+        evidence=Evidence(commit_signals=[], files=["docs/release-notes.md"]),
+        confidence=1.0,
+        checksum="doctor",
+    )
+    full_diff_item = {
+        "item_id": item_id,
+        "title": item.content.title,
+        "current_summary": item.content.summary,
+        "classification": {
+            "kind": "changed",
+            "area": "general",
+            "audience": "external",
+            "semver": "patch",
+        },
+        "labels": [],
+        "pr": None,
+        "commits": [{"sha": "doctor", "subject": "docs: tune release note copy", "message": "docs: tune release note copy", "author": "Verlato"}],
+        "files": [
+            {
+                "path": "docs/release-notes.md",
+                "status": "M",
+                "patch": "@@ -1,2 +1,2 @@\n-Old release note text\n+Clearer release note text for external readers\n",
+                "patch_chars": 86,
+                "patch_available": True,
+                "patch_unavailable_reason": "",
+            }
+        ],
+        "file_count": 1,
+        "patch_chars": 86,
+        "missing_patch_count": 0,
+        "diff_summary": {
+            "summary": "M docs/release-notes.md",
+            "files_by_area": {"docs": ["docs/release-notes.md"]},
+            "file_statuses": {"docs/release-notes.md": "M"},
+            "api_changes": [],
+            "migration_changes": [],
+            "config_changes": [],
+        },
+    }
+    return _SuggestionWork(
+        order=0,
+        item_number=1,
+        batch=1,
+        batch_total=1,
+        total_targets=1,
+        group=ChangeGroup(pr=None, commits=[], files=[]),
+        baseline_item=item,
+        prompt="",
+        evidence={},
+        source_evidence=[],
+        prompt_sha="doctor",
+        prompt_budget={},
+        cache_key="",
+        strategy="full-diff-json",
+        prompt_shape=FULL_DIFF_SUGGESTION_PROMPT_SHAPE,
+        full_diff_item=full_diff_item,
+        full_diff_file_count=1,
+        full_diff_patch_chars=86,
+        full_diff_missing_patch_count=0,
+        suggestion_count=1,
+        suggestion_tone=suggestion_tone,
+        suggestion_style=suggestion_style,
+        effective_model_provider=provider_mode,
+        evidence_ms=0,
+        prompt_ms=0,
+        started_at=perf_counter(),
+    )
 
 
 def _summarize_ollama_doctor(
@@ -1382,6 +1598,7 @@ def _suggestion_adaptive_current_settings(
     suggestion_parallelism: int,
     suggestion_batch_size: int,
     cache_warming: bool | None,
+    suggestion_strategy: str | None = None,
 ) -> dict[str, object]:
     return {
         "provider": provider,
@@ -1389,6 +1606,7 @@ def _suggestion_adaptive_current_settings(
         "suggestion_count": suggestion_count,
         "suggestion_parallelism": suggestion_parallelism,
         "suggestion_batch_size": suggestion_batch_size,
+        "suggestion_strategy": suggestion_strategy,
         "cache_warming": cache_warming,
     }
 
@@ -1507,19 +1725,10 @@ def _adaptive_source_feedback(
     negative_names: set[str],
 ) -> dict[str, dict[str, object]]:
     sources = {
-        "instant-suggestion": {
-            "event_count": 0,
-            "positive_count": 0,
-            "negative_count": 0,
-            "high_confidence_count": 0,
-            "high_confidence_positive_count": 0,
-        },
         "model-suggestion": {
             "event_count": 0,
             "positive_count": 0,
             "negative_count": 0,
-            "high_confidence_count": 0,
-            "high_confidence_positive_count": 0,
         },
     }
     for event in events:
@@ -1536,21 +1745,11 @@ def _adaptive_source_feedback(
             bucket["positive_count"] = int(bucket["positive_count"]) + 1
         if is_negative:
             bucket["negative_count"] = int(bucket["negative_count"]) + 1
-        if metadata.get("instant_confidence_band") == "high":
-            bucket["high_confidence_count"] = int(bucket["high_confidence_count"]) + 1
-            if is_positive:
-                bucket["high_confidence_positive_count"] = int(bucket["high_confidence_positive_count"]) + 1
 
     for bucket in sources.values():
         total = int(bucket["event_count"])
-        high_total = int(bucket["high_confidence_count"])
         bucket["positive_rate"] = round(int(bucket["positive_count"]) / total, 3) if total else None
         bucket["negative_rate"] = round(int(bucket["negative_count"]) / total, 3) if total else None
-        bucket["high_confidence_positive_rate"] = (
-            round(int(bucket["high_confidence_positive_count"]) / high_total, 3)
-            if high_total
-            else None
-        )
     return sources
 
 
@@ -1564,57 +1763,6 @@ def _adaptive_recommendation_items(current: dict[str, object], signals: dict[str
     negative_count = _optional_int(feedback.get("negative_count")) or 0
     event_count = _optional_int(feedback.get("event_count")) or 0
     negative_dominates = negative_count >= max(3, positive_count)
-    source_feedback = feedback.get("source_feedback") if isinstance(feedback.get("source_feedback"), dict) else {}
-    instant_feedback = (
-        source_feedback.get("instant-suggestion")
-        if isinstance(source_feedback.get("instant-suggestion"), dict)
-        else {}
-    )
-    instant_total = _optional_int(instant_feedback.get("event_count")) or 0
-    instant_positive = _optional_int(instant_feedback.get("positive_count")) or 0
-    instant_negative = _optional_int(instant_feedback.get("negative_count")) or 0
-    instant_positive_rate = _optional_float(instant_feedback.get("positive_rate"))
-
-    if 0 < instant_total < 3:
-        recommendations.append(
-            {
-                "kind": "instant-candidates-need-feedback",
-                "title": "Collect more instant suggestion feedback",
-                "detail": (
-                    f"{instant_total} instant feedback event(s) are available; keep provisional suggestions on "
-                    "until there is enough local signal to judge whether they can save model calls."
-                ),
-                "confidence": "medium",
-                "suggested_config": {"verlato.suggestionInstantProvisional": True},
-            }
-        )
-    elif instant_total >= 3 and instant_positive_rate is not None and instant_positive_rate >= 0.67:
-        recommendations.append(
-            {
-                "kind": "instant-candidates-promising",
-                "title": "Instant suggestions look promising",
-                "detail": (
-                    f"{instant_positive} of {instant_total} instant suggestion feedback event(s) were positive; "
-                    "a future high-confidence skip mode may be worth trying."
-                ),
-                "confidence": "medium" if instant_total < 6 else "high",
-                "suggested_config": {"suggestion_instant_skip": "high-confidence"},
-            }
-        )
-    elif instant_total >= 3 and instant_negative > instant_positive:
-        recommendations.append(
-            {
-                "kind": "instant-candidates-need-tuning",
-                "title": "Instant suggestions need tuning",
-                "detail": (
-                    f"{instant_negative} negative instant feedback event(s) versus {instant_positive} positive "
-                    "suggest keeping Ollama as the authoritative path."
-                ),
-                "confidence": "medium",
-                "suggested_config": {"verlato.suggestionInstantProvisional": True},
-            }
-        )
-
     if negative_dominates:
         recommendations.append(
             {
@@ -1946,6 +2094,7 @@ def _preview_draft_model_suggestions(
     count: int | None,
     parallelism: int | None = None,
     batch_size: int | None = None,
+    strategy: str | None = None,
     prompt_profile: str | None = None,
     suggest_model: str | None = None,
     model_provider: str | None = None,
@@ -1953,7 +2102,6 @@ def _preview_draft_model_suggestions(
     no_cache: bool = False,
     refresh_cache: bool = False,
     adaptive_recommendations: bool = False,
-    instant_provisional: bool = False,
 ) -> dict:
     if all_visible == bool(item_id):
         raise SystemExit("Provide exactly one suggestion target: --id or --all-visible")
@@ -1965,6 +2113,7 @@ def _preview_draft_model_suggestions(
     suggestion_count = _resolve_suggestion_count(config.suggestion_count, requested=count)
     suggestion_parallelism = _resolve_suggestion_parallelism(config.suggestion_parallelism, requested=parallelism)
     requested_suggestion_batch_size = _resolve_suggestion_batch_size(config.suggestion_batch_size, requested=batch_size)
+    requested_suggestion_strategy = _resolve_suggestion_strategy(config.suggestion_strategy, requested=strategy)
     suggestion_prompt_profile = _resolve_suggestion_prompt_profile(
         config.suggestion_prompt_profile,
         requested=prompt_profile,
@@ -1972,10 +2121,6 @@ def _preview_draft_model_suggestions(
     adaptive_enabled = _resolve_suggestion_adaptive_recommendations(
         config.suggestion_adaptive_recommendations,
         requested=adaptive_recommendations,
-    )
-    instant_provisional_enabled = _trace_progress_enabled() and _resolve_suggestion_instant_provisional(
-        config.suggestion_instant_provisional,
-        requested=instant_provisional,
     )
     suggestion_tone = _resolve_suggestion_tone(config.suggestion_tone, requested=tone)
     suggestion_style = _resolve_suggestion_style(config)
@@ -1986,15 +2131,21 @@ def _preview_draft_model_suggestions(
         "cli" if count is not None else "env" if os.getenv("VERLATO_SUGGESTION_COUNT") else "config"
     )
     effective_model_provider = _resolve_suggest_model_provider(model_provider)
-    model_context = (
-        _configured_ollama_model_context(config.provider, suggest_model=suggest_model)
-        if _suggestion_batching_allowed_for_provider(effective_model_provider or config.provider.name)
-        else {}
+    effective_suggestion_strategy = _effective_suggestion_strategy(
+        requested_suggestion_strategy,
+        effective_model_provider or config.provider.name,
     )
+    suggestion_provider_label = effective_model_provider or "configured"
+    if (effective_model_provider or config.provider.name or "").strip().lower() in {"ollama", "local"}:
+        model_context = _configured_ollama_model_context(config.provider, suggest_model=suggest_model)
+    else:
+        model_context = {}
     effective_suggestion_batch_size = (
-        requested_suggestion_batch_size
-        if _suggestion_batching_allowed_for_provider(effective_model_provider or config.provider.name)
-        else 1
+        1
+        if effective_suggestion_strategy == "single"
+        else min(requested_suggestion_batch_size, 2)
+        if effective_suggestion_strategy == "paired"
+        else requested_suggestion_batch_size
     )
     target_selection_start = perf_counter()
     groups = _collect_groups(base, head)
@@ -2099,7 +2250,7 @@ def _preview_draft_model_suggestions(
         target_count=len(targets),
         suggestion_count=suggestion_count,
         suggestion_count_source=suggestion_count_source,
-        provider=effective_model_provider or "configured",
+        provider=suggestion_provider_label,
         parallelism=suggestion_parallelism,
         all_visible=all_visible,
     )
@@ -2108,17 +2259,21 @@ def _preview_draft_model_suggestions(
         preview={
             "base_ref": base,
             "head_ref": head,
-            "provider": effective_model_provider or "configured",
+            "provider": suggestion_provider_label,
             **model_context,
             "count": suggestion_count,
             "prompt_profile": suggestion_prompt_profile,
             "tone": suggestion_tone,
             "style_profile": suggestion_style,
             "performance": {
+                "strategy": effective_suggestion_strategy,
                 "parallelism": suggestion_parallelism,
                 "target_selection_ms": target_selection_ms,
                 "preparation_ms": 0,
                 "prompt_chars": 0,
+                "full_diff_prompt_chars": 0,
+                "full_diff_file_count": 0,
+                "full_diff_patch_chars": 0,
                 "model_ms": 0,
                 "parse_ms": 0,
                 "total_ms": 0,
@@ -2126,6 +2281,9 @@ def _preview_draft_model_suggestions(
                 "model_call_count": 0,
                 "batched_model_calls": 0,
                 "single_model_calls": 0,
+                "bulk_model_calls": 0,
+                "fallback_single_calls": 0,
+                "fallback_item_count": 0,
                 "model_calls_saved": 0,
             },
             "visible_item_count": visible_target_count,
@@ -2148,17 +2306,21 @@ def _preview_draft_model_suggestions(
         result = {
             "base_ref": base,
             "head_ref": head,
-            "provider": effective_model_provider or "configured",
+            "provider": suggestion_provider_label,
             **model_context,
             "count": suggestion_count,
             "prompt_profile": suggestion_prompt_profile,
             "tone": suggestion_tone,
             "style_profile": suggestion_style,
             "performance": {
+                "strategy": effective_suggestion_strategy,
                 "parallelism": suggestion_parallelism,
                 "target_selection_ms": target_selection_ms,
                 "preparation_ms": 0,
                 "prompt_chars": 0,
+                "full_diff_prompt_chars": 0,
+                "full_diff_file_count": 0,
+                "full_diff_patch_chars": 0,
                 "model_ms": 0,
                 "parse_ms": 0,
                 "total_ms": total_ms,
@@ -2166,6 +2328,9 @@ def _preview_draft_model_suggestions(
                 "model_call_count": 0,
                 "batched_model_calls": 0,
                 "single_model_calls": 0,
+                "bulk_model_calls": 0,
+                "fallback_single_calls": 0,
+                "fallback_item_count": 0,
                 "model_calls_saved": 0,
             },
             "visible_item_count": visible_target_count,
@@ -2177,11 +2342,12 @@ def _preview_draft_model_suggestions(
         if adaptive_enabled:
             result["adaptive_recommendations"] = _build_suggestion_adaptive_recommendations(
                 current=_suggestion_adaptive_current_settings(
-                    provider=effective_model_provider or "configured",
+                    provider=suggestion_provider_label,
                     prompt_profile=suggestion_prompt_profile,
                     suggestion_count=suggestion_count,
                     suggestion_parallelism=suggestion_parallelism,
                     suggestion_batch_size=effective_suggestion_batch_size,
+                    suggestion_strategy=effective_suggestion_strategy,
                     cache_warming=None,
                 ),
                 timing_sources=[],
@@ -2209,15 +2375,21 @@ def _preview_draft_model_suggestions(
     completed_count = 0
     preparation_ms = 0
     prompt_chars = 0
+    full_diff_prompt_chars = 0
+    full_diff_file_count = 0
+    full_diff_patch_chars = 0
     model_ms = 0
     parse_ms = 0
     uncached_item_count = 0
     model_call_count = 0
     batched_model_calls = 0
     single_model_calls = 0
+    bulk_model_calls = 0
+    fallback_single_calls = 0
+    fallback_item_count = 0
 
     def prepare_work(order: int, group: ChangeGroup, baseline_item: ChangeItem, batch_index: int) -> _SuggestionWork:
-        nonlocal preparation_ms, prompt_chars
+        nonlocal preparation_ms, prompt_chars, full_diff_file_count, full_diff_patch_chars
         item_number = order + 1
         item_start = perf_counter()
         _trace_progress(
@@ -2251,6 +2423,21 @@ def _preview_draft_model_suggestions(
             elapsed_ms=_elapsed_ms(item_start),
         )
         prompt_start = perf_counter()
+        evidence = {
+            "title": baseline_item.content.title,
+            "item_id": baseline_item.id,
+            "suggestion_count": suggestion_count,
+            "tone": suggestion_tone,
+            "style_profile": suggestion_style,
+            "diff_summary": diff.summary,
+            "representative_hunks": diff.representative_hunks,
+            "file_count": file_count,
+            "hunk_count": hunk_count,
+        }
+        source_evidence = _build_suggestion_source_evidence(diff, group)
+        prompt_shape = _suggestion_prompt_shape(effective_suggestion_strategy)
+        full_diff_item: dict[str, object] | None = None
+        cache_key = ""
         prompt_result = provider_classifier._build_summary_prompt_with_budget(
             title=baseline_item.content.title,
             labels=[label.lower() for label in (group.pr.labels if group.pr else [])],
@@ -2269,19 +2456,25 @@ def _preview_draft_model_suggestions(
         prompt = prompt_result.prompt
         prompt_budget = dict(prompt_result.budget)
         prompt_chars += int(prompt_budget.get("prompt_chars", len(prompt)))
-        evidence = {
-            "title": baseline_item.content.title,
-            "item_id": baseline_item.id,
-            "suggestion_count": suggestion_count,
-            "tone": suggestion_tone,
-            "style_profile": suggestion_style,
-            "diff_summary": diff.summary,
-            "representative_hunks": diff.representative_hunks,
-            "file_count": file_count,
-            "hunk_count": hunk_count,
-        }
-        source_evidence = _build_suggestion_source_evidence(diff, group)
-        prompt_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12]
+        full_diff_item = _build_full_diff_suggestion_payload_item(group, baseline_item, diff)
+        if int(full_diff_item.get("patch_chars") or 0) <= 0:
+            raise SystemExit(
+                f"No diff patch evidence was available for draft item {baseline_item.id}; "
+                "Verlato will not generate a suggestion without a diff-backed payload."
+            )
+        full_diff_file_count += int(full_diff_item.get("file_count") or 0)
+        full_diff_patch_chars += int(full_diff_item.get("patch_chars") or 0)
+        prompt_sha_source = (
+            json.dumps(full_diff_item, sort_keys=True, separators=(",", ":"), default=str)
+            if effective_suggestion_strategy == "full-diff-json"
+            else prompt
+        )
+        prompt_budget["strategy"] = effective_suggestion_strategy
+        prompt_budget["prompt_shape"] = prompt_shape
+        prompt_budget["full_diff_file_count"] = full_diff_item.get("file_count", 0)
+        prompt_budget["full_diff_patch_chars"] = full_diff_item.get("patch_chars", 0)
+        prompt_budget["full_diff_missing_patch_count"] = full_diff_item.get("missing_patch_count", 0)
+        prompt_sha = hashlib.sha256(prompt_sha_source.encode("utf-8")).hexdigest()[:12]
         cache_key = _suggestion_cache_key(
             item=baseline_item,
             prompt_sha=prompt_sha,
@@ -2291,6 +2484,8 @@ def _preview_draft_model_suggestions(
             style_profile=suggestion_style,
             suggestion_count=suggestion_count,
             prompt_profile=str(prompt_budget.get("profile") or SUGGESTION_CACHE_PROMPT_PROFILE),
+            strategy=effective_suggestion_strategy,
+            prompt_shape=prompt_shape,
         )
         prompt_ms = _elapsed_ms(prompt_start)
         preparation_ms += _elapsed_ms(item_start)
@@ -2303,8 +2498,14 @@ def _preview_draft_model_suggestions(
             "prompt-built",
             f"item_id={baseline_item.id} prompt_chars={len(prompt)} prompt_sha={prompt_sha}",
         )
-        _trace_model_prompt_budget(prompt_result.budget)
-        _trace_model_payload("prompt-preview", prompt)
+        _trace_model_prompt_budget(prompt_budget)
+        if prompt:
+            _trace_model_payload("prompt-preview", prompt)
+        full_diff_file_count_for_work = int(full_diff_item.get("file_count") or 0) if full_diff_item is not None else 0
+        full_diff_patch_chars_for_work = int(full_diff_item.get("patch_chars") or 0) if full_diff_item is not None else 0
+        full_diff_missing_patch_count_for_work = (
+            int(full_diff_item.get("missing_patch_count") or 0) if full_diff_item is not None else 0
+        )
         return _SuggestionWork(
             order=order,
             item_number=item_number,
@@ -2319,6 +2520,12 @@ def _preview_draft_model_suggestions(
             prompt_sha=prompt_sha,
             prompt_budget=prompt_budget,
             cache_key=cache_key,
+            strategy=effective_suggestion_strategy,
+            prompt_shape=prompt_shape,
+            full_diff_item=full_diff_item,
+            full_diff_file_count=full_diff_file_count_for_work,
+            full_diff_patch_chars=full_diff_patch_chars_for_work,
+            full_diff_missing_patch_count=full_diff_missing_patch_count_for_work,
             suggestion_count=suggestion_count,
             suggestion_tone=suggestion_tone,
             suggestion_style=suggestion_style,
@@ -2330,12 +2537,17 @@ def _preview_draft_model_suggestions(
 
     def record_result(result: _SuggestionResult) -> None:
         nonlocal completed_count, model_ms, parse_ms, model_call_count, batched_model_calls, single_model_calls
+        nonlocal bulk_model_calls, fallback_single_calls, fallback_item_count, full_diff_prompt_chars
         completed_count += 1
         model_ms += result.aggregate_model_ms
         parse_ms += result.parse_ms
         model_call_count += result.model_call_count
         batched_model_calls += result.batched_model_calls
         single_model_calls += result.single_model_calls
+        bulk_model_calls += result.bulk_model_calls
+        fallback_single_calls += result.fallback_single_calls
+        fallback_item_count += result.fallback_item_count
+        full_diff_prompt_chars += result.full_diff_prompt_chars
         timings = result.item.get("timings")
         elapsed = timings.get("total_ms") if isinstance(timings, dict) else None
         _trace_progress(
@@ -2395,21 +2607,6 @@ def _preview_draft_model_suggestions(
             return None
         return _cached_suggestion_result(work, cached)
 
-    def record_provisional(work: _SuggestionWork) -> None:
-        item = _build_instant_provisional_suggestion_item(work)
-        if item is None:
-            return
-        _trace_suggestion_event(
-            "suggestion_item_provisional",
-            order=work.order,
-            item_id=work.baseline_item.id,
-            current=completed_count,
-            total=total_targets,
-            batch=work.batch,
-            batch_total=len(target_batches),
-            item=item,
-        )
-
     for batch_index, batch in enumerate(target_batches, start=1):
         _trace_progress(
             "suggestion_batch",
@@ -2438,13 +2635,25 @@ def _preview_draft_model_suggestions(
                 batch_results[result.order] = result
                 record_result(result)
                 continue
-            if instant_provisional_enabled:
-                record_provisional(work)
             uncached_item_count += 1
-            pending_chunk.append(work)
-            if len(pending_chunk) >= effective_suggestion_batch_size:
-                miss_chunks.append(pending_chunk)
-                pending_chunk = []
+            if effective_suggestion_strategy == "full-diff-json":
+                if pending_chunk:
+                    candidate_chunk = pending_chunk + [work]
+                    if (
+                        len(candidate_chunk) > effective_suggestion_batch_size
+                        or _full_diff_batch_prompt_chars(candidate_chunk) > FULL_DIFF_BATCH_PROMPT_CHAR_GUARD
+                    ):
+                        miss_chunks.append(pending_chunk)
+                        pending_chunk = []
+                pending_chunk.append(work)
+                if len(pending_chunk) >= effective_suggestion_batch_size:
+                    miss_chunks.append(pending_chunk)
+                    pending_chunk = []
+            else:
+                pending_chunk.append(work)
+                if len(pending_chunk) >= effective_suggestion_batch_size:
+                    miss_chunks.append(pending_chunk)
+                    pending_chunk = []
         if pending_chunk:
             miss_chunks.append(pending_chunk)
 
@@ -2510,17 +2719,21 @@ def _preview_draft_model_suggestions(
     result = {
         "base_ref": base,
         "head_ref": head,
-        "provider": effective_model_provider or "configured",
+        "provider": suggestion_provider_label,
         **model_context,
         "count": suggestion_count,
         "prompt_profile": suggestion_prompt_profile,
         "tone": suggestion_tone,
         "style_profile": suggestion_style,
         "performance": {
+            "strategy": effective_suggestion_strategy,
             "parallelism": suggestion_parallelism,
             "target_selection_ms": target_selection_ms,
             "preparation_ms": preparation_ms,
             "prompt_chars": prompt_chars,
+            "full_diff_prompt_chars": full_diff_prompt_chars,
+            "full_diff_file_count": full_diff_file_count,
+            "full_diff_patch_chars": full_diff_patch_chars,
             "model_ms": model_ms,
             "parse_ms": parse_ms,
             "total_ms": total_ms,
@@ -2528,6 +2741,9 @@ def _preview_draft_model_suggestions(
             "model_call_count": model_call_count,
             "batched_model_calls": batched_model_calls,
             "single_model_calls": single_model_calls,
+            "bulk_model_calls": bulk_model_calls,
+            "fallback_single_calls": fallback_single_calls,
+            "fallback_item_count": fallback_item_count,
             "model_calls_saved": model_calls_saved,
         },
         "visible_item_count": visible_target_count,
@@ -2539,11 +2755,12 @@ def _preview_draft_model_suggestions(
     if adaptive_enabled:
         result["adaptive_recommendations"] = _build_suggestion_adaptive_recommendations(
             current=_suggestion_adaptive_current_settings(
-                provider=effective_model_provider or "configured",
+                provider=suggestion_provider_label,
                 prompt_profile=suggestion_prompt_profile,
                 suggestion_count=suggestion_count,
                 suggestion_parallelism=suggestion_parallelism,
                 suggestion_batch_size=effective_suggestion_batch_size,
+                suggestion_strategy=effective_suggestion_strategy,
                 cache_warming=None,
             ),
             timing_sources=items,
@@ -2554,7 +2771,7 @@ def _preview_draft_model_suggestions(
                 if isinstance(cache_info := item.get("cache"), dict) and cache_info.get("hit") is True
             ),
             item_count=len(items),
-            prompt_chars=prompt_chars,
+            prompt_chars=full_diff_prompt_chars or prompt_chars,
             source="preview",
         )
     return result
@@ -2568,6 +2785,14 @@ def _provider_cache_model_id(provider: object, provider_mode: str) -> str:
         return f"ollama:{model or 'default'}"
     if normalized_mode in {"github-copilot", "github", "copilot"}:
         return f"github-copilot:{model or 'default'}"
+    if normalized_mode in {"codex-cli", "codex"}:
+        return f"codex-cli:{model or 'default'}"
+    if normalized_mode in {"claude-code", "claude"}:
+        return f"claude-code:{model or 'default'}"
+    if normalized_mode in {"litellm", "lite-llm"}:
+        return f"litellm:{model or 'default'}"
+    if normalized_mode in {"plugin", "external-plugin", "model-plugin"}:
+        return f"plugin:{model or provider.__class__.__name__}"
     if normalized_mode == "mock":
         return "mock-local"
     if normalized_mode == "stub":
@@ -2585,15 +2810,19 @@ def _suggestion_cache_key(
     style_profile: dict[str, object],
     suggestion_count: int,
     prompt_profile: str,
+    strategy: str = "single",
+    prompt_shape: str = SINGLE_SUGGESTION_PROMPT_SHAPE,
 ) -> str:
     current_summary = item.edited_summary or item.content.summary
     payload = {
-        "schema": "v1",
+        "schema": "v2",
         "item_id": item.id,
         "checksum_version": item.checksum_version,
         "checksum": item.checksum,
         "current_summary_sha": hashlib.sha256(current_summary.encode("utf-8")).hexdigest()[:12],
         "prompt_sha": prompt_sha,
+        "strategy": strategy,
+        "prompt_shape": prompt_shape,
         "provider_mode": provider_mode,
         "model_id": model_id,
         "tone": tone,
@@ -2654,6 +2883,10 @@ def _cached_suggestion_result(work: _SuggestionWork, cached: CachedSuggestion) -
             "model_ms": 0,
             "parse_ms": 0,
             "total_ms": _elapsed_ms(work.started_at),
+            "strategy": work.strategy,
+            "file_count": work.full_diff_file_count,
+            "patch_chars": work.full_diff_patch_chars,
+            "missing_patch_count": work.full_diff_missing_patch_count,
         },
         "batch": work.batch,
     }
@@ -2687,6 +2920,8 @@ def _cached_suggestion_details(
 
 
 def _run_suggestion_work_chunk(provider, provider_classifier: Classifier, works: list[_SuggestionWork]) -> list[_SuggestionResult]:
+    if works and works[0].strategy == "full-diff-json":
+        return _run_full_diff_suggestion_work_chunk(provider, provider_classifier, works)
     if len(works) <= 1:
         return [_run_single_suggestion_with_failure(provider, provider_classifier, works[0])]
 
@@ -2703,6 +2938,8 @@ def _run_suggestion_work_chunk(provider, provider_classifier: Classifier, works:
             fallback_results[0].aggregate_model_ms += fallback.model_ms
             fallback_results[0].model_call_count += fallback.model_call_count
             fallback_results[0].batched_model_calls += fallback.batched_model_calls
+            fallback_results[0].bulk_model_calls += fallback.bulk_model_calls
+            fallback_results[0].full_diff_prompt_chars += fallback.full_diff_prompt_chars
         return sorted(fallback_results, key=lambda result: result.order)
 
     results = list(outcome.results)
@@ -2717,6 +2954,60 @@ def _run_suggestion_work_chunk(provider, provider_classifier: Classifier, works:
             fallback_results[0].aggregate_model_ms += outcome.model_ms
             fallback_results[0].model_call_count += outcome.model_call_count
             fallback_results[0].batched_model_calls += outcome.batched_model_calls
+            fallback_results[0].bulk_model_calls += outcome.bulk_model_calls
+        results.extend(fallback_results)
+    return sorted(results, key=lambda result: result.order)
+
+
+def _run_full_diff_suggestion_work_chunk(
+    provider,
+    provider_classifier: Classifier,
+    works: list[_SuggestionWork],
+) -> list[_SuggestionResult]:
+    try:
+        outcome = _run_full_diff_suggestion_batch_model_work(provider, provider_classifier, works)
+    except _SuggestionBatchFallback as fallback:
+        fallback_results: list[_SuggestionResult] = []
+        for work in fallback.works:
+            try:
+                fallback_results.append(
+                    _run_suggestion_model_work(
+                        provider,
+                        provider_classifier,
+                        work,
+                        fallback_reason="full-diff-json-unusable",
+                    )
+                )
+            except (Exception, SystemExit) as exc:
+                raise _SuggestionWorkFailure(work, exc, completed_results=fallback_results) from exc
+        if fallback_results:
+            fallback_results[0].aggregate_model_ms += fallback.model_ms
+            fallback_results[0].model_call_count += fallback.model_call_count
+            fallback_results[0].batched_model_calls += fallback.batched_model_calls
+            fallback_results[0].bulk_model_calls += fallback.bulk_model_calls
+        return sorted(fallback_results, key=lambda result: result.order)
+
+    results = list(outcome.results)
+    if outcome.fallback_works:
+        fallback_results: list[_SuggestionResult] = []
+        for work in outcome.fallback_works:
+            try:
+                fallback_results.append(
+                    _run_suggestion_model_work(
+                        provider,
+                        provider_classifier,
+                        work,
+                        fallback_reason="full-diff-json-item-unusable",
+                    )
+                )
+            except (Exception, SystemExit) as exc:
+                raise _SuggestionWorkFailure(work, exc, completed_results=results + fallback_results) from exc
+        if not results and fallback_results:
+            fallback_results[0].aggregate_model_ms += outcome.model_ms
+            fallback_results[0].model_call_count += outcome.model_call_count
+            fallback_results[0].batched_model_calls += outcome.batched_model_calls
+            fallback_results[0].bulk_model_calls += outcome.bulk_model_calls
+            fallback_results[0].full_diff_prompt_chars += outcome.full_diff_prompt_chars
         results.extend(fallback_results)
     return sorted(results, key=lambda result: result.order)
 
@@ -2726,6 +3017,171 @@ def _run_single_suggestion_with_failure(provider, provider_classifier: Classifie
         return _run_suggestion_model_work(provider, provider_classifier, work)
     except (Exception, SystemExit) as exc:
         raise _SuggestionWorkFailure(work, exc) from exc
+
+
+def _run_full_diff_suggestion_batch_model_work(
+    provider,
+    provider_classifier: Classifier,
+    works: list[_SuggestionWork],
+) -> _SuggestionBatchOutcome:
+    provider_name = works[0].effective_model_provider or "configured"
+    item_ids = [work.baseline_item.id for work in works]
+    _trace_model_call_start("suggest", f"full-diff:{','.join(item_ids)}", provider_name)
+    _trace_progress(
+        "suggestion_model_request",
+        f"Prompting model with full diff for {len(works)} suggestion item(s)",
+        current=works[0].item_number,
+        total=works[0].total_targets,
+        unit="item",
+        item_id=",".join(item_ids),
+        batch=works[0].batch,
+        batch_total=works[0].batch_total,
+        batch_item_count=len(works),
+        elapsed_ms=max(_elapsed_ms(work.started_at) for work in works),
+    )
+    prompt = _build_full_diff_suggestion_batch_prompt(works)
+    prompt_chars = len(prompt)
+    _trace_model_payload("prompt-preview", prompt)
+    model_start = perf_counter()
+    response = provider.summarize(
+        ProviderRequest(
+            task="suggest",
+            prompt=prompt,
+            evidence={
+                "batch": True,
+                "strategy": "full-diff-json",
+                "prompt_shape": FULL_DIFF_SUGGESTION_PROMPT_SHAPE,
+                "item_ids": item_ids,
+                "item_count": len(works),
+                "suggestion_count": works[0].suggestion_count,
+                "full_diff_file_count": sum(work.full_diff_file_count for work in works),
+                "full_diff_patch_chars": sum(work.full_diff_patch_chars for work in works),
+                "missing_patch_count": sum(work.full_diff_missing_patch_count for work in works),
+            },
+            response_format=_suggestion_batch_response_format(works[0].suggestion_count),
+        )
+    )
+    model_ms = _elapsed_ms(model_start)
+    provider_timings = _normalized_provider_timings(response.metadata, model_ms)
+    _trace_model_call_result("suggest", f"full-diff:{','.join(item_ids)}", response.model, response.confidence)
+    _trace_model_response_detail(response.model, response.content, response.metadata, response.reasoning)
+    _trace_progress(
+        "suggestion_model_response",
+        f"Reading full-diff response for {len(works)} suggestion item(s)",
+        current=works[-1].item_number,
+        total=works[-1].total_targets,
+        unit="item",
+        item_id=",".join(item_ids),
+        batch=works[0].batch,
+        batch_total=works[0].batch_total,
+        elapsed_ms=max(_elapsed_ms(work.started_at) for work in works),
+        model_ms=model_ms,
+        queue_ms=provider_timings.get("queue_ms"),
+        ollama_total_ms=provider_timings.get("ollama_total_ms"),
+        prompt_eval_ms=provider_timings.get("prompt_eval_ms"),
+        eval_ms=provider_timings.get("eval_ms"),
+    )
+    if provider_classifier._is_provider_error(response.content):
+        raise _SuggestionBatchFallback(
+            works,
+            model_ms=model_ms,
+            model_call_count=1,
+            batched_model_calls=1,
+            bulk_model_calls=1,
+            full_diff_prompt_chars=prompt_chars,
+        )
+
+    parsed_items = _parse_suggestion_batch_json(response.content)
+    if parsed_items is None:
+        raise _SuggestionBatchFallback(
+            works,
+            model_ms=model_ms,
+            model_call_count=1,
+            batched_model_calls=1,
+            bulk_model_calls=1,
+            full_diff_prompt_chars=prompt_chars,
+        )
+
+    provider_reasoning = response.reasoning if _trace_model_reasoning_payloads_enabled() else ""
+    results: list[_SuggestionResult] = []
+    fallback_works: list[_SuggestionWork] = []
+    for work in works:
+        raw_suggestions = parsed_items.get(work.baseline_item.id)
+        if not raw_suggestions:
+            fallback_works.append(work)
+            continue
+        parse_start = perf_counter()
+        suggestion_details, rejected_candidates = _parse_suggestion_variants(
+            "\n".join(raw_suggestions),
+            work.suggestion_count,
+            work.baseline_item,
+            work.group,
+            trace_title=work.baseline_item.content.title,
+            trace_model=response.model,
+            banned_phrases=list(work.suggestion_style["banned_phrases"]),
+            specificity_floor=float(work.suggestion_style["specificity_floor"]),
+        )
+        parse_ms = _elapsed_ms(parse_start)
+        _trace_model_suggestion_decision(
+            title=work.baseline_item.content.title,
+            model=response.model,
+            parsed_count=len(suggestion_details),
+            requested_count=work.suggestion_count,
+            accepted=_suggestions_preview(suggestion_details),
+            rejected_count=len(rejected_candidates),
+        )
+        if not suggestion_details:
+            fallback_works.append(work)
+            continue
+        item = _build_suggestion_result_item(
+            work=work,
+            response=response,
+            suggestion_details=suggestion_details,
+            rejected_candidates=rejected_candidates,
+            model_ms=model_ms,
+            parse_ms=parse_ms,
+            provider_timings=provider_timings,
+            provider_reasoning=provider_reasoning,
+            batch_model_ms=model_ms,
+            batch_item_count=len(works),
+        )
+        timings = item.get("timings")
+        if isinstance(timings, dict):
+            timings["batch_prompt_chars"] = prompt_chars
+        item["full_diff"] = {
+            "prompt_shape": FULL_DIFF_SUGGESTION_PROMPT_SHAPE,
+            "prompt_chars": prompt_chars,
+            "file_count": work.full_diff_file_count,
+            "patch_chars": work.full_diff_patch_chars,
+            "missing_patch_count": work.full_diff_missing_patch_count,
+            "single_item_over_batch_guard": len(works) == 1 and prompt_chars > FULL_DIFF_BATCH_PROMPT_CHAR_GUARD,
+        }
+        results.append(_SuggestionResult(order=work.order, item=item, model_ms=model_ms, parse_ms=parse_ms))
+
+    if not results:
+        return _SuggestionBatchOutcome(
+            results=[],
+            fallback_works=fallback_works or works,
+            model_ms=model_ms,
+            model_call_count=1,
+            batched_model_calls=1,
+            bulk_model_calls=1,
+            full_diff_prompt_chars=prompt_chars,
+        )
+    results[0].aggregate_model_ms = model_ms
+    results[0].model_call_count = 1
+    results[0].batched_model_calls = 1
+    results[0].bulk_model_calls = 1
+    results[0].full_diff_prompt_chars = prompt_chars
+    return _SuggestionBatchOutcome(
+        results=results,
+        fallback_works=fallback_works,
+        model_ms=model_ms,
+        model_call_count=1,
+        batched_model_calls=1,
+        bulk_model_calls=1,
+        full_diff_prompt_chars=prompt_chars,
+    )
 
 
 def _run_suggestion_batch_model_work(
@@ -2891,6 +3347,30 @@ def _build_suggestion_batch_prompt(works: list[_SuggestionWork]) -> str:
     )
 
 
+def _build_full_diff_suggestion_batch_prompt(works: list[_SuggestionWork]) -> str:
+    payload = {
+        "suggestion_count": works[0].suggestion_count,
+        "tone": works[0].suggestion_tone,
+        "style_profile": works[0].suggestion_style,
+        "prompt_shape": FULL_DIFF_SUGGESTION_PROMPT_SHAPE,
+        "items": [work.full_diff_item for work in works if work.full_diff_item is not None],
+    }
+    return (
+        "Generate release-note suggestion variants from the full diff evidence.\n"
+        "Use the file patches as the primary source of truth. Do not infer behavior from titles alone.\n"
+        "Return only JSON that matches the requested schema. Do not include Markdown fences or prose.\n"
+        f"For each item, return exactly {works[0].suggestion_count} suggestion string(s) in the suggestions array.\n"
+        "Do not combine items, rename item ids, omit an item, or mention implementation details unless they matter to release-note readers.\n"
+        "If a file has patch_available=false, treat that file as changed but do not invent unavailable line-level details.\n"
+        "Input JSON:\n"
+        + json.dumps(payload, indent=2, sort_keys=True)
+    )
+
+
+def _full_diff_batch_prompt_chars(works: list[_SuggestionWork]) -> int:
+    return len(_build_full_diff_suggestion_batch_prompt(works))
+
+
 def _suggestion_batch_response_format(suggestion_count: int) -> dict[str, object]:
     return {
         "type": "object",
@@ -2939,316 +3419,6 @@ def _parse_suggestion_batch_json(content: str) -> dict[str, list[str]] | None:
             suggestions_by_item[item_id] = suggestions
     return suggestions_by_item
 
-
-def _build_instant_provisional_suggestion_item(work: _SuggestionWork) -> dict[str, object] | None:
-    candidates = _instant_provisional_candidates(work)
-    if not candidates:
-        return None
-    parse_start = perf_counter()
-    suggestion_details, rejected_candidates = _parse_suggestion_variants(
-        "\n".join(f"{index}. {candidate}" for index, candidate in enumerate(candidates, start=1)),
-        work.suggestion_count,
-        work.baseline_item,
-        work.group,
-        trace_title=work.baseline_item.content.title,
-        trace_model="instant:local",
-        banned_phrases=list(work.suggestion_style["banned_phrases"]),
-        specificity_floor=float(work.suggestion_style["specificity_floor"]),
-    )
-    if not suggestion_details:
-        return None
-    parse_ms = _elapsed_ms(parse_start)
-    candidate_rank = {candidate: index for index, candidate in enumerate(candidates, start=1)}
-    for detail in suggestion_details:
-        summary = str(detail.get("summary") or "")
-        confidence = _instant_candidate_confidence(
-            summary=summary,
-            work=work,
-            rank=candidate_rank.get(summary, len(candidates)),
-            similarity=_optional_float(detail.get("similarity_to_current")) or 0.0,
-            specificity=_optional_float(detail.get("specificity_score")) or 0.0,
-            rejected_count=len(rejected_candidates),
-        )
-        detail["instant_confidence"] = confidence
-    instant_confidence = suggestion_details[0].get("instant_confidence")
-    return {
-        "item_id": work.baseline_item.id,
-        "title": work.baseline_item.content.title,
-        "current_summary": work.baseline_item.edited_summary or work.baseline_item.content.summary,
-        "provider": "instant:local",
-        "prompt_sha": work.prompt_sha,
-        "tone": work.suggestion_tone,
-        "style_profile": work.suggestion_style,
-        "source_evidence": work.source_evidence,
-        "prompt_budget": work.prompt_budget,
-        "suggestion_details": suggestion_details,
-        "rejected_candidates": rejected_candidates,
-        "instant_confidence": instant_confidence,
-        "suggestions": [detail["summary"] for detail in suggestion_details],
-        "provisional": {
-            "source": "instant-local",
-            "state": "provisional",
-        },
-        "timings": {
-            "evidence_ms": work.evidence_ms,
-            "prompt_ms": work.prompt_ms,
-            "model_ms": 0,
-            "parse_ms": parse_ms,
-            "total_ms": _elapsed_ms(work.started_at),
-        },
-    }
-
-
-def _instant_provisional_candidates(work: _SuggestionWork) -> list[str]:
-    topic = _instant_topic(work)
-    file_hint = _instant_file_hint(work.group)
-    audience = _instant_audience_label(work.baseline_item)
-    tone = work.suggestion_tone
-    candidates: list[str] = []
-    if tone == "technical":
-        candidates.extend(
-            [
-                f"Documents {topic} updates across {file_hint}",
-                f"Clarifies {topic} behavior for {audience} release readers",
-                f"Highlights {topic} changes from the latest diff evidence",
-            ]
-        )
-    elif tone == "customer-facing":
-        candidates.extend(
-            [
-                f"Explains {topic} improvements for customers",
-                f"Highlights {topic} changes for customer-facing release notes",
-                f"Clarifies how {topic} updates affect users",
-            ]
-        )
-    elif tone == "concise":
-        candidates.extend(
-            [
-                f"Highlights {topic} updates",
-                f"Clarifies {topic} behavior",
-                f"Documents {topic} changes",
-            ]
-        )
-    else:
-        candidates.extend(
-            [
-                f"Highlights {topic} updates for {audience} release readers",
-                f"Clarifies {topic} behavior across {file_hint}",
-                f"Documents {topic} changes from the latest evidence",
-            ]
-        )
-    candidates.extend(_instant_evidence_candidates(work, topic, file_hint))
-    unique: list[str] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        normalized = _clean_instant_candidate(candidate)
-        key = normalized.lower().rstrip(".")
-        if normalized and key not in seen:
-            seen.add(key)
-            unique.append(normalized)
-    return unique[: max(work.suggestion_count * 3, 3)]
-
-
-def _instant_candidate_confidence(
-    *,
-    summary: str,
-    work: _SuggestionWork,
-    rank: int,
-    similarity: float,
-    specificity: float,
-    rejected_count: int,
-) -> dict[str, object]:
-    evidence_overlap = _instant_evidence_overlap(summary, work)
-    distinct_score = max(0.0, min(1.0, 1.0 - similarity))
-    rank_score = max(0.0, 1.0 - (max(rank, 1) - 1) * 0.12)
-    rejection_penalty = min(0.18, rejected_count * 0.03)
-    score = (specificity * 0.48) + (evidence_overlap * 0.32) + (distinct_score * 0.15) + (rank_score * 0.05)
-    score = round(max(0.0, min(1.0, score - rejection_penalty)), 3)
-    reasons = _instant_confidence_reasons(
-        score=score,
-        rank=rank,
-        evidence_overlap=evidence_overlap,
-        similarity=similarity,
-        specificity=specificity,
-        rejected_count=rejected_count,
-    )
-    return {
-        "score": score,
-        "band": _instant_confidence_band(score),
-        "reasons": reasons,
-        "evidence_overlap": evidence_overlap,
-        "similarity_to_current": round(similarity, 3),
-        "specificity_score": round(specificity, 3),
-        "candidate_rank": max(rank, 1),
-    }
-
-
-def _instant_confidence_band(score: float) -> str:
-    if score >= 0.72:
-        return "high"
-    if score >= 0.5:
-        return "medium"
-    return "low"
-
-
-def _instant_confidence_reasons(
-    *,
-    score: float,
-    rank: int,
-    evidence_overlap: float,
-    similarity: float,
-    specificity: float,
-    rejected_count: int,
-) -> list[str]:
-    reasons: list[str] = []
-    if rank == 1:
-        reasons.append("top-local-candidate")
-    if specificity >= 0.65:
-        reasons.append("specific-evidence")
-    elif specificity < 0.45:
-        reasons.append("limited-specificity")
-    if evidence_overlap >= 0.55:
-        reasons.append("strong-evidence-overlap")
-    elif evidence_overlap < 0.3:
-        reasons.append("limited-evidence-overlap")
-    if similarity <= 0.45:
-        reasons.append("distinct-from-current")
-    elif similarity >= 0.7:
-        reasons.append("close-to-current")
-    if rejected_count:
-        reasons.append("filtered-nearby-candidates")
-    if not reasons:
-        reasons.append(f"{_instant_confidence_band(score)}-confidence")
-    return reasons
-
-
-def _instant_evidence_overlap(summary: str, work: _SuggestionWork) -> float:
-    candidate_tokens = set(_summary_tokens(summary))
-    if not candidate_tokens:
-        return 0.0
-    files = work.group.pr.files if work.group.pr else work.group.files
-    evidence_parts = [
-        work.baseline_item.content.title,
-        work.baseline_item.content.summary,
-        work.baseline_item.edited_summary or "",
-        work.group.pr.title if work.group.pr else "",
-        work.group.pr.body if work.group.pr else "",
-        " ".join(work.group.pr.labels if work.group.pr else []),
-        " ".join(commit.message for commit in work.group.commits),
-        " ".join(file.path for file in files),
-        " ".join(f"{entry.get('label', '')} {entry.get('detail', '')}" for entry in work.source_evidence),
-    ]
-    evidence_tokens = set(_summary_tokens(" ".join(evidence_parts)))
-    if not evidence_tokens:
-        return 0.0
-    return round(min(len(candidate_tokens & evidence_tokens) / 5, 1.0), 3)
-
-
-def _instant_topic(work: _SuggestionWork) -> str:
-    tokens: list[str] = []
-    values = [
-        work.baseline_item.content.title,
-        *[commit.message.splitlines()[0] for commit in work.group.commits[:2]],
-    ]
-    for value in values:
-        for token in _summary_tokens(value):
-            if token in _INSTANT_TOPIC_STOPWORDS or token in tokens:
-                continue
-            tokens.append(token)
-            if len(tokens) >= 4:
-                return " ".join(tokens)
-    file_hint = _instant_file_hint(work.group)
-    file_stem = Path(file_hint).stem.replace("-", " ").replace("_", " ")
-    fallback_tokens = [token for token in _summary_tokens(file_stem) if token not in _INSTANT_TOPIC_STOPWORDS]
-    return " ".join(fallback_tokens[:3]) or "release note"
-
-
-_INSTANT_TOPIC_STOPWORDS = {
-    "add",
-    "adds",
-    "added",
-    "change",
-    "changes",
-    "changed",
-    "clarify",
-    "clarifies",
-    "clarified",
-    "document",
-    "documents",
-    "documented",
-    "enable",
-    "enables",
-    "enabled",
-    "fix",
-    "fixes",
-    "fixed",
-    "improve",
-    "improves",
-    "improved",
-    "make",
-    "makes",
-    "made",
-    "refactor",
-    "refactors",
-    "refactored",
-    "support",
-    "supports",
-    "supported",
-    "tune",
-    "tunes",
-    "tuned",
-    "update",
-    "updates",
-    "updated",
-}
-
-
-def _instant_file_hint(group: ChangeGroup) -> str:
-    files = group.pr.files if group.pr else group.files
-    if files:
-        return files[0].path
-    return "changed files"
-
-
-def _instant_audience_label(item: ChangeItem) -> str:
-    audience = item.classification.audience
-    if audience in {"external", "user", "customer"}:
-        return "external"
-    if audience in {"internal", "developer"}:
-        return "internal"
-    return audience or "general"
-
-
-def _instant_evidence_candidates(work: _SuggestionWork, topic: str, file_hint: str) -> list[str]:
-    candidates: list[str] = []
-    summary = next(
-        (
-            entry["detail"]
-            for entry in work.source_evidence
-            if entry.get("kind") == "summary" and entry.get("detail")
-        ),
-        "",
-    )
-    summary_tokens = [token for token in _summary_tokens(summary) if token not in _INSTANT_TOPIC_STOPWORDS]
-    if summary_tokens:
-        focus = " ".join(summary_tokens[:5])
-        candidates.append(f"Summarizes {topic} work around {focus}")
-    for entry in work.source_evidence:
-        if entry.get("kind") == "commit" and entry.get("detail"):
-            commit_topic = _clean_instant_candidate(entry["detail"])
-            if commit_topic:
-                candidates.append(f"Turns {commit_topic} into release-note wording for {file_hint}")
-            break
-    return candidates
-
-
-def _clean_instant_candidate(value: str) -> str:
-    compact = re.sub(r"\s+", " ", value or "").strip(" .")
-    if not compact:
-        return ""
-    return compact[0].upper() + compact[1:]
-
-
 def _build_suggestion_result_item(
     *,
     work: _SuggestionWork,
@@ -3261,6 +3431,7 @@ def _build_suggestion_result_item(
     provider_reasoning: str,
     batch_model_ms: int | None = None,
     batch_item_count: int | None = None,
+    fallback_reason: str | None = None,
 ) -> dict[str, object]:
     timings: dict[str, object] = {
         "evidence_ms": work.evidence_ms,
@@ -3274,6 +3445,22 @@ def _build_suggestion_result_item(
         timings["batch_model_ms"] = batch_model_ms
     if batch_item_count is not None:
         timings["batch_item_count"] = batch_item_count
+    timings["strategy"] = work.strategy
+    timings["file_count"] = work.full_diff_file_count
+    timings["patch_chars"] = work.full_diff_patch_chars
+    timings["missing_patch_count"] = work.full_diff_missing_patch_count
+    if fallback_reason:
+        timings["fallback_used_capped_evidence"] = True
+        timings["fallback_reason"] = fallback_reason
+    fallback = (
+        {
+            "from_strategy": work.strategy,
+            "reason": fallback_reason,
+            "used_capped_evidence": True,
+        }
+        if fallback_reason
+        else None
+    )
     return {
         "item_id": work.baseline_item.id,
         "title": work.baseline_item.content.title,
@@ -3294,11 +3481,18 @@ def _build_suggestion_result_item(
             "key": work.cache_key,
         },
         "timings": timings,
+        **({"fallback": fallback} if fallback is not None else {}),
         "batch": work.batch,
     }
 
 
-def _run_suggestion_model_work(provider, provider_classifier: Classifier, work: _SuggestionWork) -> _SuggestionResult:
+def _run_suggestion_model_work(
+    provider,
+    provider_classifier: Classifier,
+    work: _SuggestionWork,
+    *,
+    fallback_reason: str | None = None,
+) -> _SuggestionResult:
     baseline_item = work.baseline_item
     provider_name = work.effective_model_provider or "configured"
     _trace_model_call_start("suggest", baseline_item.content.title, provider_name)
@@ -3363,6 +3557,21 @@ def _run_suggestion_model_work(provider, provider_classifier: Classifier, work: 
     if not suggestion_details:
         raise SystemExit(f"No model suggestions were produced for draft item {baseline_item.id}.")
     suggestions = [detail["summary"] for detail in suggestion_details]
+    timings: dict[str, object] = {
+        "evidence_ms": work.evidence_ms,
+        "prompt_ms": work.prompt_ms,
+        "model_ms": model_ms,
+        "parse_ms": parse_ms,
+        "total_ms": _elapsed_ms(work.started_at),
+        "strategy": work.strategy,
+        "file_count": work.full_diff_file_count,
+        "patch_chars": work.full_diff_patch_chars,
+        "missing_patch_count": work.full_diff_missing_patch_count,
+        **provider_timings,
+    }
+    if fallback_reason:
+        timings["fallback_used_capped_evidence"] = True
+        timings["fallback_reason"] = fallback_reason
     item = {
         "item_id": baseline_item.id,
         "title": baseline_item.content.title,
@@ -3382,14 +3591,18 @@ def _run_suggestion_model_work(provider, provider_classifier: Classifier, work: 
             "hit": False,
             "key": work.cache_key,
         },
-        "timings": {
-            "evidence_ms": work.evidence_ms,
-            "prompt_ms": work.prompt_ms,
-            "model_ms": model_ms,
-            "parse_ms": parse_ms,
-            "total_ms": _elapsed_ms(work.started_at),
-            **provider_timings,
-        },
+        "timings": timings,
+        **(
+            {
+                "fallback": {
+                    "from_strategy": work.strategy,
+                    "reason": fallback_reason,
+                    "used_capped_evidence": True,
+                }
+            }
+            if fallback_reason
+            else {}
+        ),
         "batch": work.batch,
     }
     return _SuggestionResult(
@@ -3400,6 +3613,8 @@ def _run_suggestion_model_work(provider, provider_classifier: Classifier, work: 
         aggregate_model_ms=model_ms,
         model_call_count=1,
         single_model_calls=1,
+        fallback_single_calls=1 if fallback_reason else 0,
+        fallback_item_count=1 if fallback_reason else 0,
     )
 
 
@@ -3555,6 +3770,72 @@ def _summary_specificity(candidate: str, group: ChangeGroup) -> float:
     length_score = min(len(tokens) / 12, 1.0) * 0.55
     overlap_score = min(overlap / 4, 1.0) * 0.45
     return round(length_score + overlap_score, 4)
+
+
+def _build_full_diff_suggestion_payload_item(group: ChangeGroup, item: ChangeItem, diff) -> dict[str, object]:
+    files = group.pr.files if group.pr else group.files
+    file_payloads: list[dict[str, object]] = []
+    patch_chars = 0
+    missing_patch_count = 0
+    for changed_file in files:
+        patch = changed_file.patch or ""
+        patch_chars += len(patch)
+        if not patch:
+            missing_patch_count += 1
+        file_payloads.append(
+            {
+                "path": changed_file.path,
+                "status": changed_file.status,
+                "patch": patch,
+                "patch_chars": len(patch),
+                "patch_available": bool(patch),
+                "patch_unavailable_reason": "" if patch else "missing-or-unavailable",
+            }
+        )
+    return {
+        "item_id": item.id,
+        "title": item.content.title,
+        "current_summary": item.edited_summary or item.content.summary,
+        "classification": {
+            "kind": item.classification.kind,
+            "area": item.classification.area,
+            "audience": item.classification.audience,
+            "semver": item.classification.semver,
+        },
+        "labels": list(group.pr.labels if group.pr else []),
+        "pr": (
+            {
+                "number": group.pr.number,
+                "title": group.pr.title,
+                "body": group.pr.body,
+                "base_ref": group.pr.base_ref,
+                "head_ref": group.pr.head_ref,
+            }
+            if group.pr
+            else None
+        ),
+        "commits": [
+            {
+                "sha": commit.sha,
+                "subject": commit.message.splitlines()[0],
+                "message": commit.message,
+                "author": commit.author,
+            }
+            for commit in group.commits
+        ],
+        "files": file_payloads,
+        "file_count": len(file_payloads),
+        "patch_chars": patch_chars,
+        "missing_patch_count": missing_patch_count,
+        "diff_summary": {
+            "summary": diff.summary,
+            "files_by_area": diff.files_by_area,
+            "file_statuses": diff.file_statuses,
+            "api_changes": diff.api_changes,
+            "migration_changes": diff.migration_changes,
+            "config_changes": diff.config_changes,
+        },
+    }
 
 
 def _build_suggestion_source_evidence(diff, group: ChangeGroup) -> list[dict[str, str]]:
@@ -4336,9 +4617,6 @@ def _persist_review_update(
                 "style_profile": match.summary_provenance.get("style_profile") if match.summary_provenance else None,
                 "similarity_to_current": match.summary_provenance.get("similarity_to_current") if match.summary_provenance else None,
                 "specificity_score": match.summary_provenance.get("specificity_score") if match.summary_provenance else None,
-                "instant_confidence": match.summary_provenance.get("instant_confidence") if match.summary_provenance else None,
-                "instant_confidence_band": match.summary_provenance.get("instant_confidence_band") if match.summary_provenance else None,
-                "instant_confidence_score": match.summary_provenance.get("instant_confidence_score") if match.summary_provenance else None,
                 "source_evidence_count": match.summary_provenance.get("source_evidence_count") if match.summary_provenance else None,
             }
             state.feedback_events.append(
@@ -4558,6 +4836,19 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if args.command == "doctor" and args.doctor_command == "model":
+        print(
+            json.dumps(
+                _run_model_doctor(
+                    model_provider=args.model_provider,
+                    suggest_model=args.suggest_model,
+                    timeout_seconds=args.timeout_seconds,
+                ),
+                indent=2,
+            )
+        )
+        return 0
+
     if args.command == "model-logs" and args.model_logs_command == "export":
         return _run_model_logs_export(
             file_path=args.file,
@@ -4600,6 +4891,7 @@ def main(argv: list[str] | None = None) -> int:
                     count=args.count,
                     parallelism=args.parallelism,
                     batch_size=args.batch_size,
+                    strategy=args.strategy,
                     prompt_profile=args.prompt_profile,
                     suggest_model=args.suggest_model,
                     model_provider=args.model_provider,
@@ -4607,7 +4899,6 @@ def main(argv: list[str] | None = None) -> int:
                     no_cache=args.no_cache,
                     refresh_cache=args.refresh_cache,
                     adaptive_recommendations=args.adaptive_recommendations,
-                    instant_provisional=args.instant_provisional,
                 )
                 print(json.dumps(suggestions, indent=2))
                 return 0

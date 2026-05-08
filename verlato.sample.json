@@ -6,7 +6,8 @@
   "feedback_include_text": false,
   "suggestion_count": 1,
   "suggestion_parallelism": 1,
-  "suggestion_batch_size": 2,
+  "suggestion_batch_size": 5,
+  "suggestion_strategy": "auto",
   "suggestion_prompt_profile": "conservative",
   "suggestion_adaptive_recommendations": false,
   "suggestion_tone": "release-note",
@@ -35,7 +36,34 @@
     "classify_num_predict": 24,
     "suggest_num_predict": null,
     "suggest_think": false,
-    "max_items_per_scan": 25
+    "max_items_per_scan": 25,
+    "api_key_env": null,
+    "plugin_manifest": {
+      "id": "example-plugin",
+      "display_name": "Example Plugin",
+      "command": [
+        "example-plugin-command"
+      ],
+      "config_schema": {
+        "type": "object"
+      },
+      "capabilities": {
+        "tasks": [
+          "suggest",
+          "summarize",
+          "classify"
+        ],
+        "streaming": false,
+        "structured_json": true,
+        "location": "local",
+        "auth": "env",
+        "health_probe": true,
+        "context_window": null
+      }
+    },
+    "plugin_config": {},
+    "plugin_env": [],
+    "fallbacks": []
   },
   "targets": {
     "changelog": {

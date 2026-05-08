@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ class ProviderConfig:
     model: str | None = "gemma4:latest"
     suggest_model: str | None = None
     endpoint: str | None = None
+    api_key_env: str | None = None
     max_items_per_scan: int = 25
     timeout_seconds: float | None = None
     keep_alive: str | None = "10m"
@@ -32,6 +34,11 @@ class ProviderConfig:
     classify_num_predict: int | None = None
     suggest_num_predict: int | None = None
     suggest_think: bool | None = False
+    plugin_manifest: dict[str, Any] = field(default_factory=dict)
+    plugin_command: list[str] = field(default_factory=list)
+    plugin_config: dict[str, Any] = field(default_factory=dict)
+    plugin_env: list[str] = field(default_factory=list)
+    fallbacks: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -51,10 +58,10 @@ class VerlatoConfig:
     provider: ProviderConfig = field(default_factory=ProviderConfig)
     suggestion_count: int = 1
     suggestion_parallelism: int = 1
-    suggestion_batch_size: int = 2
+    suggestion_batch_size: int = 5
+    suggestion_strategy: str = "auto"
     suggestion_prompt_profile: str = "conservative"
     suggestion_adaptive_recommendations: bool = False
-    suggestion_instant_provisional: bool = False
     suggestion_tone: str = "release-note"
     suggestion_style: SuggestionStyleConfig = field(default_factory=SuggestionStyleConfig)
     feedback_include_text: bool = False
@@ -92,14 +99,14 @@ def load_config(cwd: str | None = None) -> VerlatoConfig:
         config.suggestion_parallelism = int(raw["suggestion_parallelism"])
     if raw.get("suggestion_batch_size") is not None:
         config.suggestion_batch_size = int(raw["suggestion_batch_size"])
+    if raw.get("suggestion_strategy") is not None:
+        config.suggestion_strategy = str(raw["suggestion_strategy"]).strip() or config.suggestion_strategy
     if raw.get("suggestion_prompt_profile") is not None:
         config.suggestion_prompt_profile = (
             str(raw["suggestion_prompt_profile"]).strip() or config.suggestion_prompt_profile
         )
     if raw.get("suggestion_adaptive_recommendations") is not None:
         config.suggestion_adaptive_recommendations = bool(raw["suggestion_adaptive_recommendations"])
-    if raw.get("suggestion_instant_provisional") is not None:
-        config.suggestion_instant_provisional = bool(raw["suggestion_instant_provisional"])
     if raw.get("suggestion_tone") is not None:
         config.suggestion_tone = str(raw["suggestion_tone"]).strip() or config.suggestion_tone
     if raw.get("feedback_include_text") is not None:
@@ -115,34 +122,7 @@ def load_config(cwd: str | None = None) -> VerlatoConfig:
 
     provider = raw.get("provider")
     if isinstance(provider, dict):
-        name = str(provider.get("name") or config.provider.name).strip() or "stub"
-        model = provider.get("model")
-        suggest_model = provider.get("suggest_model", config.provider.suggest_model)
-        endpoint = provider.get("endpoint")
-        max_items_per_scan = provider.get("max_items_per_scan", config.provider.max_items_per_scan)
-        timeout_seconds = provider.get("timeout_seconds", config.provider.timeout_seconds)
-        keep_alive = provider.get("keep_alive", config.provider.keep_alive)
-        num_ctx = provider.get("num_ctx", config.provider.num_ctx)
-        num_predict = provider.get("num_predict", config.provider.num_predict)
-        summary_num_predict = provider.get("summary_num_predict", config.provider.summary_num_predict)
-        classify_num_predict = provider.get("classify_num_predict", config.provider.classify_num_predict)
-        suggest_num_predict = provider.get("suggest_num_predict", config.provider.suggest_num_predict)
-        suggest_think = provider.get("suggest_think", config.provider.suggest_think)
-        config.provider = ProviderConfig(
-            name=name,
-            model=str(model).strip() if model else None,
-            suggest_model=str(suggest_model).strip() if suggest_model else None,
-            endpoint=str(endpoint).strip() if endpoint else None,
-            max_items_per_scan=int(max_items_per_scan),
-            timeout_seconds=float(timeout_seconds) if timeout_seconds is not None else None,
-            keep_alive=str(keep_alive).strip() if keep_alive is not None else None,
-            num_ctx=int(num_ctx) if num_ctx is not None else None,
-            num_predict=int(num_predict) if num_predict is not None else None,
-            summary_num_predict=int(summary_num_predict) if summary_num_predict is not None else None,
-            classify_num_predict=int(classify_num_predict) if classify_num_predict is not None else None,
-            suggest_num_predict=int(suggest_num_predict) if suggest_num_predict is not None else None,
-            suggest_think=bool(suggest_think) if suggest_think is not None else None,
-        )
+        config.provider = _parse_provider_config(provider, defaults=config.provider)
 
     targets = raw.get("targets")
     if isinstance(targets, dict):
@@ -167,12 +147,68 @@ def _string_list(value: object) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+def _parse_provider_config(raw: dict[str, Any], *, defaults: ProviderConfig) -> ProviderConfig:
+    name = str(raw.get("name") or defaults.name).strip() or "stub"
+    model = raw.get("model")
+    suggest_model = raw.get("suggest_model", defaults.suggest_model)
+    endpoint = raw.get("endpoint")
+    api_key_env = raw.get("api_key_env", defaults.api_key_env)
+    max_items_per_scan = raw.get("max_items_per_scan", defaults.max_items_per_scan)
+    timeout_seconds = raw.get("timeout_seconds", defaults.timeout_seconds)
+    keep_alive = raw.get("keep_alive", defaults.keep_alive)
+    num_ctx = raw.get("num_ctx", defaults.num_ctx)
+    num_predict = raw.get("num_predict", defaults.num_predict)
+    summary_num_predict = raw.get("summary_num_predict", defaults.summary_num_predict)
+    classify_num_predict = raw.get("classify_num_predict", defaults.classify_num_predict)
+    suggest_num_predict = raw.get("suggest_num_predict", defaults.suggest_num_predict)
+    suggest_think = raw.get("suggest_think", defaults.suggest_think)
+    raw_plugin_manifest = raw.get("plugin_manifest")
+    plugin_manifest: dict[str, Any] = dict(raw_plugin_manifest) if isinstance(raw_plugin_manifest, dict) else {}
+    plugin_command = raw.get("plugin_command")
+    if plugin_command is None:
+        plugin_command = raw.get("command")
+    raw_plugin_config = raw.get("plugin_config")
+    plugin_config: dict[str, Any] = dict(raw_plugin_config) if isinstance(raw_plugin_config, dict) else {}
+    plugin_env = raw.get("plugin_env")
+    raw_fallbacks = raw.get("fallbacks")
+    fallbacks: list[Any] = list(raw_fallbacks) if isinstance(raw_fallbacks, list) else []
+    return ProviderConfig(
+        name=name,
+        model=str(model).strip() if model else None,
+        suggest_model=str(suggest_model).strip() if suggest_model else None,
+        endpoint=str(endpoint).strip() if endpoint else None,
+        api_key_env=str(api_key_env).strip() if api_key_env else None,
+        max_items_per_scan=int(max_items_per_scan),
+        timeout_seconds=float(timeout_seconds) if timeout_seconds is not None else None,
+        keep_alive=str(keep_alive).strip() if keep_alive is not None else None,
+        num_ctx=int(num_ctx) if num_ctx is not None else None,
+        num_predict=int(num_predict) if num_predict is not None else None,
+        summary_num_predict=int(summary_num_predict) if summary_num_predict is not None else None,
+        classify_num_predict=int(classify_num_predict) if classify_num_predict is not None else None,
+        suggest_num_predict=int(suggest_num_predict) if suggest_num_predict is not None else None,
+        suggest_think=bool(suggest_think) if suggest_think is not None else None,
+        plugin_manifest=dict(plugin_manifest),
+        plugin_command=_command_list(plugin_command),
+        plugin_config=dict(plugin_config),
+        plugin_env=_string_list(plugin_env),
+        fallbacks=[fallback for fallback in fallbacks if isinstance(fallback, dict)],
+    )
+
+
 def resolve_target_path(path: str, *, cwd: str | None = None) -> Path:
     root = Path(cwd or os.getcwd())
     target = Path(path)
     if target.is_absolute():
         return target
     return root / target
+
+
+def _command_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(part) for part in value if str(part).strip()]
+    if isinstance(value, str):
+        return [part for part in shlex.split(value, posix=os.name != "nt") if part]
+    return []
 
 
 def _resolve_config_path(cwd: str | None = None) -> Path | None:

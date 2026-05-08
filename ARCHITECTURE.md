@@ -42,7 +42,7 @@ This document captures the current MVP architecture and should be reviewed befor
 - `verlato/github/adapter.py`
   - GitHub adapter boundary, including stub implementation.
 - `verlato/providers/`
-  - BYOM provider abstraction with stub, deterministic mock, Ollama, GitHub-hosted model, and model-log sink support.
+  - BYOM provider abstraction with stub, deterministic mock, Ollama, GitHub-hosted model, Codex CLI, Claude Code, and model-log sink support.
 - `vscode-extension/`
   - Editor UX for draft review, suggestion preview/regeneration, tone selection, realtime model telemetry, and apply flows.
 - `verlato/mcp/service.py`
@@ -63,7 +63,7 @@ This document captures the current MVP architecture and should be reviewed befor
 7. `MarkdownGenerator` renders organized output sections.
 8. `verlato/mcp/server.py` exposes agent-facing MCP tools over stdio for Copilot and other MCP clients.
 
-For model-assisted suggestion previews, `draft suggest --preview` builds a bounded prompt from PR metadata, changed-file evidence, representative hunks, kind/audience context, the selected tone preset, and optional project language controls. Project style controls include guidance text, preferred vocabulary, banned phrases, and an opt-in specificity floor. The CLI emits realtime model telemetry to stderr and optional JSONL debug logs. VS Code consumes those events as a request timeline, lets users regenerate one item or all visible suggestions, records lightweight local feedback, and passes summary provenance back through `draft review` when a suggestion is applied.
+For suggestion previews, `draft suggest --preview` is diff-first and model-backed. The removed `instant` path is rejected because suggestions must be generated from Verlato-built diff payloads. `auto`, `paired`, and `full-diff-json` use structured JSON batches for capable providers such as Ollama, LiteLLM, and audited plugins; each uncached item includes full available changed-file patches, PR metadata, commits, labels, kind/audience context, the selected tone preset, and optional project language controls. The bounded single-item prompt path remains available as an explicit fallback. Project style controls include guidance text, preferred vocabulary, banned phrases, and an opt-in specificity floor. The CLI emits realtime model telemetry to stderr and optional JSONL debug logs. VS Code consumes those events as a request timeline, lets users regenerate one item or all visible suggestions, records lightweight local feedback, and passes summary provenance back through `draft review` when a suggestion is applied. External BYOM plugins run out of process with JSON stdin/stdout, minimal environment, no repo cwd, enforced timeout, and request/prompt/evidence/schema hashes recorded in provider metadata.
 
 ## Extensibility seams
 

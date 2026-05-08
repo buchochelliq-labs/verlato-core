@@ -5,6 +5,7 @@ import {
   CommandRequestSnapshot,
   DraftDocument,
   DraftRangeRequest,
+  DraftSuggestionItem,
   DraftSuggestionPreview,
   ModelSettings,
   OllamaDoctorResult,
@@ -381,7 +382,6 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     await this.runBusy(async () => {
       if (!itemId && cacheMode === "default") {
         this.cancelPendingSuggestionWarm();
-        await this.waitForMatchingSuggestionWarm();
       }
       const suggestions = await this.client.previewDraftSuggestions(this.range, itemId, (partial) => {
         this.suggestions = partial;
@@ -422,13 +422,11 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     }
     const detail = suggestionItem?.suggestion_details?.find((entry) => entry.summary === summary);
     const feedbackMetadata = this.suggestionFeedbackMetadata(itemId, suggestionIndex);
-    const instantConfidence = detail?.instant_confidence ?? suggestionItem?.instant_confidence;
-    const suggestionSource = suggestionItem?.provisional ? "instant-suggestion" : "model-suggestion";
     await this.runBusy(async () => {
       await this.client.reviewDraftItem(this.range, itemId, {
         summary,
         summaryProvenance: {
-          source: suggestionSource,
+          source: "model-suggestion",
           provider: this.suggestions?.provider,
           model: suggestionItem?.provider,
           prompt_sha: suggestionItem?.prompt_sha,
@@ -439,9 +437,6 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
           suggestion_index: suggestionIndex,
           similarity_to_current: detail?.similarity_to_current,
           specificity_score: detail?.specificity_score,
-          instant_confidence: instantConfidence,
-          instant_confidence_band: instantConfidence?.band,
-          instant_confidence_score: instantConfidence?.score,
           response_metadata: suggestionItem?.provider_metadata,
           source_evidence_count: suggestionItem?.source_evidence?.length ?? 0,
           reasoning_exposed: Boolean(suggestionItem?.provider_reasoning),
@@ -485,10 +480,8 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     const summary = suggestionItem.suggestions[suggestionIndex] ?? suggestionItem.suggestions[0];
     const detail = suggestionItem.suggestion_details?.find((entry) => entry.summary === summary)
       ?? suggestionItem.suggestion_details?.[0];
-    const confidence = detail?.instant_confidence ?? suggestionItem.instant_confidence;
-    const source = suggestionItem.provisional ? "instant-suggestion" : "model-suggestion";
     const metadata: Record<string, unknown> = {
-      source,
+      source: "model-suggestion",
       provider: this.suggestions?.provider,
       model: suggestionItem.provider,
       tone: suggestionItem.tone ?? this.suggestions?.tone ?? this.client.getModelSettings().suggestionTone,
@@ -498,12 +491,6 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       specificity_score: detail?.specificity_score,
       source_evidence_count: suggestionItem.source_evidence?.length ?? 0,
     };
-    if (confidence) {
-      metadata.instant_confidence = confidence;
-      metadata.instant_confidence_band = confidence.band;
-      metadata.instant_confidence_score = confidence.score;
-      metadata.instant_confidence_reasons = confidence.reasons;
-    }
     return Object.fromEntries(Object.entries(metadata).filter(([, value]) => value !== undefined));
   }
 
@@ -751,6 +738,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       count: settings.suggestionCount,
       parallelism: settings.suggestionParallelism,
       batchSize: settings.suggestionBatchSize,
+      strategy: settings.suggestionStrategy,
       promptProfile: settings.suggestionPromptProfile,
       tone: settings.suggestionTone,
       styleGuidance: settings.styleGuidance,

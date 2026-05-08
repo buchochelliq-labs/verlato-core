@@ -1128,6 +1128,12 @@ function modelBadgeLabel(settings: ModelSettings): string {
   if (settings.provider === "github-copilot") {
     return "GitHub model";
   }
+  if (settings.provider === "litellm") {
+    return "LiteLLM";
+  }
+  if (settings.provider === "plugin") {
+    return "Model plugin";
+  }
   if (settings.provider === "configured") {
     return "Configured";
   }
@@ -1148,8 +1154,8 @@ function modelDetail(settings: ModelSettings): string {
     `Suggestions: ${settings.suggestionCount}`,
     `Parallelism: ${settings.suggestionParallelism}`,
     `Batch size: ${settings.suggestionBatchSize}`,
+    `Strategy: ${settings.suggestionStrategy}`,
     `Auto-warm cache: ${settings.suggestionAutoWarmCache ? "on" : "off"}`,
-    `Instant provisional: ${settings.suggestionInstantProvisional ? "on" : "off"}`,
     `Prompt profile: ${settings.suggestionPromptProfile}`,
     `Adaptive advice: ${settings.suggestionAdaptiveRecommendations ? "on" : "off"}`,
     `Streaming: ${settings.ollamaStreamResponses ? "on" : "off"}`,
@@ -1284,7 +1290,6 @@ function renderSuggestions(preview: DraftSuggestionPreview | undefined, modelBus
         ${item.tone ? `<span class="badge">${escapeHtml(item.tone)}</span>` : ""}
         ${renderSuggestionCacheBadge(item)}
         ${renderSuggestionProvisionalBadge(item)}
-        ${renderSuggestionConfidenceBadge(item)}
       </div>
       ${renderSuggestionDiagnostics(item)}
       ${renderSuggestionComparison(item)}
@@ -1327,13 +1332,22 @@ function renderSuggestionBatching(preview: DraftSuggestionPreview): string {
   const batchSize = preview.performance?.batch_size ?? 1;
   const saved = preview.performance?.model_calls_saved ?? 0;
   const batchedCalls = preview.performance?.batched_model_calls ?? 0;
-  if (batchSize <= 1 && saved <= 0 && batchedCalls <= 0) {
+  const bulkCalls = preview.performance?.bulk_model_calls ?? 0;
+  const fallbackItems = preview.performance?.fallback_item_count ?? 0;
+  const strategy = preview.performance?.strategy;
+  const fullDiffFiles = preview.performance?.full_diff_file_count ?? 0;
+  const fullDiffPatchChars = preview.performance?.full_diff_patch_chars ?? 0;
+  if (batchSize <= 1 && saved <= 0 && batchedCalls <= 0 && bulkCalls <= 0 && !strategy) {
     return "";
   }
   const parts = [
+    strategy ? `${strategy}` : "",
     batchSize > 1 ? `batched ${batchSize}/item` : "",
+    bulkCalls > 0 && fullDiffFiles > 0 ? `${fullDiffFiles} file${fullDiffFiles === 1 ? "" : "s"}` : "",
+    bulkCalls > 0 && fullDiffPatchChars > 0 ? `${formatCompactCount(fullDiffPatchChars)} patch` : "",
     saved > 0 ? `saved ${saved} call${saved === 1 ? "" : "s"}` : "",
     batchedCalls > 0 ? `${batchedCalls} batch call${batchedCalls === 1 ? "" : "s"}` : "",
+    fallbackItems > 0 ? `fallback ${fallbackItems} item${fallbackItems === 1 ? "" : "s"}` : "",
   ].filter(Boolean);
   return parts.length ? `<div class="model-diagnostic">${renderIcon("intent")}<span>${escapeHtml(parts.join(" | "))}</span></div>` : "";
 }
@@ -1360,41 +1374,26 @@ function renderSuggestionCacheBadge(item: DraftSuggestionItem): string {
 }
 
 function renderSuggestionProvisionalBadge(item: DraftSuggestionItem): string {
-  if (!item.provisional) {
-    return "";
+  if (item.provisional) {
+    return `<span class="badge provisional">provisional</span>`;
   }
-  return `<span class="badge provisional">provisional</span>`;
-}
-
-function renderSuggestionConfidenceBadge(item: DraftSuggestionItem): string {
-  const confidence = item.instant_confidence;
-  if (!item.provisional || !confidence) {
-    return "";
-  }
-  const band = confidence.band ?? "unknown";
-  const score = typeof confidence.score === "number" ? ` ${Math.round(confidence.score * 100)}%` : "";
-  const reasons = Array.isArray(confidence.reasons) ? confidence.reasons.join(", ") : "";
-  const title = [
-    typeof confidence.evidence_overlap === "number" ? `evidence overlap ${Math.round(confidence.evidence_overlap * 100)}%` : "",
-    typeof confidence.specificity_score === "number" ? `specificity ${Math.round(confidence.specificity_score * 100)}%` : "",
-    typeof confidence.similarity_to_current === "number" ? `similarity ${Math.round(confidence.similarity_to_current * 100)}%` : "",
-    reasons,
-  ].filter(Boolean).join(" | ");
-  return `<span class="badge confidence" title="${escapeHtml(title)}">confidence ${escapeHtml(band)}${escapeHtml(score)}</span>`;
+  return "";
 }
 
 function renderSuggestionDiagnostics(item: DraftSuggestionItem): string {
   const timings = item.timings;
   const budgetText = formatSuggestionPromptBudget(item.prompt_budget, timings);
+  const fullDiffText = formatSuggestionFullDiff(item);
+  const evidenceText = [budgetText ? `Prompt budget: ${budgetText}` : "", fullDiffText].filter(Boolean).join(" | ");
   if (!timings || !item.provider.startsWith("ollama:")) {
-    return budgetText
-      ? `<small class="suggestion-diagnostics">Prompt budget: ${escapeHtml(budgetText)}</small>`
+    return evidenceText
+      ? `<small class="suggestion-diagnostics">${escapeHtml(evidenceText)}</small>`
       : "";
   }
   const candidates = suggestionTimingCandidates(timings);
   if (!candidates.length) {
-    return budgetText
-      ? `<small class="suggestion-diagnostics">Prompt budget: ${escapeHtml(budgetText)}</small>`
+    return evidenceText
+      ? `<small class="suggestion-diagnostics">${escapeHtml(evidenceText)}</small>`
       : "";
   }
   const dominant = candidates.reduce((best, entry) => entry.value > best.value ? entry : best, candidates[0]);
@@ -1402,8 +1401,25 @@ function renderSuggestionDiagnostics(item: DraftSuggestionItem): string {
   const tokenCounts = typeof timings.prompt_tokens === "number" || typeof timings.eval_tokens === "number"
     ? ` | ${timings.prompt_tokens ?? 0}/${timings.eval_tokens ?? 0} tok`
     : "";
-  const promptBudget = budgetText ? ` | prompt ${budgetText}` : "";
-  return `<small class="suggestion-diagnostics">Ollama bottleneck: ${escapeHtml(dominant.label)} ${formatDurationMs(dominant.value)}${tokenRate}${tokenCounts}${escapeHtml(promptBudget)}</small>`;
+  const evidence = evidenceText ? ` | ${evidenceText}` : "";
+  return `<small class="suggestion-diagnostics">Ollama bottleneck: ${escapeHtml(dominant.label)} ${formatDurationMs(dominant.value)}${tokenRate}${tokenCounts}${escapeHtml(evidence)}</small>`;
+}
+
+function formatSuggestionFullDiff(item: DraftSuggestionItem): string {
+  const fullDiff = item.full_diff;
+  const timings = item.timings;
+  const fileCount = fullDiff?.file_count ?? timings?.file_count;
+  const patchChars = fullDiff?.patch_chars ?? timings?.patch_chars;
+  const missingPatchCount = fullDiff?.missing_patch_count ?? timings?.missing_patch_count;
+  if (typeof fileCount !== "number" && typeof patchChars !== "number") {
+    return "";
+  }
+  const parts = [
+    typeof fileCount === "number" ? `full diff ${fileCount} file${fileCount === 1 ? "" : "s"}` : "full diff",
+    typeof patchChars === "number" ? `${formatCompactCount(patchChars)} patch chars` : "",
+    typeof missingPatchCount === "number" && missingPatchCount > 0 ? `${missingPatchCount} missing patch${missingPatchCount === 1 ? "" : "es"}` : "",
+  ].filter(Boolean);
+  return parts.join(", ");
 }
 
 function suggestionTimingCandidates(timings: DraftSuggestionItem["timings"]): { label: string; value: number }[] {
@@ -2004,7 +2020,7 @@ function suggestionActivityMessage(event: string, attrs: Record<string, unknown>
     return itemId ? `Generated suggestion for ${itemId}` : "Generated suggestion";
   }
   if (event === "suggestion_item_provisional") {
-    return itemId ? `Prepared instant suggestion for ${itemId}` : "Prepared instant suggestion";
+    return itemId ? `Prepared suggestion evidence for ${itemId}` : "Prepared suggestion evidence";
   }
   if (event === "suggestion_item_failed") {
     return itemId ? `Suggestion failed for ${itemId}` : "Suggestion failed";

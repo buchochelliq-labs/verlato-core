@@ -128,7 +128,7 @@ ReviewStatus = Annotated[
 OptionalSummary = Annotated[str | None, "Optional edited summary to persist for the draft item."]
 OptionalReviewer = Annotated[str | None, "Optional reviewer identity to persist with the update."]
 OptionalModelProvider = Annotated[
-    Literal["stub", "mock", "ollama", "github-copilot"] | None,
+    Literal["stub", "mock", "ollama", "litellm", "plugin", "github-copilot", "codex-cli", "claude-code"] | None,
     "Optional model provider override for LLM-assisted summaries and classifications.",
 ]
 GuidanceName = Annotated[

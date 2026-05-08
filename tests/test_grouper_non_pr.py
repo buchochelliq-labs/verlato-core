@@ -1,5 +1,5 @@
 from verlato.core.grouper import Grouper
-from verlato.core.models import Commit
+from verlato.core.models import ChangedFile, Commit
 
 
 def test_group_non_pr_conventional_commits_by_type_and_scope():
@@ -43,6 +43,37 @@ def test_do_not_group_unscoped_conventional_commits_by_changed_area():
     assert [c.sha for c in groups[0].commits] == ["f1"]
     assert [c.sha for c in groups[1].commits] == ["f2"]
     assert groups[0].grouping_reason == "Kept separate because no PR or explicit conventional scope was found."
+
+
+def test_group_adjacent_non_pr_commits_with_overlapping_substantive_files():
+    commits = [
+        Commit(
+            sha="f1",
+            message="feat: add toolbar",
+            author="dev1",
+            files=[ChangedFile(path="src/toolbar.ts", patch="+ toolbar")],
+        ),
+        Commit(
+            sha="f2",
+            message="fix: tune toolbar",
+            author="dev2",
+            files=[ChangedFile(path="src/toolbar.ts", patch="+ tune")],
+        ),
+        Commit(
+            sha="f3",
+            message="docs: update changelog",
+            author="dev2",
+            files=[ChangedFile(path="CHANGELOG.md", patch="+ generated")],
+        ),
+    ]
+
+    groups = Grouper().group(commits, prs_by_commit={})
+
+    assert len(groups) == 2
+    assert [c.sha for c in groups[0].commits] == ["f1", "f2"]
+    assert groups[0].files == [ChangedFile(path="src/toolbar.ts", patch="+ toolbar\n+ tune")]
+    assert groups[0].grouping_reason.startswith("Grouped because adjacent non-PR commits touch overlapping substantive files")
+    assert [c.sha for c in groups[1].commits] == ["f3"]
 
 
 def test_do_not_group_misc_non_pr_commits():

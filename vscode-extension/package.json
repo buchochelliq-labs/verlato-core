@@ -194,7 +194,11 @@
             "stub",
             "mock",
             "ollama",
-            "github-copilot"
+            "litellm",
+            "plugin",
+            "github-copilot",
+            "codex-cli",
+            "claude-code"
           ],
           "description": "Model provider override for LLM-assisted summaries and classifications. Use configured to honor verlato.json or environment variables."
         },
@@ -246,20 +250,26 @@
         },
         "verlato.suggestionBatchSize": {
           "type": "number",
-          "default": 2,
+          "default": 5,
           "minimum": 1,
-          "maximum": 2,
+          "maximum": 5,
           "description": "Maximum uncached Ollama suggestion items Verlato may ask for in one structured model request."
+        },
+        "verlato.suggestionStrategy": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "single",
+            "paired",
+            "full-diff-json"
+          ],
+          "description": "Suggestion generation strategy. Auto uses full-diff structured JSON batching for capable providers and single-item diff prompts for others."
         },
         "verlato.suggestionAutoWarmCache": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "Warm the local suggestion cache in the background after loading a draft when using Ollama."
-        },
-        "verlato.suggestionInstantProvisional": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show instant local provisional suggestions in VS Code while AI suggestion results are still running."
         },
         "verlato.suggestionPromptProfile": {
           "type": "string",

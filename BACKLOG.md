@@ -34,7 +34,17 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
 
 - [x] Add provider request/response contracts for summarization and classification prompts.
 - [x] Add a local/mock model adapter with deterministic outputs for tests.
+- [x] Add LiteLLM as the recommended BYOM provider path.
+- [x] Add an audited external-command model plugin contract for unsupported runtimes.
+- [x] Compute and record request/prompt/evidence/schema hashes for plugin calls.
+- [x] Enforce plugin `request_hash` echo and fail missing/mismatched responses.
+- [x] Document the tamper limit: hashes catch drift/basic tampering, not malicious lying plugins.
+- [x] Support JSON Schema plugin config metadata for future generic editor rendering.
+- [x] Add explicit provider fallback chains; no silent cloud fallback.
+- [ ] Add richer VS Code UI for generic plugin `config_schema` rendering and env-var secret hints.
+- [ ] Add optional MCP/tool-call model-provider bridge once a concrete interoperable runtime needs it.
 - [x] Define MCP-facing service interface and wire read-only endpoints first.
+- [ ] Add MCP/tool-call diff retrieval for oversized suggestion payloads.
 
 ## Documentation
 
@@ -59,19 +69,46 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
 3. **Scale and collaboration**
    - Add auth/session strategy for non-local or multi-client MCP transports.
    - Add optional DuckDB/Delta-backed analytical storage for larger repositories and feedback/model telemetry exploration.
+4. **Audited BYOM plugins**
+   - [x] Keep prompts, diff evidence, schemas, validation, and provenance internal to Verlato.
+   - [x] Run third-party plugins out of process with stdin/stdout JSON, stderr diagnostics, timeout, minimal env, and no repo cwd.
+   - [x] Add tests for valid plugin responses, bad JSON, nonzero exit, timeout, stderr diagnostics, and hash mismatch.
+   - [x] Add advisory `doctor model` probe for the selected suggestion model.
+   - [ ] Surface plugin health/config metadata in VS Code settings.
+   - [ ] Add a signed or trusted-plugin story if third-party plugins become distributed packages.
+5. **Diff-first suggestion quality**
+   - [x] Remove/reject the no-model `instant` suggestion path.
+   - [x] Fail suggestion generation when no diff patch evidence is available.
+   - [x] Record full-diff payload metrics and provider audit hashes in suggestion provenance metadata.
+   - [x] Use first-parent commit collection for release ranges.
+   - [x] Merge adjacent non-PR commits touching overlapping substantive files into one changeset.
+   - [ ] Add PR-aware grouping through GitHub API metadata for squash/merge cases without `(#123)` subjects.
+   - [ ] Add an oversized diff retrieval loop over MCP/tools for payloads that exceed model context.
 
 ## Suggested next items (recommended execution order)
 
-1. **Service-first editor integration**
+1. **Full-diff structured suggestion batching**
+   - [x] Send all available changed-file patches, commits, PR body, labels, file metadata, current summaries, and classification context to the suggestion LLM.
+   - [x] Batch multiple items in one structured JSON request when the full uncapped payload fits.
+   - [x] Avoid silently replacing full diff evidence with capped representative hunks for the full-diff strategy.
+2. **MCP/tool-call diff retrieval for oversized suggestions**
+   - Expose tools such as `list_suggestion_items`, `get_item_diff`, and `get_file_patch`.
+   - Let a model request specific diff chunks only when full-diff JSON cannot fit in context.
+   - Keep this as a follow-up because tool loops add round trips and may hurt local Ollama latency.
+3. **Service-first editor integration**
    - Replace remaining CLI-backed VS Code flows with a richer local service contract.
    - Add connection lifecycle states so VS Code can show starting, ready, degraded, and unavailable service states.
-2. **Feedback-driven prompt tuning**
+4. **Feedback-driven prompt tuning**
    - Use accepted, rejected, skipped, and regenerated suggestion feedback to recommend project style and prompt adjustments.
    - Surface safe aggregate recommendations without persisting raw prompt or response text by default.
-3. **Scale backend**
+5. **Scale backend**
    - Add optional DuckDB/Delta-backed analytical storage for larger repositories, release lineage exploration, feedback events, and model telemetry.
-4. **Model log export maturity**
+6. **Model log export maturity**
    - Add OTLP export for provider/model telemetry so model-call diagnostics can feed standard observability tooling.
+7. **BYOM plugin UX**
+   - Render plugin `config_schema` in VS Code.
+   - Add model health warnings for slow cold starts, slow warm responses, invalid schema output, and timeouts.
+   - Keep LiteLLM as the documented default recommendation, with plugins reserved for unsupported runtimes/auth paths.
 
 ## Previous next items
 

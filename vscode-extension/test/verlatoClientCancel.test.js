@@ -211,18 +211,19 @@ test("preview suggestions passes configured parallelism and batch size to the CL
     "4",
     "--batch-size",
     "2",
+    "--strategy",
+    "auto",
     "--prompt-profile",
     "conservative",
     "--tone",
     "release-note",
-    "--instant-provisional",
     "--all-visible",
   ]);
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_PARALLELISM, "4");
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_BATCH_SIZE, "2");
+  assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_STRATEGY, "auto");
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_PROMPT_PROFILE, "conservative");
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS, "0");
-  assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_INSTANT_PROVISIONAL, "1");
   assert.equal(spawnCalls[0].options.env.VERLATO_OLLAMA_SUGGEST_MODEL, "");
 });
 
@@ -316,7 +317,7 @@ test("warm suggestion cache invokes all-visible preview without changing visible
   const client = makeClient((command, args, options) => {
     spawnCalls.push({ command, args, options });
     return child;
-  }, { suggestionParallelism: 3, suggestionBatchSize: 2 });
+  }, { suggestionParallelism: 3, suggestionBatchSize: 2, suggestionStrategy: "auto" });
 
   const pending = client.warmDraftSuggestionCache({ base: "v1.0.0", head: "HEAD" });
   await waitForSpawn(spawnCalls);
@@ -344,6 +345,8 @@ test("warm suggestion cache invokes all-visible preview without changing visible
     "3",
     "--batch-size",
     "2",
+    "--strategy",
+    "auto",
     "--prompt-profile",
     "conservative",
     "--tone",
@@ -574,9 +577,9 @@ test("preview suggestions streams partial items before final stdout resolves", a
   };
   const provisionalSecondItem = {
     ...secondItem,
-    provider: "instant:local",
-    provisional: { source: "instant-local", state: "provisional" },
-    suggestions: ["Instant second suggestion"],
+    provider: "mock-local",
+    provisional: { source: "model", state: "provisional" },
+    suggestions: ["Prepared second suggestion"],
   };
   const partials = [];
 
@@ -631,7 +634,7 @@ test("preview suggestions streams partial items before final stdout resolves", a
     ["ci_b"],
     ["ci_a", "ci_b"],
   ]);
-  assert.equal(partials[1].items[0].provider, "instant:local");
+  assert.equal(partials[1].items[0].provider, "mock-local");
   assert.equal(partials[2].items[0].provider, "mock-local");
   assert.deepEqual(final.items.map((item) => item.item_id), ["ci_a", "ci_b"]);
   assert.equal(partials[3].items[0].prompt_budget.prompt_chars, 1100);

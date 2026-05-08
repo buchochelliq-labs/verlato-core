@@ -13,9 +13,10 @@ from verlato.cli.main import (
     _resolve_suggestion_batch_size,
     _resolve_suggestion_cache_backend,
     _resolve_suggestion_cache_ttl_days,
-    _resolve_suggestion_instant_provisional,
     _resolve_suggestion_parallelism,
     _resolve_suggestion_prompt_profile,
+    _resolve_suggestion_strategy,
+    _run_model_doctor,
     _run_ollama_doctor,
     main,
 )
@@ -114,7 +115,6 @@ def test_load_config_defaults_without_file(monkeypatch, tmp_path: Path):
     assert config.suggestion_cache_ttl_days == 30
     assert config.suggestion_prompt_profile == "conservative"
     assert config.suggestion_adaptive_recommendations is False
-    assert config.suggestion_instant_provisional is False
     assert config.targets["changelog"].path == "CHANGELOG.md"
     assert config.targets["github-release"].path == ".github/release.md"
 
@@ -243,6 +243,16 @@ def test_load_config_reads_suggestion_batch_size(monkeypatch, tmp_path: Path):
     assert config.suggestion_batch_size == 2
 
 
+def test_load_config_reads_suggestion_strategy(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "verlato.json"
+    config_path.write_text(json.dumps({"suggestion_strategy": "single"}))
+    monkeypatch.chdir(tmp_path)
+
+    config = load_config()
+
+    assert config.suggestion_strategy == "single"
+
+
 def test_load_config_reads_suggestion_prompt_profile_and_adaptive_flag(monkeypatch, tmp_path: Path):
     config_path = tmp_path / "verlato.json"
     config_path.write_text(
@@ -250,7 +260,6 @@ def test_load_config_reads_suggestion_prompt_profile_and_adaptive_flag(monkeypat
             {
                 "suggestion_prompt_profile": "lean",
                 "suggestion_adaptive_recommendations": True,
-                "suggestion_instant_provisional": True,
             }
         )
     )
@@ -260,7 +269,6 @@ def test_load_config_reads_suggestion_prompt_profile_and_adaptive_flag(monkeypat
 
     assert config.suggestion_prompt_profile == "lean"
     assert config.suggestion_adaptive_recommendations is True
-    assert config.suggestion_instant_provisional is True
 
 
 def test_load_config_reads_suggestion_cache_settings(monkeypatch, tmp_path: Path):
@@ -328,11 +336,28 @@ def test_resolve_suggestion_batch_size_clamps_cli_env_and_config(monkeypatch):
     monkeypatch.setenv("VERLATO_SUGGESTION_BATCH_SIZE", "2")
 
     assert _resolve_suggestion_batch_size(1) == 2
-    assert _resolve_suggestion_batch_size(1, requested=99) == 2
+    assert _resolve_suggestion_batch_size(1, requested=99) == 5
     assert _resolve_suggestion_batch_size(2, requested=0) == 1
 
     monkeypatch.setenv("VERLATO_SUGGESTION_BATCH_SIZE", "not-an-int")
     assert _resolve_suggestion_batch_size(2) == 2
+
+
+def test_resolve_suggestion_strategy_cli_env_and_config(monkeypatch):
+    monkeypatch.setenv("VERLATO_SUGGESTION_STRATEGY", "full-diff-json")
+
+    assert _resolve_suggestion_strategy("auto") == "full-diff-json"
+    try:
+        _resolve_suggestion_strategy("auto", requested="instant")
+    except SystemExit as exc:
+        assert "instant suggestion strategy has been removed" in str(exc)
+    else:
+        raise AssertionError("Expected instant suggestion strategy to be rejected")
+    assert _resolve_suggestion_strategy("auto", requested="paired") == "paired"
+    assert _resolve_suggestion_strategy("paired", requested="invalid") == "auto"
+
+    monkeypatch.delenv("VERLATO_SUGGESTION_STRATEGY")
+    assert _resolve_suggestion_strategy("single") == "single"
 
 
 def test_resolve_suggestion_prompt_profile_cli_env_and_config(monkeypatch):
@@ -344,19 +369,6 @@ def test_resolve_suggestion_prompt_profile_cli_env_and_config(monkeypatch):
 
     monkeypatch.delenv("VERLATO_SUGGESTION_PROMPT_PROFILE")
     assert _resolve_suggestion_prompt_profile("lean") == "lean"
-
-
-def test_resolve_suggestion_instant_provisional_cli_env_and_config(monkeypatch):
-    monkeypatch.setenv("VERLATO_SUGGESTION_INSTANT_PROVISIONAL", "1")
-
-    assert _resolve_suggestion_instant_provisional(False) is True
-    assert _resolve_suggestion_instant_provisional(False, requested=True) is True
-
-    monkeypatch.setenv("VERLATO_SUGGESTION_INSTANT_PROVISIONAL", "0")
-    assert _resolve_suggestion_instant_provisional(True) is False
-
-    monkeypatch.setenv("VERLATO_SUGGESTION_INSTANT_PROVISIONAL", "not-bool")
-    assert _resolve_suggestion_instant_provisional(True) is True
 
 
 def test_ollama_suggestion_cache_model_id_uses_effective_suggest_model(monkeypatch):
@@ -474,7 +486,7 @@ def test_adaptive_recommendations_classify_prompt_queue_generation_cache_and_fee
     )
     assert any(item["kind"] == "tune-style-before-slimming" for item in feedback["recommendations"])
 
-    instant = _build_suggestion_adaptive_recommendations(
+    source_feedback = _build_suggestion_adaptive_recommendations(
         current={
             "provider": "ollama",
             "prompt_profile": "conservative",
@@ -485,8 +497,8 @@ def test_adaptive_recommendations_classify_prompt_queue_generation_cache_and_fee
         },
         timing_sources=[],
         feedback_events=[
-            {"event": "suggestion_applied", "metadata": {"source": "instant-suggestion", "instant_confidence_band": "high"}},
-            {"event": "suggestion_marked_useful", "metadata": {"source": "instant-suggestion", "instant_confidence_band": "high"}},
+            {"event": "suggestion_applied", "metadata": {"source": "model-suggestion"}},
+            {"event": "suggestion_marked_useful", "metadata": {"source": "model-suggestion"}},
             {"event": "suggestion_marked_not_useful", "metadata": {"source": "model-suggestion"}},
         ],
         cache_hit_count=1,
@@ -494,33 +506,9 @@ def test_adaptive_recommendations_classify_prompt_queue_generation_cache_and_fee
         prompt_chars=1000,
         source="preview",
     )
-    instant_feedback = instant["signals"]["feedback"]["source_feedback"]["instant-suggestion"]
-    assert instant_feedback["event_count"] == 2
-    assert instant_feedback["positive_rate"] == 1.0
-    assert any(item["kind"] == "instant-candidates-need-feedback" for item in instant["recommendations"])
-
-    promising = _build_suggestion_adaptive_recommendations(
-        current={
-            "provider": "ollama",
-            "prompt_profile": "conservative",
-            "suggestion_count": 1,
-            "suggestion_parallelism": 1,
-            "suggestion_batch_size": 1,
-            "cache_warming": None,
-        },
-        timing_sources=[],
-        feedback_events=[
-            {"event": "suggestion_applied", "metadata": {"source": "instant-suggestion", "instant_confidence_band": "high"}},
-            {"event": "suggestion_marked_useful", "metadata": {"source": "instant-suggestion", "instant_confidence_band": "high"}},
-            {"event": "suggestion_applied", "metadata": {"source": "instant-suggestion", "instant_confidence_band": "medium"}},
-        ],
-        cache_hit_count=1,
-        item_count=1,
-        prompt_chars=1000,
-        source="preview",
-    )
-    promising_rec = next(item for item in promising["recommendations"] if item["kind"] == "instant-candidates-promising")
-    assert promising_rec["suggested_config"]["suggestion_instant_skip"] == "high-confidence"
+    model_feedback = source_feedback["signals"]["feedback"]["source_feedback"]["model-suggestion"]
+    assert model_feedback["event_count"] == 3
+    assert model_feedback["positive_rate"] == 0.667
     assert not any(item["kind"] == "use-minimal-prompt-profile" for item in feedback["recommendations"])
 
 
@@ -569,6 +557,41 @@ def test_ollama_doctor_command_emits_json(monkeypatch, tmp_path: Path, capsys):
     assert result["probes"][0]["ok"] is True
     assert result["summary"]["bottleneck"] == "healthy"
     assert "adaptive_recommendations" not in result
+
+
+def test_model_doctor_validates_structured_diff_response(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+
+    class DoctorProvider:
+        model = "doctor-main"
+        suggest_model = "doctor-fast"
+
+        def model_for_task(self, task: str) -> str:
+            return self.suggest_model if task == "suggest" else self.model
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            assert request.task == "suggest"
+            assert "docs/release-notes.md" in request.prompt
+            assert request.response_format["required"] == ["items"]
+            return ProviderResponse(
+                content=json.dumps(
+                    {"items": [{"item_id": "doctor_model", "suggestions": ["Clarifies model health probing"]}]}
+                ),
+                confidence=0.9,
+                model="mock-doctor",
+                metadata={"audit": {"request_hash": "abc"}},
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="mock-doctor")
+
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None, suggest_model=None: DoctorProvider())
+
+    result = _run_model_doctor(model_provider="mock")
+
+    assert result["ok"] is True
+    assert result["status"] == "ok"
+    assert result["model"] == "mock-doctor"
 
 
 def test_ollama_doctor_adaptive_recommendations_are_opt_in(monkeypatch, tmp_path: Path):
@@ -1178,7 +1201,8 @@ def test_load_config_defaults_to_one_suggestion(monkeypatch, tmp_path: Path):
     config = load_config()
 
     assert config.suggestion_count == 1
-    assert config.suggestion_batch_size == 2
+    assert config.suggestion_batch_size == 5
+    assert config.suggestion_strategy == "auto"
 
 
 def test_draft_json_command_outputs_sections_and_targets(monkeypatch, tmp_path: Path, capsys):
@@ -1962,7 +1986,6 @@ def test_draft_suggest_can_use_registered_cache_backend(monkeypatch, tmp_path: P
             "--id",
             target_item.id,
             "--preview",
-            "--instant-provisional",
             "--model-provider",
             "mock",
         ]
@@ -2248,75 +2271,6 @@ def test_draft_suggest_streams_suggestion_events_when_traced(monkeypatch, tmp_pa
     assert item_events[0]["order"] == 0
     assert item_events[0]["item_id"] == target_item.id
     assert item_events[0]["item"] == preview["items"][0]
-
-
-def test_draft_suggest_can_emit_instant_provisional_events(monkeypatch, tmp_path: Path, capsys):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
-    monkeypatch.setenv("VERLATO_TRACE_PROGRESS", "1")
-    group = _mk_group(
-        number=1,
-        title="Improve login",
-        commit_sha="a1",
-        commit_message="update login flow",
-        patch="+ add password reset guidance",
-    )
-    target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
-    call_order: list[str] = []
-
-    class VariantProvider:
-        def summarize(self, request: ProviderRequest) -> ProviderResponse:
-            call_order.append("model")
-            return ProviderResponse(
-                content="1. Clarifies login guidance for reviewers",
-                confidence=0.9,
-                model="mock-local",
-            )
-
-        def classify(self, request: ProviderRequest) -> ProviderResponse:
-            return ProviderResponse(content="", confidence=0.0, model="mock-local")
-
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
-    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
-
-    rc = main(
-        [
-            "draft",
-            "suggest",
-            "--base",
-            "v1.0.0",
-            "--id",
-            target_item.id,
-            "--preview",
-            "--instant-provisional",
-            "--model-provider",
-            "mock",
-        ]
-    )
-    captured = capsys.readouterr()
-    preview = json.loads(captured.out)
-    events = _suggestion_events(captured.err)
-    provisional_events = [event for event in events if event["event"] == "suggestion_item_provisional"]
-    result_events = [event for event in events if event["event"] == "suggestion_item_result"]
-
-    assert rc == 0
-    assert call_order == ["model"]
-    assert provisional_events
-    assert events.index(provisional_events[0]) < events.index(result_events[0])
-    assert provisional_events[0]["order"] == 0
-    assert provisional_events[0]["item_id"] == target_item.id
-    assert provisional_events[0]["item"]["provider"] == "instant:local"
-    assert provisional_events[0]["item"]["provisional"]["state"] == "provisional"
-    confidence = provisional_events[0]["item"]["instant_confidence"]
-    assert confidence["band"] in {"low", "medium", "high"}
-    assert 0 <= confidence["score"] <= 1
-    assert confidence["candidate_rank"] == 1
-    assert "reasons" in confidence
-    assert provisional_events[0]["item"]["suggestion_details"][0]["instant_confidence"] == confidence
-    assert provisional_events[0]["item"]["suggestions"]
-    assert "provisional" not in preview["items"][0]
-    assert "instant_confidence" not in preview["items"][0]
-    assert preview["items"][0]["provider"] == "mock-local"
 
 
 def test_draft_suggest_preview_rejects_too_similar_candidates(monkeypatch, tmp_path: Path, capsys):
@@ -2856,16 +2810,104 @@ def test_draft_suggest_ollama_batches_two_uncached_items(monkeypatch, tmp_path: 
     assert rc == 0
     assert len(provider.calls) == 1
     assert provider.calls[0].evidence["batch"] is True
+    assert provider.calls[0].evidence["strategy"] == "full-diff-json"
     assert provider.calls[0].evidence["item_ids"] == expected_ids
+    assert '"patch": "+ change"' in provider.calls[0].prompt
+    assert '"commits": [' in provider.calls[0].prompt
+    assert "prepared_prompt" not in provider.calls[0].prompt
     assert [item["item_id"] for item in preview["items"]] == expected_ids
+    assert preview["performance"]["strategy"] == "full-diff-json"
     assert preview["performance"]["batch_size"] == 2
     assert preview["performance"]["model_call_count"] == 1
     assert preview["performance"]["batched_model_calls"] == 1
     assert preview["performance"]["single_model_calls"] == 0
+    assert preview["performance"]["bulk_model_calls"] == 1
+    assert preview["performance"]["full_diff_file_count"] == 2
+    assert preview["performance"]["full_diff_patch_chars"] == len("+ change") * 2
     assert preview["performance"]["model_calls_saved"] == 1
     assert preview["performance"]["model_ms"] >= 0
     assert all(item["timings"]["batch_item_count"] == 2 for item in preview["items"])
+    assert all(item["timings"]["strategy"] == "full-diff-json" for item in preview["items"])
     assert all("batch_model_ms" in item["timings"] for item in preview["items"])
+    assert all(item["full_diff"]["patch_chars"] == len("+ change") for item in preview["items"])
+
+
+def test_draft_suggest_full_diff_json_sends_uncapped_patch_body_and_files(monkeypatch, tmp_path: Path, capsys):
+    class CapturingProvider:
+        def __init__(self):
+            self.calls: list[ProviderRequest] = []
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            self.calls.append(request)
+            item_id = request.evidence["item_ids"][0]
+            return ProviderResponse(
+                content=json.dumps(
+                    {
+                        "items": [
+                            {
+                                "item_id": item_id,
+                                "suggestions": [
+                                    "Documents the full diff evidence path for release-note reviewers."
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                confidence=0.9,
+                model="ollama:test-model",
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:test-model")
+
+    long_patch = "@@ -1,2 +1,3 @@\n" + "+ " + ("x" * 400) + " FULL_DIFF_SENTINEL"
+    group = ChangeGroup(
+        pr=PullRequest(
+            number=7,
+            title="Full diff change",
+            body="Full pull request body that should not be capped.",
+            labels=["release-note"],
+            files=[
+                ChangedFile(path="src/full.py", status="modified", patch=long_patch),
+                ChangedFile(path="docs/full.md", status="added", patch="+ docs"),
+                ChangedFile(path="assets/logo.png", status="modified", patch=""),
+            ],
+        ),
+        commits=[
+            Commit(sha="a1", message="feat: first full diff commit\n\nbody one"),
+            Commit(sha="b2", message="fix: second full diff commit"),
+        ],
+    )
+    provider = CapturingProvider()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
+
+    rc = main([
+        "draft",
+        "suggest",
+        "--base",
+        "v1.0.0",
+        "--all-visible",
+        "--preview",
+        "--model-provider",
+        "ollama",
+    ])
+    preview = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    prompt = provider.calls[0].prompt
+    assert "FULL_DIFF_SENTINEL" in prompt
+    assert "Full pull request body that should not be capped." in prompt
+    assert "feat: first full diff commit" in prompt
+    assert "fix: second full diff commit" in prompt
+    assert '"path": "src/full.py"' in prompt
+    assert '"path": "docs/full.md"' in prompt
+    assert '"path": "assets/logo.png"' in prompt
+    assert '"patch_available": false' in prompt
+    assert "representative_hunks" not in prompt
+    assert preview["items"][0]["timings"]["patch_chars"] == len(long_patch) + len("+ docs")
+    assert preview["items"][0]["timings"]["missing_patch_count"] == 1
 
 
 def test_draft_suggest_batch_size_one_preserves_single_item_calls(monkeypatch, tmp_path: Path, capsys):
@@ -2904,6 +2946,8 @@ def test_draft_suggest_batch_size_one_preserves_single_item_calls(monkeypatch, t
         "ollama",
         "--batch-size",
         "1",
+        "--strategy",
+        "single",
     ])
     preview = json.loads(capsys.readouterr().out)
 
@@ -3061,6 +3105,24 @@ def test_draft_suggest_cache_hit_is_not_included_in_ollama_batch(monkeypatch, tm
 
         def summarize(self, request: ProviderRequest) -> ProviderResponse:
             self.calls.append(request)
+            if request.evidence.get("batch"):
+                return ProviderResponse(
+                    content=json.dumps(
+                        {
+                            "items": [
+                                {
+                                    "item_id": item_id,
+                                    "suggestions": [
+                                        f"Clarifies cache-aware release-note behavior for {item_id} reviewers"
+                                    ],
+                                }
+                                for item_id in request.evidence["item_ids"]
+                            ]
+                        }
+                    ),
+                    confidence=0.9,
+                    model="ollama:test-model",
+                )
             return ProviderResponse(
                 content=f"Clarifies cache-aware release-note behavior for {request.evidence['item_id']} reviewers",
                 confidence=0.9,
@@ -3111,8 +3173,8 @@ def test_draft_suggest_cache_hit_is_not_included_in_ollama_batch(monkeypatch, tm
 
     assert rc == 0
     assert len(provider.calls) == 1
-    assert not provider.calls[0].evidence.get("batch")
-    assert provider.calls[0].evidence["item_id"] == expected_ids[1]
+    assert provider.calls[0].evidence.get("batch") is True
+    assert provider.calls[0].evidence["item_ids"] == [expected_ids[1]]
     assert [item["item_id"] for item in preview["items"]] == expected_ids
     assert preview["items"][0]["cache"]["hit"] is True
     assert preview["items"][1]["cache"]["hit"] is False
@@ -3255,7 +3317,6 @@ def test_draft_suggest_failure_event_keeps_prior_success_event(monkeypatch, tmp_
                 "v1.0.0",
                 "--all-visible",
                 "--preview",
-                "--instant-provisional",
                 "--model-provider",
                 "mock",
             ]
@@ -3271,7 +3332,7 @@ def test_draft_suggest_failure_event_keeps_prior_success_event(monkeypatch, tmp_
     failed_events = [event for event in events if event["event"] == "suggestion_item_failed"]
 
     assert captured.out == ""
-    assert [event["item_id"] for event in provisional_events] == expected_ids
+    assert provisional_events == []
     assert result_events[0]["item_id"] == expected_ids[0]
     assert result_events[0]["item"]["item_id"] == expected_ids[0]
     assert failed_events[0]["order"] == 1

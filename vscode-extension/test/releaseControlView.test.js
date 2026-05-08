@@ -12,8 +12,8 @@ const modelSettings = {
   suggestionCount: 1,
   suggestionParallelism: 2,
   suggestionBatchSize: 2,
-  suggestionAutoWarmCache: true,
-  suggestionInstantProvisional: true,
+  suggestionStrategy: "auto",
+  suggestionAutoWarmCache: false,
   suggestionPromptProfile: "conservative",
   suggestionAdaptiveRecommendations: false,
   suggestionTone: "release-note",
@@ -212,39 +212,21 @@ function suggestionPreview(text, itemId = "ci_1") {
           hunks_included: 1,
           hunks_total: 2,
         },
+        suggestion_details: [
+          {
+            summary: text,
+            similarity_to_current: 0.25,
+            specificity_score: 0.7,
+            comparison: {
+              current: "Old API summary",
+              suggested: text,
+            },
+          },
+        ],
         suggestions: [text],
       },
     ],
   };
-}
-
-function provisionalSuggestionPreview(text, itemId = "ci_1") {
-  const preview = suggestionPreview(text, itemId);
-  const confidence = {
-    score: 0.82,
-    band: "high",
-    reasons: ["top-local-candidate", "specific-evidence"],
-    evidence_overlap: 0.8,
-    similarity_to_current: 0.25,
-    specificity_score: 0.7,
-    candidate_rank: 1,
-  };
-  preview.items[0].provider = "instant:local";
-  preview.items[0].provisional = { source: "instant-local", state: "provisional" };
-  preview.items[0].instant_confidence = confidence;
-  preview.items[0].suggestion_details = [
-    {
-      summary: text,
-      similarity_to_current: 0.25,
-      specificity_score: 0.7,
-      instant_confidence: confidence,
-      comparison: {
-        current: "Old API summary",
-        suggested: text,
-      },
-    },
-  ];
-  return preview;
 }
 
 function draftDocument(itemCount = 1) {
@@ -331,7 +313,7 @@ test("success notifications do not keep the control view busy", async () => {
   }
 });
 
-test("applying a provisional suggestion records instant provenance", async () => {
+test("applying a model suggestion records model provenance", async () => {
   let reviewUpdate;
   const client = makeClient({
     reviewDraftItem(_range, _itemId, update) {
@@ -341,22 +323,20 @@ test("applying a provisional suggestion records instant provenance", async () =>
   });
   const { ReleaseControlViewProvider } = loadControlViewWithVscodeMock(makeVscodeMock());
   const { provider } = makeProvider(ReleaseControlViewProvider, client);
-  provider.suggestions = provisionalSuggestionPreview("Instant API wording");
+  provider.suggestions = suggestionPreview("Model API wording");
 
   await provider.handleMessage({ type: "applySuggestion", itemId: "ci_1", suggestionIndex: 0 });
 
-  assert.equal(reviewUpdate.summary, "Instant API wording");
-  assert.equal(reviewUpdate.summaryProvenance.source, "instant-suggestion");
-  assert.equal(reviewUpdate.summaryProvenance.model, "instant:local");
+  assert.equal(reviewUpdate.summary, "Model API wording");
+  assert.equal(reviewUpdate.summaryProvenance.source, "model-suggestion");
+  assert.equal(reviewUpdate.summaryProvenance.model, "mock-local");
   assert.equal(reviewUpdate.summaryProvenance.prompt_profile, "suggestion-conservative");
   assert.equal(reviewUpdate.summaryProvenance.similarity_to_current, 0.25);
   assert.equal(reviewUpdate.summaryProvenance.specificity_score, 0.7);
-  assert.equal(reviewUpdate.summaryProvenance.instant_confidence_band, "high");
-  assert.equal(reviewUpdate.summaryProvenance.instant_confidence_score, 0.82);
   assert.equal(reviewUpdate.summaryProvenance.source_evidence_count, 0);
 });
 
-test("suggestion feedback includes source and instant confidence metadata", async () => {
+test("suggestion feedback includes model source metadata", async () => {
   const feedbackCalls = [];
   const client = makeClient({
     recordFeedback(event, itemId, metadata) {
@@ -366,18 +346,16 @@ test("suggestion feedback includes source and instant confidence metadata", asyn
   });
   const { ReleaseControlViewProvider } = loadControlViewWithVscodeMock(makeVscodeMock());
   const { provider } = makeProvider(ReleaseControlViewProvider, client);
-  provider.suggestions = provisionalSuggestionPreview("Instant API wording");
+  provider.suggestions = suggestionPreview("Model API wording");
 
   await provider.handleMessage({ type: "feedbackPositive", itemId: "ci_1" });
   await provider.handleMessage({ type: "skipSuggestion", itemId: "ci_1" });
 
   assert.equal(feedbackCalls[0].event, "suggestion_marked_useful");
-  assert.equal(feedbackCalls[0].metadata.source, "instant-suggestion");
-  assert.equal(feedbackCalls[0].metadata.instant_confidence_band, "high");
-  assert.equal(feedbackCalls[0].metadata.instant_confidence_score, 0.82);
+  assert.equal(feedbackCalls[0].metadata.source, "model-suggestion");
   assert.equal(feedbackCalls[0].metadata.specificity_score, 0.7);
   assert.equal(feedbackCalls[1].event, "suggestion_skipped");
-  assert.equal(feedbackCalls[1].metadata.source, "instant-suggestion");
+  assert.equal(feedbackCalls[1].metadata.source, "model-suggestion");
 });
 
 test("error notifications do not keep the control view busy", async () => {
@@ -423,7 +401,7 @@ test("draft load schedules quiet Ollama suggestion cache warming", async () => {
   const warmRequests = [];
   const client = makeClient({
     getModelSettings() {
-      return { ...modelSettings, provider: "ollama", model: "gemma4:latest" };
+      return { ...modelSettings, provider: "ollama", model: "gemma4:latest", suggestionStrategy: "auto", suggestionAutoWarmCache: true };
     },
     getDraft() {
       return Promise.resolve(draftDocument(2));
@@ -486,13 +464,13 @@ test("draft load does not warm suggestion cache when auto warm is disabled", asy
   assert.equal(warmCalls, 0);
 });
 
-test("foreground suggest waits for a matching active cache warm", async () => {
+test("foreground suggest does not wait for a matching active cache warm", async () => {
   let resolveWarm;
   let previewCalls = 0;
   const { ReleaseControlViewProvider } = loadControlViewWithVscodeMock(makeVscodeMock());
   const client = makeClient({
     getModelSettings() {
-      return { ...modelSettings, provider: "ollama", model: "gemma4:latest" };
+      return { ...modelSettings, provider: "ollama", model: "gemma4:latest", suggestionStrategy: "auto", suggestionAutoWarmCache: true };
     },
     warmDraftSuggestionCache() {
       return new Promise((resolve) => {
@@ -510,12 +488,15 @@ test("foreground suggest waits for a matching active cache warm", async () => {
   await waitFor(() => Boolean(resolveWarm));
 
   const suggestPromise = provider.handleMessage({ type: "suggestAll" });
-  await sleep(25);
-  assert.equal(previewCalls, 0);
+  const foregroundResult = await Promise.race([
+    suggestPromise.then(() => "foreground"),
+    sleep(25).then(() => "waiting"),
+  ]);
+  assert.equal(foregroundResult, "foreground");
+  assert.equal(previewCalls, 1);
+  assert.match(htmlSnapshots.at(-1), /Foreground suggestion/);
 
   resolveWarm(suggestionPreview("Warm-only suggestion"));
-  await waitFor(() => previewCalls === 1);
-  await suggestPromise;
 
   assert.match(htmlSnapshots.at(-1), /Foreground suggestion/);
   assert.doesNotMatch(htmlSnapshots.at(-1), /Warm-only suggestion/);
@@ -525,7 +506,7 @@ test("failed background cache warm does not clear visible suggestions or show an
   const { ReleaseControlViewProvider } = loadControlViewWithVscodeMock(makeVscodeMock());
   const client = makeClient({
     getModelSettings() {
-      return { ...modelSettings, provider: "ollama", model: "gemma4:latest" };
+      return { ...modelSettings, provider: "ollama", model: "gemma4:latest", suggestionStrategy: "auto", suggestionAutoWarmCache: true };
     },
     warmDraftSuggestionCache() {
       return Promise.reject(new Error("ollama busy"));

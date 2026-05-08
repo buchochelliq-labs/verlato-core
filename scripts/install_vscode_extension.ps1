@@ -8,13 +8,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$root = Resolve-Path (Join-Path $PSScriptRoot "..")
+$root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $extensionRoot = Join-Path $root "vscode-extension"
 $installTemp = Join-Path $root ".tmp\install"
 New-Item -ItemType Directory -Force -Path $installTemp | Out-Null
 $env:TEMP = $installTemp
 $env:TMP = $installTemp
 $env:UV_CACHE_DIR = Join-Path $root ".tmp\uv-cache"
+$script:PreferredVerlatoCli = $null
 
 function Find-CodeCommand {
   $cmd = Get-Command code.cmd -ErrorAction SilentlyContinue
@@ -33,6 +34,37 @@ function Find-CodeCommand {
   }
 
   throw "Could not find VS Code's command-line installer. Install the 'code' command or add VS Code to PATH."
+}
+
+function Find-ApplicationCommand {
+  param(
+    [string[]]$Names,
+    [string]$DisplayName,
+    [string]$InstallHint
+  )
+
+  foreach ($name in $Names) {
+    $cmd = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue
+    if ($cmd) {
+      return $cmd.Source
+    }
+  }
+
+  throw "Could not find $DisplayName. $InstallHint"
+}
+
+function Find-NpmCommand {
+  if ($IsWindows -or $env:OS -eq "Windows_NT") {
+    return Find-ApplicationCommand -Names @("npm.cmd", "npm.exe") -DisplayName "npm" -InstallHint "Install Node.js or add npm.cmd to PATH."
+  }
+  return Find-ApplicationCommand -Names @("npm") -DisplayName "npm" -InstallHint "Install Node.js or add npm to PATH."
+}
+
+function Find-NpxCommand {
+  if ($IsWindows -or $env:OS -eq "Windows_NT") {
+    return Find-ApplicationCommand -Names @("npx.cmd", "npx.exe") -DisplayName "npx" -InstallHint "Install Node.js or add npx.cmd to PATH."
+  }
+  return Find-ApplicationCommand -Names @("npx") -DisplayName "npx" -InstallHint "Install Node.js or add npx to PATH."
 }
 
 function Find-Vsix {
@@ -57,23 +89,88 @@ function Get-VenvPath {
   return Join-Path $root ".venv"
 }
 
-function Get-VerlatoCli {
+function Get-VerlatoCmdPath {
   $scriptsDir = if ($IsWindows -or $env:OS -eq "Windows_NT") { "Scripts" } else { "bin" }
   if ($IsWindows -or $env:OS -eq "Windows_NT") {
-    $exePath = Join-Path $root ".venv\$scriptsDir\verlato.exe"
-    if (Test-Path -LiteralPath $exePath) {
-      return $exePath
-    }
     return Join-Path $root ".venv\$scriptsDir\verlato.cmd"
   }
   return Join-Path $root ".venv\$scriptsDir\verlato"
+}
+
+function Get-VerlatoExePath {
+  $scriptsDir = if ($IsWindows -or $env:OS -eq "Windows_NT") { "Scripts" } else { "bin" }
+  return Join-Path $root ".venv\$scriptsDir\verlato.exe"
+}
+
+function Get-VerlatoCli {
+  if ($script:PreferredVerlatoCli -and (Test-Path -LiteralPath $script:PreferredVerlatoCli)) {
+    return $script:PreferredVerlatoCli
+  }
+
+  if ($IsWindows -or $env:OS -eq "Windows_NT") {
+    $exePath = Get-VerlatoExePath
+    if (Test-Path -LiteralPath $exePath) {
+      return $exePath
+    }
+  }
+  return Get-VerlatoCmdPath
+}
+
+function Test-FileLocked {
+  param(
+    [string]$Path
+  )
+
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return $false
+  }
+
+  $stream = $null
+  try {
+    $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    return $false
+  }
+  catch [System.UnauthorizedAccessException] {
+    return $true
+  }
+  catch [System.IO.IOException] {
+    return $true
+  }
+  finally {
+    if ($stream) {
+      $stream.Dispose()
+    }
+  }
+}
+
+function Use-VerlatoShimForLockedExe {
+  param(
+    [string]$PythonPath
+  )
+
+  if (-not ($IsWindows -or $env:OS -eq "Windows_NT")) {
+    return $false
+  }
+
+  $exePath = Get-VerlatoExePath
+  if (-not (Test-FileLocked -Path $exePath)) {
+    return $false
+  }
+
+  Write-Warning "$exePath is locked or not writable, probably because VS Code or a Verlato process is still running. Skipping editable reinstall and using the shim."
+  New-VerlatoCliShim -PythonPath $PythonPath
+  return $true
 }
 
 function New-VerlatoVenv {
   Write-Host "Creating Verlato virtual environment..."
   $uv = Get-Command uv -ErrorAction SilentlyContinue
   if ($uv) {
-    & $uv.Source venv (Get-VenvPath)
+    & $uv.Source venv --seed (Get-VenvPath)
+    if ($LASTEXITCODE -ne 0) {
+      Write-Warning "uv venv --seed failed. Retrying without seed packages..."
+      & $uv.Source venv (Get-VenvPath)
+    }
   }
   else {
     & python -m venv (Get-VenvPath)
@@ -108,8 +205,14 @@ function Install-VerlatoWithUv {
     return $false
   }
 
-  & $uv.Source pip install --python $PythonPath -e $root
-  return $LASTEXITCODE -eq 0
+  try {
+    & $uv.Source pip install --python $PythonPath -e $root
+    return $LASTEXITCODE -eq 0
+  }
+  catch {
+    Write-Warning "uv editable install failed: $($_.Exception.Message)"
+    return $false
+  }
 }
 
 function Test-PipAvailable {
@@ -117,8 +220,18 @@ function Test-PipAvailable {
     [string]$PythonPath
   )
 
-  & $PythonPath -m pip --version *> $null
-  return $LASTEXITCODE -eq 0
+  $oldErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "Continue"
+    & $PythonPath -m pip --version > $null 2>&1
+    return $LASTEXITCODE -eq 0
+  }
+  catch {
+    return $false
+  }
+  finally {
+    $ErrorActionPreference = $oldErrorActionPreference
+  }
 }
 
 function New-VerlatoCliShim {
@@ -153,6 +266,7 @@ function New-VerlatoCliShim {
     $content | Set-Content -LiteralPath $shimPath -Encoding UTF8
   }
 
+  $script:PreferredVerlatoCli = $shimPath
   Write-Warning "Created editable Verlato CLI shim at $shimPath because package installation was unavailable."
 }
 
@@ -160,6 +274,10 @@ function Install-VerlatoBackend {
   param(
     [string]$PythonPath
   )
+
+  if (Use-VerlatoShimForLockedExe -PythonPath $PythonPath) {
+    return
+  }
 
   if (Install-VerlatoWithUv -PythonPath $PythonPath) {
     return
@@ -186,7 +304,15 @@ function Install-VerlatoBackend {
     return
   }
 
-  Reset-VerlatoVenv
+  try {
+    Reset-VerlatoVenv
+    $PythonPath = Get-VenvPython
+  }
+  catch {
+    Write-Warning "Could not recreate the Verlato virtual environment, likely because a running process is holding .venv files: $($_.Exception.Message)"
+    New-VerlatoCliShim -PythonPath $PythonPath
+    return
+  }
   if (Install-VerlatoWithUv -PythonPath $PythonPath) {
     return
   }
@@ -268,16 +394,19 @@ if (-not $SkipPythonInstall) {
 
 Push-Location $extensionRoot
 try {
+  $npm = Find-NpmCommand
+  $npx = Find-NpxCommand
+
   if (-not $SkipNpmInstall) {
     Write-Host "Installing VS Code extension dependencies..."
-    & npm install
+    & $npm install
     if ($LASTEXITCODE -ne 0) {
       throw "npm install failed. See npm output above."
     }
   }
 
   Write-Host "Building VS Code extension..."
-  & npm run build
+  & $npm run build
   if ($LASTEXITCODE -ne 0) {
     throw "VS Code extension build failed. See npm output above."
   }
@@ -288,7 +417,7 @@ try {
     if ($PreRelease) {
       $packageArgs += "--pre-release"
     }
-    & npx @packageArgs
+    & $npx @packageArgs
     if ($LASTEXITCODE -ne 0) {
       $existingVsix = Get-ChildItem -LiteralPath $extensionRoot -Filter "*.vsix" |
         Sort-Object LastWriteTime -Descending |

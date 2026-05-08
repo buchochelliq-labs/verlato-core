@@ -96,9 +96,6 @@ export interface SummaryProvenance {
   suggestion_index?: number;
   similarity_to_current?: number;
   specificity_score?: number;
-  instant_confidence?: DraftInstantConfidence;
-  instant_confidence_band?: string;
-  instant_confidence_score?: number;
   response_metadata?: Record<string, unknown>;
   source_evidence_count?: number;
   reasoning_exposed?: boolean;
@@ -172,8 +169,8 @@ export interface ModelSettings {
   suggestionCount: number;
   suggestionParallelism: number;
   suggestionBatchSize: number;
+  suggestionStrategy: "auto" | "single" | "paired" | "full-diff-json" | string;
   suggestionAutoWarmCache: boolean;
-  suggestionInstantProvisional: boolean;
   suggestionPromptProfile: "conservative" | "lean" | "minimal" | string;
   suggestionAdaptiveRecommendations: boolean;
   suggestionTone: string;
@@ -206,7 +203,7 @@ export interface DraftSuggestionItem {
   timings?: DraftSuggestionTimings;
   cache?: DraftSuggestionCache;
   provisional?: DraftSuggestionProvisional;
-  instant_confidence?: DraftInstantConfidence;
+  full_diff?: DraftSuggestionFullDiff;
   suggestions: string[];
 }
 
@@ -219,6 +216,15 @@ export interface DraftSuggestionCache {
   hit: boolean;
   key?: string;
   age_seconds?: number;
+}
+
+export interface DraftSuggestionFullDiff {
+  prompt_shape?: string;
+  prompt_chars?: number;
+  file_count?: number;
+  patch_chars?: number;
+  missing_patch_count?: number;
+  single_item_over_batch_guard?: boolean;
 }
 
 export interface DraftPromptBudget {
@@ -263,6 +269,13 @@ export interface DraftSuggestionTimings {
   tokens_per_second?: number;
   batch_model_ms?: number;
   batch_item_count?: number;
+  batch_prompt_chars?: number;
+  strategy?: string;
+  file_count?: number;
+  patch_chars?: number;
+  missing_patch_count?: number;
+  fallback_used_capped_evidence?: boolean;
+  fallback_reason?: string;
 }
 
 export interface DraftSuggestionEvidence {
@@ -275,21 +288,10 @@ export interface DraftSuggestionDetail {
   summary: string;
   similarity_to_current: number;
   specificity_score?: number;
-  instant_confidence?: DraftInstantConfidence;
   comparison: {
     current: string;
     suggested: string;
   };
-}
-
-export interface DraftInstantConfidence {
-  score?: number;
-  band?: "low" | "medium" | "high" | string;
-  reasons?: string[];
-  evidence_overlap?: number;
-  similarity_to_current?: number;
-  specificity_score?: number;
-  candidate_rank?: number;
 }
 
 export interface DraftRejectedSuggestion {
@@ -338,6 +340,13 @@ export interface DraftSuggestionPerformance {
   model_call_count?: number;
   batched_model_calls?: number;
   single_model_calls?: number;
+  bulk_model_calls?: number;
+  fallback_single_calls?: number;
+  fallback_item_count?: number;
+  strategy?: string;
+  full_diff_prompt_chars?: number;
+  full_diff_file_count?: number;
+  full_diff_patch_chars?: number;
   model_calls_saved?: number;
 }
 

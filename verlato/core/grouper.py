@@ -40,15 +40,25 @@ class Grouper:
         groups: list[ChangeGroup] = []
         bucket: list[Commit] = []
         bucket_key: tuple[str, ...] | None = None
+        bucket_paths: set[str] = set()
 
         for commit in commits:
             key = self._non_pr_group_key(commit)
+            commit_paths = self._substantive_paths(commit.files)
             if not bucket:
                 bucket = [commit]
                 bucket_key = key
+                bucket_paths = set(commit_paths)
                 continue
             if bucket_key == key and key[0] != "single":
                 bucket.append(commit)
+                bucket_paths.update(commit_paths)
+                continue
+            overlap = bucket_paths & commit_paths
+            if overlap:
+                bucket.append(commit)
+                bucket_paths.update(commit_paths)
+                bucket_key = ("file-overlap", *sorted(overlap)[:5])
                 continue
             groups.append(
                 ChangeGroup(
@@ -60,6 +70,7 @@ class Grouper:
             )
             bucket = [commit]
             bucket_key = key
+            bucket_paths = set(commit_paths)
 
         if bucket:
             groups.append(
@@ -86,6 +97,10 @@ class Grouper:
             return "Grouped as an individual non-PR commit."
         if key[0] == "conventional-scope":
             return f"Grouped because these non-PR commits share conventional type `{key[1]}` and scope `{key[2]}`."
+        if key[0] == "file-overlap":
+            files = ", ".join(key[1:4])
+            suffix = f": {files}" if files else "."
+            return f"Grouped because adjacent non-PR commits touch overlapping substantive files{suffix}"
         return "Kept separate because no PR or explicit conventional scope was found."
 
     def _split_pr_group(self, pr: PullRequest, commits: list[Commit]) -> list[ChangeGroup]:
@@ -152,15 +167,34 @@ class Grouper:
             )
         return groups
 
-    @staticmethod
-    def _commit_files(commits: list[Commit]) -> list[ChangedFile]:
+    @classmethod
+    def _commit_files(cls, commits: list[Commit]) -> list[ChangedFile]:
         files: list[ChangedFile] = []
-        seen: set[tuple[str, str, str]] = set()
+        by_path: dict[str, ChangedFile] = {}
         for commit in commits:
             for file in commit.files:
-                key = (file.path, file.status, file.patch)
-                if key in seen:
+                if file.path in by_path:
+                    existing = by_path[file.path]
+                    if file.patch and file.patch not in existing.patch:
+                        existing.patch = "\n".join(part for part in (existing.patch, file.patch) if part)
+                    if file.status:
+                        existing.status = file.status
                     continue
-                files.append(ChangedFile(path=file.path, status=file.status, patch=file.patch))
-                seen.add(key)
+                changed_file = ChangedFile(path=file.path, status=file.status, patch=file.patch)
+                files.append(changed_file)
+                by_path[file.path] = changed_file
         return files
+
+    @classmethod
+    def _substantive_paths(cls, files: list[ChangedFile]) -> set[str]:
+        return {file.path for file in files if file.path and not cls._is_generated_release_artifact(file.path)}
+
+    @staticmethod
+    def _is_generated_release_artifact(path: str) -> bool:
+        normalized = path.replace("\\", "/").lower()
+        return normalized in {
+            "changelog.md",
+            ".github/release.md",
+            ".verlato_state.json",
+            ".verlato_suggestion_cache.json",
+        } or normalized.endswith((".vsix", ".tgz"))
