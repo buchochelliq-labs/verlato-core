@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 
 import { VerlatoClient } from "../client/verlatoClient";
-import { DraftDocument, DraftItem, DraftRangeRequest, ModelSettings, RepositoryOverview } from "../client/types";
+import { DraftDocument, DraftItem, DraftPromptPreview, DraftRangeRequest, ModelSettings, RepositoryOverview } from "../client/types";
 import { McpServerController, revealMcpConfig } from "../mcpServer";
 import { handleNotificationAction, showErrorNotification, showSuccessNotification } from "../notifications";
 import { PreviewPanel } from "../webview/previewPanel";
@@ -493,6 +493,27 @@ async function changeModelSettings(
   if (!suggestionStrategy) {
     return;
   }
+  const modelPrivacy = await vscode.window.showQuickPick(
+    ["metadata-only", "local-summary-then-ai", "trusted-provider-patch"],
+    {
+      title: "AI privacy mode",
+      placeHolder: "Choose what evidence providers may receive",
+    },
+  );
+  if (!modelPrivacy) {
+    return;
+  }
+  const allowRemotePatches = modelPrivacy === "trusted-provider-patch"
+    ? (await vscode.window.showWarningMessage(
+      "Trusted-provider-patch can send raw source patches to the selected provider. Continue only if this destination is approved for source code.",
+      { modal: true },
+      "Allow Remote Patches",
+      "Keep Metadata Only",
+    )) === "Allow Remote Patches"
+    : false;
+  if (modelPrivacy === "trusted-provider-patch" && !allowRemotePatches) {
+    return;
+  }
   const suggestionPromptProfile = await vscode.window.showQuickPick(
     ["conservative", "lean", "minimal"],
     {
@@ -545,6 +566,8 @@ async function changeModelSettings(
     suggestionParallelism: Number(suggestionParallelismRaw),
     suggestionBatchSize: Number(suggestionBatchSizeRaw),
     suggestionStrategy,
+    modelPrivacy,
+    allowRemotePatches,
     commitIntentInference: commitIntentChoice === "enabled",
     suggestionPromptProfile,
     suggestionAdaptiveRecommendations: adaptiveChoice === "enabled",
@@ -604,13 +627,21 @@ async function updateItemReviewState(
   previewPanel.show(nextDocument);
 }
 
-async function showPromptPreview(promptPreview: { title: string; provider: string; prompt: string; item_id: string }): Promise<void> {
+async function showPromptPreview(promptPreview: DraftPromptPreview): Promise<void> {
   const content = [
     `# Verlato Model Prompt`,
     ``,
     `Item: ${promptPreview.title}`,
     `Item ID: ${promptPreview.item_id}`,
     `Provider Hint: ${promptPreview.provider}`,
+    `Privacy: ${promptPreview.privacy?.mode ?? "metadata-only"}`,
+    `Patch chars sent: ${promptPreview.privacy?.raw_patch_chars_sent ?? 0}`,
+    ``,
+    `## AI Request`,
+    ``,
+    "```json",
+    JSON.stringify(promptPreview.ai_request ?? {}, null, 2),
+    "```",
     ``,
     `## Prompt`,
     ``,

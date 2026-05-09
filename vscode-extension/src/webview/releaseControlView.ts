@@ -253,6 +253,9 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       this.render();
       return;
     }
+    if (!(await this.confirmTrustedPatchMode())) {
+      return;
+    }
     let successMessage: string | undefined;
     await this.runBusy(async () => {
       const document = await this.client.getDraft(this.range);
@@ -274,6 +277,21 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
         ),
       );
     }
+  }
+
+  private async confirmTrustedPatchMode(): Promise<boolean> {
+    const settings = this.client.getModelSettings();
+    this.modelSettings = settings;
+    if (settings.modelPrivacy !== "trusted-provider-patch" && !settings.allowRemotePatches) {
+      return true;
+    }
+    const provider = settings.provider || "configured";
+    const confirmed = await vscode.window.showWarningMessage(
+      `Verlato is configured to allow raw patch payloads for ${provider}. Continue only if this destination is approved for source code.`,
+      { modal: true },
+      "Send Patch Evidence",
+    );
+    return confirmed === "Send Patch Evidence";
   }
 
   private async refreshRepository(showToast: boolean): Promise<void> {
@@ -571,6 +589,15 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
           "",
           `Item: ${promptPreview.title}`,
           `Provider Hint: ${promptPreview.provider}`,
+          "",
+          `Privacy: ${promptPreview.privacy?.mode ?? "metadata-only"}`,
+          `Patch chars sent: ${promptPreview.privacy?.raw_patch_chars_sent ?? 0}`,
+          "",
+          "## AI Request",
+          "",
+          "```json",
+          JSON.stringify(promptPreview.ai_request ?? {}, null, 2),
+          "```",
           "",
           "## Prompt",
           "",

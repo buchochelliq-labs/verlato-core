@@ -19,6 +19,7 @@ from urllib import request as urlrequest
 from verlato.config import ProviderConfig, VerlatoConfig, load_config
 from verlato.core.adapters import NullPullRequestAdapter, PullRequestAdapter, StandardGitAdapter
 from verlato.core.classifier import Classifier
+from verlato.core.change_summary import build_change_summary_payload, raw_patch_chars_available
 from verlato.core.collector import Collector
 from verlato.core.commit_intent import (
     infer_commit_intents,
@@ -28,6 +29,15 @@ from verlato.core.commit_intent import (
 from verlato.core.drafts import DraftDocument, DraftService
 from verlato.core.grouper import Grouper
 from verlato.core.models import ChangeGroup, ChangeItem, Commit, changed_files_for_group
+from verlato.core.model_privacy import (
+    MODEL_PRIVACY_CHOICES,
+    OMITTED_PATCH_EVIDENCE,
+    can_send_raw_patches,
+    model_request_record,
+    normalize_model_privacy,
+    privacy_summary,
+    resolve_model_privacy,
+)
 from verlato.core.reconciler import Reconciler
 from verlato.core.suggestion_tools import SuggestionEvidenceToolProvider
 from verlato.github.adapter import GitHubApiAdapter
@@ -47,6 +57,7 @@ MODEL_PROVIDER_CHOICES = ["stub", "mock", "ollama", "litellm", "plugin", "github
 SUGGESTION_TONE_CHOICES = ["release-note", "concise", "technical", "customer-facing"]
 SUGGESTION_PROMPT_PROFILE_CHOICES = ["conservative", "lean", "minimal"]
 SUGGESTION_STRATEGY_CHOICES = ["auto", "single", "paired", "full-diff-json", "tool-retrieval"]
+MODEL_PRIVACY_MODE_CHOICES = list(MODEL_PRIVACY_CHOICES)
 MAX_SUGGESTION_PARALLELISM = 8
 MAX_SUGGESTION_BATCH_SIZE = 5
 SUGGESTION_CACHE_PROMPT_PROFILE = "suggestion-conservative"
@@ -163,6 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--from-latest-published", action="store_true")
         p.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Override the configured model provider.")
         _add_commit_intent_inference_args(p)
+        _add_model_privacy_args(p)
 
     draft = sub.add_parser("draft")
     draft_sub = draft.add_subparsers(dest="draft_command", required=True)
@@ -177,6 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--include-provenance", action="store_true")
         p.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Override the configured model provider.")
         _add_commit_intent_inference_args(p)
+        _add_model_privacy_args(p)
     draft_apply = draft_sub.choices["apply"]
     draft_apply.add_argument("--target", choices=["changelog", "github-release"], default="changelog")
     draft_apply.add_argument("--file")
@@ -192,6 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
     draft_review.add_argument("--reviewer")
     draft_review.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Override the configured model provider.")
     _add_commit_intent_inference_args(draft_review)
+    _add_model_privacy_args(draft_review)
     draft_suggest = draft_sub.add_parser("suggest")
     draft_suggest.add_argument("--base")
     draft_suggest.add_argument("--head", default="HEAD")
@@ -200,6 +214,11 @@ def build_parser() -> argparse.ArgumentParser:
     draft_suggest.add_argument("--id")
     draft_suggest.add_argument("--all-visible", action="store_true")
     draft_suggest.add_argument("--preview", action="store_true")
+    draft_suggest.add_argument(
+        "--preflight",
+        action="store_true",
+        help="Build planned AI request envelopes without calling the provider.",
+    )
     draft_suggest.add_argument("--count", type=int)
     draft_suggest.add_argument("--parallelism", type=int)
     draft_suggest.add_argument("--batch-size", type=int)
@@ -222,6 +241,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the configured model provider.",
     )
     _add_commit_intent_inference_args(draft_suggest)
+    _add_model_privacy_args(draft_suggest)
     draft_prompt = draft_sub.add_parser("prompt")
     draft_prompt.add_argument("--base")
     draft_prompt.add_argument("--head", default="HEAD")
@@ -231,6 +251,7 @@ def build_parser() -> argparse.ArgumentParser:
     draft_prompt.add_argument("--tone", choices=SUGGESTION_TONE_CHOICES)
     draft_prompt.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Optional provider hint for the previewed prompt.")
     _add_commit_intent_inference_args(draft_prompt)
+    _add_model_privacy_args(draft_prompt)
 
     render = sub.add_parser("render")
     render.add_argument("--format", choices=["github-release", "changelog"], required=True)
@@ -321,6 +342,19 @@ def _add_commit_intent_inference_args(parser: argparse.ArgumentParser) -> None:
         "--no-infer-commit-intents",
         action="store_true",
         help="Disable inferred conventional commit intent for this command.",
+    )
+
+
+def _add_model_privacy_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--privacy",
+        choices=MODEL_PRIVACY_MODE_CHOICES,
+        help="Privacy mode for AI model evidence. Defaults to metadata-only.",
+    )
+    parser.add_argument(
+        "--allow-remote-patches",
+        action="store_true",
+        help="Explicitly opt into trusted-provider-patch mode for this invocation.",
     )
 
 
@@ -426,6 +460,8 @@ def run_scan(
     persist: bool,
     model_provider: str | None = None,
     commit_intent_inference: str | None = None,
+    model_privacy: str | None = None,
+    allow_remote_patches: bool = False,
 ) -> list[dict]:
     return [
         asdict(i)
@@ -435,6 +471,8 @@ def run_scan(
             persist,
             model_provider=model_provider,
             commit_intent_inference=commit_intent_inference,
+            model_privacy=model_privacy,
+            allow_remote_patches=allow_remote_patches,
         )
     ]
 
@@ -444,13 +482,22 @@ def detect_change_items(
     head: str,
     model_provider: str | None = None,
     commit_intent_inference: str | None = None,
+    model_privacy: str | None = None,
+    allow_remote_patches: bool = False,
 ) -> list[ChangeItem]:
     config = _load_config()
+    privacy_mode = resolve_model_privacy(
+        config.model_privacy,
+        requested=model_privacy,
+        allow_remote_patches=allow_remote_patches,
+    )
     groups = _collect_groups(
         base,
         head,
         model_provider=model_provider,
         commit_intent_inference=commit_intent_inference,
+        model_privacy=privacy_mode,
+        allow_remote_patches=allow_remote_patches,
     )
     max_model_items = _resolve_max_model_items(config.provider.max_items_per_scan)
     provider = None
@@ -463,6 +510,8 @@ def detect_change_items(
         style_guidance=str(style["guidance"]),
         project_vocabulary=list(style["project_vocabulary"]),
         banned_phrases=list(style["banned_phrases"]),
+        model_privacy=privacy_mode,
+        provider_mode=model_provider or config.provider.name,
     )
     return _classify_groups(groups, classifier, base, head)
 
@@ -473,6 +522,8 @@ def _collect_groups(
     *,
     model_provider: str | None = None,
     commit_intent_inference: str | None = None,
+    model_privacy: str | None = None,
+    allow_remote_patches: bool = False,
 ):
     collector = Collector(pr_adapter=_build_adapter())
     grouper = Grouper()
@@ -482,6 +533,8 @@ def _collect_groups(
         commits,
         model_provider=model_provider,
         commit_intent_inference=commit_intent_inference,
+        model_privacy=model_privacy,
+        allow_remote_patches=allow_remote_patches,
     )
     _trace_progress(
         "mapping_pull_requests",
@@ -515,9 +568,16 @@ def _maybe_infer_commit_intents(
     *,
     model_provider: str | None,
     commit_intent_inference: str | None,
+    model_privacy: str | None = None,
+    allow_remote_patches: bool = False,
 ) -> None:
     config = _load_config()
     mode = _resolve_commit_intent_inference(config.commit_intent_inference, requested=commit_intent_inference)
+    privacy_mode = resolve_model_privacy(
+        config.model_privacy,
+        requested=model_privacy,
+        allow_remote_patches=allow_remote_patches,
+    )
     if mode == "off":
         return
     eligible = [commit for commit in commits if is_low_signal_commit(commit)]
@@ -545,7 +605,17 @@ def _maybe_infer_commit_intents(
         return
     try:
         provider = build_provider(config.provider, mode=model_provider)
-        inferred = infer_commit_intents(eligible, provider)
+        dispatch_privacy_mode = (
+            privacy_mode
+            if _can_send_raw_patches_for_config(config.provider, model_provider or config.provider.name, privacy_mode)
+            else "metadata-only"
+        )
+        inferred = infer_commit_intents(
+            eligible,
+            provider,
+            privacy_mode=dispatch_privacy_mode,
+            provider_mode=model_provider or config.provider.name,
+        )
     except Exception as exc:
         _trace_progress(
             "inferring_commit_intents",
@@ -573,12 +643,16 @@ def _find_group_for_item_id(
     *,
     model_provider: str | None = None,
     commit_intent_inference: str | None = None,
+    model_privacy: str | None = None,
+    allow_remote_patches: bool = False,
 ) -> ChangeGroup:
     groups = _collect_groups(
         base,
         head,
         model_provider=model_provider,
         commit_intent_inference=commit_intent_inference,
+        model_privacy=model_privacy,
+        allow_remote_patches=allow_remote_patches,
     )
     baseline_classifier = Classifier()
     for group in groups:
@@ -594,6 +668,8 @@ def scan_change_items(
     persist: bool,
     model_provider: str | None = None,
     commit_intent_inference: str | None = None,
+    model_privacy: str | None = None,
+    allow_remote_patches: bool = False,
 ) -> list[ChangeItem]:
     store = _build_store()
     reconciler = Reconciler()
@@ -603,6 +679,8 @@ def scan_change_items(
         head,
         model_provider=model_provider,
         commit_intent_inference=commit_intent_inference,
+        model_privacy=model_privacy,
+        allow_remote_patches=allow_remote_patches,
     )
     _trace_progress(
         "reconciling_unpublished",
@@ -638,6 +716,8 @@ def _detect_change_items_with_provider(
     head: str,
     model_provider: str | None,
     commit_intent_inference: str | None = None,
+    model_privacy: str | None = None,
+    allow_remote_patches: bool = False,
 ) -> list[ChangeItem]:
     if model_provider:
         return detect_change_items(
@@ -645,12 +725,16 @@ def _detect_change_items_with_provider(
             head,
             model_provider=model_provider,
             commit_intent_inference=commit_intent_inference,
+            model_privacy=model_privacy,
+            allow_remote_patches=allow_remote_patches,
         )
     return _detect_review_candidates(
         base,
         head,
         model_provider=None,
         commit_intent_inference=commit_intent_inference,
+        model_privacy=model_privacy,
+        allow_remote_patches=allow_remote_patches,
     )
 
 
@@ -659,6 +743,8 @@ def _detect_review_candidates(
     head: str,
     model_provider: str | None,
     commit_intent_inference: str | None = None,
+    model_privacy: str | None = None,
+    allow_remote_patches: bool = False,
 ) -> list[ChangeItem]:
     if model_provider:
         return detect_change_items(
@@ -666,8 +752,16 @@ def _detect_review_candidates(
             head,
             model_provider=model_provider,
             commit_intent_inference=commit_intent_inference,
+            model_privacy=model_privacy,
+            allow_remote_patches=allow_remote_patches,
         )
-    groups = _collect_groups(base, head, commit_intent_inference=commit_intent_inference)
+    groups = _collect_groups(
+        base,
+        head,
+        commit_intent_inference=commit_intent_inference,
+        model_privacy=model_privacy,
+        allow_remote_patches=allow_remote_patches,
+    )
     classifier = Classifier()
     return _classify_groups(
         groups,
@@ -685,6 +779,8 @@ def _run_scan_with_provider(
     persist: bool,
     model_provider: str | None,
     commit_intent_inference: str | None = None,
+    model_privacy: str | None = None,
+    allow_remote_patches: bool = False,
 ) -> list[dict]:
     if model_provider:
         return run_scan(
@@ -693,8 +789,17 @@ def _run_scan_with_provider(
             persist=persist,
             model_provider=model_provider,
             commit_intent_inference=commit_intent_inference,
+            model_privacy=model_privacy,
+            allow_remote_patches=allow_remote_patches,
         )
-    return run_scan(base, head, persist=persist, commit_intent_inference=commit_intent_inference)
+    return run_scan(
+        base,
+        head,
+        persist=persist,
+        commit_intent_inference=commit_intent_inference,
+        model_privacy=model_privacy,
+        allow_remote_patches=allow_remote_patches,
+    )
 
 
 def _resolve_suggest_model_provider(model_provider: str | None) -> str | None:
@@ -709,6 +814,16 @@ def _resolve_suggest_model_provider(model_provider: str | None) -> str | None:
 
 def _suggestion_batching_allowed_for_provider(provider_mode: str | None) -> bool:
     return (provider_mode or "").strip().lower() in {"ollama", "local", "litellm", "plugin", "external-plugin"}
+
+
+def _can_send_raw_patches_for_config(config: ProviderConfig, provider_mode: str | None, privacy_mode: str) -> bool:
+    if not can_send_raw_patches(provider_mode or config.name, privacy_mode):
+        return False
+    if normalize_model_privacy(privacy_mode) != "local-summary-then-ai":
+        return True
+    chain_modes = [provider_mode or config.name]
+    chain_modes.extend(str(fallback.get("name") or "").strip() for fallback in config.fallbacks if isinstance(fallback, dict))
+    return all(can_send_raw_patches(mode, privacy_mode) for mode in chain_modes)
 
 
 def _build_provider_for_suggestion(config: ProviderConfig, *, mode: str | None, suggest_model: str | None):
@@ -774,6 +889,8 @@ def build_draft_document(
     include_provenance: bool = False,
     model_provider: str | None = None,
     commit_intent_inference: str | None = None,
+    model_privacy: str | None = None,
+    allow_remote_patches: bool = False,
 ) -> DraftDocument:
     config = _load_config()
     _trace_progress("draft_detecting_changes", "Detecting draft changes", detail=f"{base}..{head}")
@@ -783,6 +900,8 @@ def build_draft_document(
             head,
             model_provider,
             commit_intent_inference=commit_intent_inference,
+            model_privacy=model_privacy,
+            allow_remote_patches=allow_remote_patches,
         )
     )
     _trace_progress(
@@ -850,6 +969,15 @@ def _commit_intent_inference_from_args(args: argparse.Namespace) -> str | None:
     return None
 
 
+def _model_privacy_from_args(args: argparse.Namespace) -> str | None:
+    value = getattr(args, "privacy", None)
+    return normalize_model_privacy(value) if value else None
+
+
+def _allow_remote_patches_from_args(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "allow_remote_patches", False))
+
+
 def _resolve_suggestion_count(configured: int, requested: int | None = None) -> int:
     raw = str(requested) if requested is not None else os.getenv("VERLATO_SUGGESTION_COUNT")
     value = configured
@@ -894,14 +1022,24 @@ def _resolve_suggestion_strategy(configured: str, requested: str | None = None) 
     return strategy if strategy in SUGGESTION_STRATEGY_CHOICES else "auto"
 
 
-def _effective_suggestion_strategy(strategy: str, provider_mode: str | None) -> str:
+def _effective_suggestion_strategy(
+    strategy: str,
+    provider_mode: str | None,
+    *,
+    privacy_mode: str = "metadata-only",
+) -> str:
     normalized = _resolve_suggestion_strategy(strategy)
     normalized_provider = (provider_mode or "").strip().lower()
     provider_allows_batch = _suggestion_batching_allowed_for_provider(provider_mode)
+    patches_allowed = can_send_raw_patches(provider_mode, privacy_mode)
     if normalized == "auto":
+        if not patches_allowed:
+            return "single"
         if normalized_provider in {"ollama", "local"}:
             return "tool-retrieval"
         return "full-diff-json" if provider_allows_batch else "single"
+    if normalized in {"tool-retrieval", "full-diff-json", "paired"} and not patches_allowed:
+        return "single"
     if normalized == "tool-retrieval" and normalized_provider not in {"ollama", "local"}:
         return "single"
     if normalized in {"paired", "full-diff-json"} and not provider_allows_batch:
@@ -2265,17 +2403,26 @@ def _request_draft_model_input(
     model_provider: str | None = None,
     tone: str | None = None,
     commit_intent_inference: str | None = None,
+    model_privacy: str | None = None,
+    allow_remote_patches: bool = False,
 ) -> ChangeItem:
     effective_model_provider = _resolve_suggest_model_provider(model_provider)
+    config = _load_config()
+    privacy_mode = resolve_model_privacy(
+        config.model_privacy,
+        requested=model_privacy,
+        allow_remote_patches=allow_remote_patches,
+    )
     target_group = _find_group_for_item_id(
         base,
         head,
         item_id,
         model_provider=effective_model_provider,
         commit_intent_inference=commit_intent_inference,
+        model_privacy=privacy_mode,
+        allow_remote_patches=allow_remote_patches,
     )
 
-    config = _load_config()
     suggestion_tone = _resolve_suggestion_tone(config.suggestion_tone, requested=tone)
     suggestion_style = _resolve_suggestion_style(config)
     provider_classifier = Classifier(
@@ -2284,6 +2431,8 @@ def _request_draft_model_input(
         style_guidance=str(suggestion_style["guidance"]),
         project_vocabulary=list(suggestion_style["project_vocabulary"]),
         banned_phrases=list(suggestion_style["banned_phrases"]),
+        model_privacy=privacy_mode,
+        provider_mode=effective_model_provider or config.provider.name,
     )
     candidate = provider_classifier.classify(target_group, base, head, summary_only=True)[0]
 
@@ -2335,6 +2484,9 @@ def _preview_draft_model_suggestions(
     refresh_cache: bool = False,
     adaptive_recommendations: bool = False,
     commit_intent_inference: str | None = None,
+    model_privacy: str | None = None,
+    allow_remote_patches: bool = False,
+    preflight: bool = False,
 ) -> dict:
     if all_visible == bool(item_id):
         raise SystemExit("Provide exactly one suggestion target: --id or --all-visible")
@@ -2355,6 +2507,11 @@ def _preview_draft_model_suggestions(
         config.suggestion_adaptive_recommendations,
         requested=adaptive_recommendations,
     )
+    privacy_mode = resolve_model_privacy(
+        config.model_privacy,
+        requested=model_privacy,
+        allow_remote_patches=allow_remote_patches,
+    )
     suggestion_tone = _resolve_suggestion_tone(config.suggestion_tone, requested=tone)
     suggestion_style = _resolve_suggestion_style(config)
     cache_read_enabled = not no_cache and not refresh_cache
@@ -2367,7 +2524,15 @@ def _preview_draft_model_suggestions(
     effective_suggestion_strategy = _effective_suggestion_strategy(
         requested_suggestion_strategy,
         effective_model_provider or config.provider.name,
+        privacy_mode=privacy_mode,
     )
+    raw_patches_allowed = _can_send_raw_patches_for_config(
+        config.provider,
+        effective_model_provider or config.provider.name,
+        privacy_mode,
+    )
+    if not raw_patches_allowed and effective_suggestion_strategy in {"paired", "full-diff-json", "tool-retrieval"}:
+        effective_suggestion_strategy = "single"
     suggestion_provider_label = effective_model_provider or "configured"
     if (effective_model_provider or config.provider.name or "").strip().lower() in {"ollama", "local"}:
         model_context = _configured_ollama_model_context(config.provider, suggest_model=suggest_model)
@@ -2386,6 +2551,8 @@ def _preview_draft_model_suggestions(
         head,
         model_provider=effective_model_provider,
         commit_intent_inference=commit_intent_inference,
+        model_privacy=privacy_mode,
+        allow_remote_patches=allow_remote_patches,
     )
     baseline_classifier = Classifier()
     _trace_model_suggest_stage(
@@ -2499,6 +2666,13 @@ def _preview_draft_model_suggestions(
             "head_ref": head,
             "provider": suggestion_provider_label,
             **model_context,
+            "privacy": privacy_summary(
+                provider=suggestion_provider_label,
+                privacy_mode=privacy_mode,
+                raw_patch_chars_available=0,
+                raw_patch_chars_sent=0,
+            ),
+            "preflight": preflight,
             "count": suggestion_count,
             "prompt_profile": suggestion_prompt_profile,
             "tone": suggestion_tone,
@@ -2512,6 +2686,9 @@ def _preview_draft_model_suggestions(
                 "full_diff_prompt_chars": 0,
                 "full_diff_file_count": 0,
                 "full_diff_patch_chars": 0,
+                "raw_patch_chars_available": 0,
+                "raw_patch_chars_sent": 0,
+                "privacy_mode": privacy_mode,
                 "model_ms": 0,
                 "parse_ms": 0,
                 "total_ms": 0,
@@ -2546,6 +2723,13 @@ def _preview_draft_model_suggestions(
             "head_ref": head,
             "provider": suggestion_provider_label,
             **model_context,
+            "privacy": privacy_summary(
+                provider=suggestion_provider_label,
+                privacy_mode=privacy_mode,
+                raw_patch_chars_available=0,
+                raw_patch_chars_sent=0,
+            ),
+            "preflight": preflight,
             "count": suggestion_count,
             "prompt_profile": suggestion_prompt_profile,
             "tone": suggestion_tone,
@@ -2559,6 +2743,9 @@ def _preview_draft_model_suggestions(
                 "full_diff_prompt_chars": 0,
                 "full_diff_file_count": 0,
                 "full_diff_patch_chars": 0,
+                "raw_patch_chars_available": 0,
+                "raw_patch_chars_sent": 0,
+                "privacy_mode": privacy_mode,
                 "model_ms": 0,
                 "parse_ms": 0,
                 "total_ms": total_ms,
@@ -2597,16 +2784,23 @@ def _preview_draft_model_suggestions(
             )
         return result
 
-    provider = _build_provider_for_suggestion(config.provider, mode=effective_model_provider, suggest_model=suggest_model)
-    model_context = _provider_model_context(provider, effective_model_provider or config.provider.name)
-    cache_provider_mode = effective_model_provider or "configured"
-    cache_model_id = _provider_cache_model_id(provider, cache_provider_mode)
+    provider = None
+    if preflight:
+        cache_provider_mode = effective_model_provider or "configured"
+        cache_model_id = _normalized_suggest_model(suggest_model) or config.provider.model or ""
+    else:
+        provider = _build_provider_for_suggestion(config.provider, mode=effective_model_provider, suggest_model=suggest_model)
+        model_context = _provider_model_context(provider, effective_model_provider or config.provider.name)
+        cache_provider_mode = effective_model_provider or "configured"
+        cache_model_id = _provider_cache_model_id(provider, cache_provider_mode)
     provider_classifier = Classifier(
         provider=provider,
         summary_tone=suggestion_tone,
         style_guidance=str(suggestion_style["guidance"]),
         project_vocabulary=list(suggestion_style["project_vocabulary"]),
         banned_phrases=list(suggestion_style["banned_phrases"]),
+        model_privacy=privacy_mode,
+        provider_mode=effective_model_provider or config.provider.name,
     )
 
     items: list[dict[str, object]] = []
@@ -2616,6 +2810,7 @@ def _preview_draft_model_suggestions(
     full_diff_prompt_chars = 0
     full_diff_file_count = 0
     full_diff_patch_chars = 0
+    raw_patch_chars_available_total = 0
     model_ms = 0
     parse_ms = 0
     uncached_item_count = 0
@@ -2628,6 +2823,7 @@ def _preview_draft_model_suggestions(
 
     def prepare_work(order: int, group: ChangeGroup, baseline_item: ChangeItem, batch_index: int) -> _SuggestionWork:
         nonlocal preparation_ms, prompt_chars, full_diff_file_count, full_diff_patch_chars
+        nonlocal raw_patch_chars_available_total
         item_number = order + 1
         item_start = perf_counter()
         _trace_progress(
@@ -2661,18 +2857,23 @@ def _preview_draft_model_suggestions(
             elapsed_ms=_elapsed_ms(item_start),
         )
         prompt_start = perf_counter()
+        changed_files = changed_files_for_group(group)
+        raw_patch_chars_for_item = raw_patch_chars_available(changed_files)
+        change_summary = build_change_summary_payload(group=group, item=baseline_item, diff=diff)
         evidence = {
             "title": baseline_item.content.title,
             "item_id": baseline_item.id,
             "suggestion_count": suggestion_count,
             "tone": suggestion_tone,
             "style_profile": suggestion_style,
-            "diff_summary": diff.summary,
-            "representative_hunks": diff.representative_hunks,
+            "change_summary": change_summary,
             "file_count": file_count,
             "hunk_count": hunk_count,
+            "privacy_mode": privacy_mode,
+            "raw_patch_chars_available": raw_patch_chars_for_item,
+            "raw_patch_chars_sent": 0,
         }
-        source_evidence = _build_suggestion_source_evidence(diff, group)
+        source_evidence = _build_suggestion_source_evidence(diff, group, include_hunks=raw_patches_allowed)
         prompt_shape = _suggestion_prompt_shape(effective_suggestion_strategy)
         full_diff_item: dict[str, object] | None = None
         tools: list[dict[str, object]] = []
@@ -2693,16 +2894,17 @@ def _preview_draft_model_suggestions(
             project_vocabulary=list(suggestion_style["project_vocabulary"]),
             banned_phrases=list(suggestion_style["banned_phrases"]),
             prompt_profile=suggestion_prompt_profile,
+            include_hunks=raw_patches_allowed and effective_suggestion_strategy == "single",
         )
         prompt = prompt_result.prompt
         prompt_budget = dict(prompt_result.budget)
         prompt_chars += int(prompt_budget.get("prompt_chars", len(prompt)))
-        full_diff_item = _build_full_diff_suggestion_payload_item(group, baseline_item, diff)
-        if int(full_diff_item.get("patch_chars") or 0) <= 0:
-            raise SystemExit(
-                f"No diff patch evidence was available for draft item {baseline_item.id}; "
-                "Verlato will not generate a suggestion without a diff-backed payload."
-            )
+        full_diff_item = _build_full_diff_suggestion_payload_item(
+            group,
+            baseline_item,
+            diff,
+            include_patches=raw_patches_allowed,
+        )
         if effective_suggestion_strategy == "tool-retrieval":
             old_prompt_chars = int(prompt_budget.get("prompt_chars", len(prompt)))
             tool_provider = SuggestionEvidenceToolProvider.from_groups([group], [baseline_item])
@@ -2721,7 +2923,8 @@ def _preview_draft_model_suggestions(
             prompt_budget["max_tool_rounds"] = max_tool_rounds
             prompt_chars += len(prompt) - old_prompt_chars
         full_diff_file_count += int(full_diff_item.get("file_count") or 0)
-        full_diff_patch_chars += int(full_diff_item.get("patch_chars") or 0)
+        full_diff_patch_chars += int(full_diff_item.get("patch_chars_sent") or 0)
+        raw_patch_chars_available_total += int(full_diff_item.get("patch_chars_available") or 0)
         prompt_sha_source = (
             json.dumps(full_diff_item, sort_keys=True, separators=(",", ":"), default=str)
             if effective_suggestion_strategy == "full-diff-json"
@@ -2741,9 +2944,28 @@ def _preview_draft_model_suggestions(
         prompt_budget["strategy"] = effective_suggestion_strategy
         prompt_budget["prompt_shape"] = prompt_shape
         prompt_budget["full_diff_file_count"] = full_diff_item.get("file_count", 0)
-        prompt_budget["full_diff_patch_chars"] = full_diff_item.get("patch_chars", 0)
+        prompt_budget["full_diff_patch_chars_available"] = full_diff_item.get("patch_chars_available", 0)
+        prompt_budget["full_diff_patch_chars_sent"] = full_diff_item.get("patch_chars_sent", 0)
         prompt_budget["full_diff_missing_patch_count"] = full_diff_item.get("missing_patch_count", 0)
+        prompt_budget["privacy_mode"] = privacy_mode
+        prompt_budget["raw_patch_chars_available"] = raw_patch_chars_for_item
+        prompt_budget["raw_patch_chars_sent"] = int(full_diff_item.get("patch_chars_sent") or 0)
+        prompt_budget["omitted_fields"] = [] if raw_patches_allowed else list(OMITTED_PATCH_EVIDENCE)
         evidence["strategy"] = effective_suggestion_strategy
+        evidence["raw_patch_chars_sent"] = int(prompt_budget["raw_patch_chars_sent"])
+        evidence["request"] = model_request_record(
+            task="suggest-release-note",
+            provider=suggestion_provider_label,
+            privacy_mode=privacy_mode,
+            prompt=prompt,
+            evidence=evidence,
+            raw_patch_chars_available=raw_patch_chars_for_item,
+            raw_patch_chars_sent=int(prompt_budget["raw_patch_chars_sent"]),
+            omitted_fields=[] if raw_patches_allowed else list(OMITTED_PATCH_EVIDENCE),
+            omission_reasons=[]
+            if raw_patches_allowed
+            else ["metadata-only mode sends ChangeSummary instead of raw diff text"],
+        )
         if tools:
             evidence["tool_count"] = len(tools)
             evidence["max_tool_rounds"] = max_tool_rounds
@@ -2759,6 +2981,7 @@ def _preview_draft_model_suggestions(
             prompt_profile=str(prompt_budget.get("profile") or SUGGESTION_CACHE_PROMPT_PROFILE),
             strategy=effective_suggestion_strategy,
             prompt_shape=prompt_shape,
+            privacy_mode=privacy_mode,
         )
         prompt_ms = _elapsed_ms(prompt_start)
         preparation_ms += _elapsed_ms(item_start)
@@ -2775,7 +2998,9 @@ def _preview_draft_model_suggestions(
         if prompt:
             _trace_model_payload("prompt-preview", prompt)
         full_diff_file_count_for_work = int(full_diff_item.get("file_count") or 0) if full_diff_item is not None else 0
-        full_diff_patch_chars_for_work = int(full_diff_item.get("patch_chars") or 0) if full_diff_item is not None else 0
+        full_diff_patch_chars_for_work = (
+            int(full_diff_item.get("patch_chars_sent") or 0) if full_diff_item is not None else 0
+        )
         full_diff_missing_patch_count_for_work = (
             int(full_diff_item.get("missing_patch_count") or 0) if full_diff_item is not None else 0
         )
@@ -2828,7 +3053,9 @@ def _preview_draft_model_suggestions(
         elapsed = timings.get("total_ms") if isinstance(timings, dict) else None
         _trace_progress(
             "suggestion_item_done",
-            f"Generated suggestion for {result.item['item_id']}",
+            f"Prepared suggestion preflight for {result.item['item_id']}"
+            if result.item.get("preflight")
+            else f"Generated suggestion for {result.item['item_id']}",
             current=completed_count,
             total=total_targets,
             unit="item",
@@ -2906,6 +3133,11 @@ def _preview_draft_model_suggestions(
         for batch_offset, (group, baseline_item) in enumerate(batch):
             order = batch_base_order + batch_offset
             work = prepare_work(order, group, baseline_item, batch_index)
+            if preflight:
+                result = _preflight_suggestion_result(work)
+                batch_results[result.order] = result
+                record_result(result)
+                continue
             result = cached_result_for_work(work)
             if result is not None:
                 batch_results[result.order] = result
@@ -2997,6 +3229,13 @@ def _preview_draft_model_suggestions(
         "head_ref": head,
         "provider": suggestion_provider_label,
         **model_context,
+        "privacy": privacy_summary(
+            provider=suggestion_provider_label,
+            privacy_mode=privacy_mode,
+            raw_patch_chars_available=raw_patch_chars_available_total,
+            raw_patch_chars_sent=full_diff_patch_chars,
+        ),
+        "preflight": preflight,
         "count": suggestion_count,
         "prompt_profile": suggestion_prompt_profile,
         "tone": suggestion_tone,
@@ -3010,6 +3249,9 @@ def _preview_draft_model_suggestions(
             "full_diff_prompt_chars": full_diff_prompt_chars,
             "full_diff_file_count": full_diff_file_count,
             "full_diff_patch_chars": full_diff_patch_chars,
+            "raw_patch_chars_available": raw_patch_chars_available_total,
+            "raw_patch_chars_sent": full_diff_patch_chars,
+            "privacy_mode": privacy_mode,
             "model_ms": model_ms,
             "parse_ms": parse_ms,
             "total_ms": total_ms,
@@ -3088,6 +3330,7 @@ def _suggestion_cache_key(
     prompt_profile: str,
     strategy: str = "single",
     prompt_shape: str = SINGLE_SUGGESTION_PROMPT_SHAPE,
+    privacy_mode: str = "metadata-only",
 ) -> str:
     current_summary = item.edited_summary or item.content.summary
     payload = {
@@ -3099,6 +3342,7 @@ def _suggestion_cache_key(
         "prompt_sha": prompt_sha,
         "strategy": strategy,
         "prompt_shape": prompt_shape,
+        "privacy_mode": privacy_mode,
         "provider_mode": provider_mode,
         "model_id": model_id,
         "tone": tone,
@@ -3116,7 +3360,15 @@ def _stable_json_sha(value: object) -> str:
 
 
 def _suggestion_cache_stored_item(item: dict[str, object]) -> dict[str, object]:
-    transient = {"batch", "cache", "provider_metadata", "provider_reasoning", "timings"}
+    transient = {
+        "batch",
+        "cache",
+        "provider_metadata",
+        "provider_reasoning",
+        "timings",
+        "ai_request",
+        "request_envelope",
+    }
     return {key: value for key, value in item.items() if key not in transient}
 
 
@@ -3145,6 +3397,14 @@ def _cached_suggestion_result(work: _SuggestionWork, cached: CachedSuggestion) -
         "style_profile": work.suggestion_style,
         "source_evidence": work.source_evidence,
         "prompt_budget": work.prompt_budget,
+        "privacy": privacy_summary(
+            provider=work.effective_model_provider or "configured",
+            privacy_mode=str(work.prompt_budget.get("privacy_mode") or "metadata-only"),
+            raw_patch_chars_available=int(work.prompt_budget.get("raw_patch_chars_available") or 0),
+            raw_patch_chars_sent=int(work.prompt_budget.get("raw_patch_chars_sent") or 0),
+        ),
+        "ai_request": work.evidence.get("request") if isinstance(work.evidence.get("request"), dict) else {},
+        "ai_response": {"parse_result": "cache-hit", "accepted_count": len(suggestions), "rejected_count": 0},
         "suggestion_details": _cached_suggestion_details(cached_item, suggestions, work, current_summary),
         "rejected_candidates": cached_item.get("rejected_candidates") if isinstance(cached_item.get("rejected_candidates"), list) else [],
         "suggestions": suggestions,
@@ -3153,6 +3413,55 @@ def _cached_suggestion_result(work: _SuggestionWork, cached: CachedSuggestion) -
             "key": work.cache_key,
             "age_seconds": cached.age_seconds,
         },
+        "timings": {
+            "evidence_ms": work.evidence_ms,
+            "prompt_ms": work.prompt_ms,
+            "model_ms": 0,
+            "parse_ms": 0,
+            "total_ms": _elapsed_ms(work.started_at),
+            "strategy": work.strategy,
+            "file_count": work.full_diff_file_count,
+            "patch_chars": work.full_diff_patch_chars,
+            "missing_patch_count": work.full_diff_missing_patch_count,
+        },
+        "batch": work.batch,
+    }
+    return _SuggestionResult(order=work.order, item=item, model_ms=0, parse_ms=0)
+
+
+def _preflight_suggestion_result(work: _SuggestionWork) -> _SuggestionResult:
+    request_record = work.evidence.get("request") if isinstance(work.evidence.get("request"), dict) else {}
+    privacy_mode = str(work.prompt_budget.get("privacy_mode") or "metadata-only")
+    raw_patch_chars_available = int(work.prompt_budget.get("raw_patch_chars_available") or 0)
+    raw_patch_chars_sent = int(work.prompt_budget.get("raw_patch_chars_sent") or 0)
+    item = {
+        "item_id": work.baseline_item.id,
+        "title": work.baseline_item.content.title,
+        "current_summary": work.baseline_item.edited_summary or work.baseline_item.content.summary,
+        "provider": work.effective_model_provider or "configured",
+        "prompt_sha": work.prompt_sha,
+        "tone": work.suggestion_tone,
+        "style_profile": work.suggestion_style,
+        "source_evidence": work.source_evidence,
+        "prompt_budget": work.prompt_budget,
+        "privacy": privacy_summary(
+            provider=work.effective_model_provider or "configured",
+            privacy_mode=privacy_mode,
+            raw_patch_chars_available=raw_patch_chars_available,
+            raw_patch_chars_sent=raw_patch_chars_sent,
+        ),
+        "ai_request": request_record,
+        "request_envelope": {
+            "task": "suggest",
+            "prompt": work.prompt,
+            "evidence": work.evidence,
+            "tools": [tool.get("function", {}).get("name") for tool in work.tools if isinstance(tool, dict)],
+            "response_format": "suggestion text" if work.strategy != "full-diff-json" else "suggestion batch JSON",
+        },
+        "suggestion_details": [],
+        "rejected_candidates": [],
+        "suggestions": [],
+        "preflight": True,
         "timings": {
             "evidence_ms": work.evidence_ms,
             "prompt_ms": work.prompt_ms,
@@ -3330,9 +3639,34 @@ def _run_full_diff_suggestion_batch_model_work(
                 "item_ids": item_ids,
                 "item_count": len(works),
                 "suggestion_count": works[0].suggestion_count,
+                "privacy_mode": works[0].prompt_budget.get("privacy_mode"),
                 "full_diff_file_count": sum(work.full_diff_file_count for work in works),
                 "full_diff_patch_chars": sum(work.full_diff_patch_chars for work in works),
+                "raw_patch_chars_available": sum(
+                    int(work.prompt_budget.get("raw_patch_chars_available") or 0) for work in works
+                ),
+                "raw_patch_chars_sent": sum(work.full_diff_patch_chars for work in works),
                 "missing_patch_count": sum(work.full_diff_missing_patch_count for work in works),
+            },
+            metadata={
+                "privacy_mode": works[0].prompt_budget.get("privacy_mode"),
+                "request": model_request_record(
+                    task="suggest",
+                    provider=provider_name,
+                    privacy_mode=str(works[0].prompt_budget.get("privacy_mode") or "metadata-only"),
+                    prompt=prompt,
+                    evidence={"item_ids": item_ids, "item_count": len(works), "strategy": "full-diff-json"},
+                    raw_patch_chars_available=sum(
+                        int(work.prompt_budget.get("raw_patch_chars_available") or 0) for work in works
+                    ),
+                    raw_patch_chars_sent=sum(work.full_diff_patch_chars for work in works),
+                    omitted_fields=[]
+                    if sum(work.full_diff_patch_chars for work in works)
+                    else list(OMITTED_PATCH_EVIDENCE),
+                    omission_reasons=[]
+                    if sum(work.full_diff_patch_chars for work in works)
+                    else ["metadata-only mode sends ChangeSummary instead of raw diff text"],
+                ),
             },
             response_format=_suggestion_batch_response_format(works[0].suggestion_count),
         )
@@ -3492,6 +3826,31 @@ def _run_suggestion_batch_model_work(
                 "item_ids": item_ids,
                 "item_count": len(works),
                 "suggestion_count": works[0].suggestion_count,
+                "privacy_mode": works[0].prompt_budget.get("privacy_mode"),
+                "raw_patch_chars_available": sum(
+                    int(work.prompt_budget.get("raw_patch_chars_available") or 0) for work in works
+                ),
+                "raw_patch_chars_sent": sum(work.full_diff_patch_chars for work in works),
+            },
+            metadata={
+                "privacy_mode": works[0].prompt_budget.get("privacy_mode"),
+                "request": model_request_record(
+                    task="suggest",
+                    provider=provider_name,
+                    privacy_mode=str(works[0].prompt_budget.get("privacy_mode") or "metadata-only"),
+                    prompt=prompt,
+                    evidence={"item_ids": item_ids, "item_count": len(works), "strategy": works[0].strategy},
+                    raw_patch_chars_available=sum(
+                        int(work.prompt_budget.get("raw_patch_chars_available") or 0) for work in works
+                    ),
+                    raw_patch_chars_sent=sum(work.full_diff_patch_chars for work in works),
+                    omitted_fields=[]
+                    if sum(work.full_diff_patch_chars for work in works)
+                    else list(OMITTED_PATCH_EVIDENCE),
+                    omission_reasons=[]
+                    if sum(work.full_diff_patch_chars for work in works)
+                    else ["metadata-only mode sends ChangeSummary instead of raw diff text"],
+                ),
             },
             response_format=_suggestion_batch_response_format(works[0].suggestion_count),
         )
@@ -3631,9 +3990,17 @@ def _build_full_diff_suggestion_batch_prompt(works: list[_SuggestionWork]) -> st
         "prompt_shape": FULL_DIFF_SUGGESTION_PROMPT_SHAPE,
         "items": [work.full_diff_item for work in works if work.full_diff_item is not None],
     }
+    raw_patch_chars_sent = sum(work.full_diff_patch_chars for work in works)
+    evidence_name = "full diff evidence" if raw_patch_chars_sent else "privacy-filtered ChangeSummary evidence"
+    source_instruction = (
+        "Use the file patches as the primary source of truth. Do not infer behavior from titles alone."
+        if raw_patch_chars_sent
+        else "Use the change_summary, commit metadata, file paths/statuses, and deterministic facts. "
+        "Do not invent line-level behavior that is not present in the sanitized evidence."
+    )
     return (
-        "Generate release-note suggestion variants from the full diff evidence.\n"
-        "Use the file patches as the primary source of truth. Do not infer behavior from titles alone.\n"
+        f"Generate release-note suggestion variants from the {evidence_name}.\n"
+        f"{source_instruction}\n"
         "Return only JSON that matches the requested schema. Do not include Markdown fences or prose.\n"
         f"For each item, return exactly {works[0].suggestion_count} suggestion string(s) in the suggestions array.\n"
         "Do not combine items, rename item ids, omit an item, or mention implementation details unless they matter to release-note readers.\n"
@@ -3756,6 +4123,14 @@ def _build_suggestion_result_item(
     if fallback_reason:
         timings["fallback_used_capped_evidence"] = True
         timings["fallback_reason"] = fallback_reason
+    request_record = work.evidence.get("request") if isinstance(work.evidence.get("request"), dict) else {}
+    response_record = {
+        "model": response.model,
+        "response_chars": len(response.content or ""),
+        "parse_result": "accepted" if suggestion_details else "rejected",
+        "accepted_count": len(suggestion_details),
+        "rejected_count": len(rejected_candidates),
+    }
     fallback = (
         {
             "from_strategy": work.strategy,
@@ -3777,6 +4152,14 @@ def _build_suggestion_result_item(
         "provider_reasoning": provider_reasoning,
         "source_evidence": work.source_evidence,
         "prompt_budget": work.prompt_budget,
+        "privacy": privacy_summary(
+            provider=work.effective_model_provider or "configured",
+            privacy_mode=str(work.prompt_budget.get("privacy_mode") or "metadata-only"),
+            raw_patch_chars_available=int(work.prompt_budget.get("raw_patch_chars_available") or 0),
+            raw_patch_chars_sent=int(work.prompt_budget.get("raw_patch_chars_sent") or 0),
+        ),
+        "ai_request": request_record,
+        "ai_response": response_record,
         "suggestion_details": suggestion_details,
         "rejected_candidates": rejected_candidates,
         "suggestions": [detail["summary"] for detail in suggestion_details],
@@ -3817,6 +4200,10 @@ def _run_suggestion_model_work(
             task="suggest",
             prompt=work.prompt,
             evidence=work.evidence,
+            metadata={
+                "privacy_mode": work.prompt_budget.get("privacy_mode"),
+                "request": work.evidence.get("request"),
+            },
             tools=work.tools,
             tool_executor=work.tool_executor,
             max_tool_rounds=work.max_tool_rounds,
@@ -3897,6 +4284,20 @@ def _run_suggestion_model_work(
         "provider_reasoning": provider_reasoning,
         "source_evidence": work.source_evidence,
         "prompt_budget": work.prompt_budget,
+        "privacy": privacy_summary(
+            provider=work.effective_model_provider or "configured",
+            privacy_mode=str(work.prompt_budget.get("privacy_mode") or "metadata-only"),
+            raw_patch_chars_available=int(work.prompt_budget.get("raw_patch_chars_available") or 0),
+            raw_patch_chars_sent=int(work.prompt_budget.get("raw_patch_chars_sent") or 0),
+        ),
+        "ai_request": work.evidence.get("request") if isinstance(work.evidence.get("request"), dict) else {},
+        "ai_response": {
+            "model": response.model,
+            "response_chars": len(response.content or ""),
+            "parse_result": "accepted" if suggestion_details else "rejected",
+            "accepted_count": len(suggestion_details),
+            "rejected_count": len(rejected_candidates),
+        },
         "suggestion_details": suggestion_details,
         "rejected_candidates": rejected_candidates,
         "suggestions": suggestions,
@@ -4085,30 +4486,41 @@ def _summary_specificity(candidate: str, group: ChangeGroup) -> float:
     return round(length_score + overlap_score, 4)
 
 
-def _build_full_diff_suggestion_payload_item(group: ChangeGroup, item: ChangeItem, diff) -> dict[str, object]:
+def _build_full_diff_suggestion_payload_item(
+    group: ChangeGroup,
+    item: ChangeItem,
+    diff,
+    *,
+    include_patches: bool,
+) -> dict[str, object]:
     files = changed_files_for_group(group)
     file_payloads: list[dict[str, object]] = []
-    patch_chars = 0
+    patch_chars_available = 0
+    patch_chars_sent = 0
     missing_patch_count = 0
     for changed_file in files:
         patch = changed_file.patch or ""
-        patch_chars += len(patch)
+        patch_chars_available += len(patch)
         if not patch:
             missing_patch_count += 1
-        file_payloads.append(
-            {
-                "path": changed_file.path,
-                "status": changed_file.status,
-                "patch": patch,
-                "patch_chars": len(patch),
-                "patch_available": bool(patch),
-                "patch_unavailable_reason": "" if patch else "missing-or-unavailable",
-            }
-        )
+        file_payload = {
+            "path": changed_file.path,
+            "status": changed_file.status,
+            "patch_chars_available": len(patch),
+            "patch_chars_sent": len(patch) if include_patches else 0,
+            "patch_available": bool(patch),
+            "patch_unavailable_reason": "" if patch else "missing-or-unavailable",
+        }
+        if include_patches:
+            file_payload["patch"] = patch
+            patch_chars_sent += len(patch)
+        file_payloads.append(file_payload)
+    change_summary = build_change_summary_payload(group=group, item=item, diff=diff)
     return {
         "item_id": item.id,
         "title": item.content.title,
         "current_summary": item.edited_summary or item.content.summary,
+        "change_summary": change_summary,
         "classification": {
             "kind": item.classification.kind,
             "area": item.classification.area,
@@ -4138,8 +4550,11 @@ def _build_full_diff_suggestion_payload_item(group: ChangeGroup, item: ChangeIte
         ],
         "files": file_payloads,
         "file_count": len(file_payloads),
-        "patch_chars": patch_chars,
+        "patch_chars_available": patch_chars_available,
+        "patch_chars_sent": patch_chars_sent,
+        "patch_chars": patch_chars_sent,
         "missing_patch_count": missing_patch_count,
+        "omitted_fields": [] if include_patches else list(OMITTED_PATCH_EVIDENCE),
         "diff_summary": {
             "summary": diff.summary,
             "files_by_area": diff.files_by_area,
@@ -4151,7 +4566,7 @@ def _build_full_diff_suggestion_payload_item(group: ChangeGroup, item: ChangeIte
     }
 
 
-def _build_suggestion_source_evidence(diff, group: ChangeGroup) -> list[dict[str, str]]:
+def _build_suggestion_source_evidence(diff, group: ChangeGroup, *, include_hunks: bool = False) -> list[dict[str, str]]:
     evidence: list[dict[str, str]] = []
     if group.pr:
         evidence.append(
@@ -4177,15 +4592,16 @@ def _build_suggestion_source_evidence(diff, group: ChangeGroup) -> list[dict[str
                 "detail": status,
             }
         )
-    for path, hunks in list(diff.representative_hunks.items())[:3]:
-        excerpt = " ".join(hunk.replace("\n", " ") for hunk in hunks)
-        evidence.append(
-            {
-                "kind": "diff",
-                "label": path,
-                "detail": excerpt[:240],
-            }
-        )
+    if include_hunks:
+        for path, hunks in list(diff.representative_hunks.items())[:3]:
+            excerpt = " ".join(hunk.replace("\n", " ") for hunk in hunks)
+            evidence.append(
+                {
+                    "kind": "diff",
+                    "label": path,
+                    "detail": excerpt[:240],
+                }
+            )
     if diff.summary:
         evidence.append(
             {
@@ -4840,9 +5256,21 @@ def _build_draft_model_prompt(
     model_provider: str | None = None,
     tone: str | None = None,
     commit_intent_inference: str | None = None,
+    model_privacy: str | None = None,
+    allow_remote_patches: bool = False,
 ) -> dict[str, object]:
     effective_model_provider = _resolve_suggest_model_provider(model_provider)
     config = _load_config()
+    privacy_mode = resolve_model_privacy(
+        config.model_privacy,
+        requested=model_privacy,
+        allow_remote_patches=allow_remote_patches,
+    )
+    raw_patches_allowed = _can_send_raw_patches_for_config(
+        config.provider,
+        effective_model_provider or config.provider.name,
+        privacy_mode,
+    )
     suggestion_tone = _resolve_suggestion_tone(config.suggestion_tone, requested=tone)
     suggestion_style = _resolve_suggestion_style(config)
     target_group = _find_group_for_item_id(
@@ -4851,6 +5279,8 @@ def _build_draft_model_prompt(
         item_id,
         model_provider=effective_model_provider,
         commit_intent_inference=commit_intent_inference,
+        model_privacy=privacy_mode,
+        allow_remote_patches=allow_remote_patches,
     )
     classifier = Classifier()
     draft_item = classifier.classify(target_group, base, head)[0]
@@ -4866,15 +5296,48 @@ def _build_draft_model_prompt(
         project_vocabulary=list(suggestion_style["project_vocabulary"]),
         banned_phrases=list(suggestion_style["banned_phrases"]),
         prompt_profile="suggestion",
+        include_hunks=raw_patches_allowed,
+    )
+    prompt_budget = dict(prompt_result.budget)
+    prompt_budget["privacy_mode"] = privacy_mode
+    prompt_budget["raw_patch_chars_available"] = raw_patch_chars_available(changed_files_for_group(target_group))
+    change_summary = build_change_summary_payload(group=target_group, item=draft_item, diff=diff)
+    evidence = {
+        "title": draft_item.content.title,
+        "item_id": draft_item.id,
+        "change_summary": change_summary,
+        "privacy_mode": privacy_mode,
+    }
+    raw_patch_chars = int(prompt_budget["raw_patch_chars_available"])
+    request_record = model_request_record(
+        task="suggest-release-note",
+        provider=effective_model_provider or "configured",
+        privacy_mode=privacy_mode,
+        prompt=prompt_result.prompt,
+        evidence=evidence,
+        raw_patch_chars_available=raw_patch_chars,
+        raw_patch_chars_sent=int(prompt_result.budget.get("raw_patch_chars_sent") or 0),
+        omitted_fields=[] if raw_patches_allowed else list(OMITTED_PATCH_EVIDENCE),
+        omission_reasons=[]
+        if raw_patches_allowed
+        else ["metadata-only mode sends ChangeSummary instead of raw diff text"],
     )
     return {
         "item_id": draft_item.id,
         "title": draft_item.content.title,
         "provider": effective_model_provider or "configured",
+        "privacy": privacy_summary(
+            provider=effective_model_provider or "configured",
+            privacy_mode=privacy_mode,
+            raw_patch_chars_available=raw_patch_chars,
+            raw_patch_chars_sent=int(prompt_result.budget.get("raw_patch_chars_sent") or 0),
+        ),
         "tone": suggestion_tone,
         "style_profile": suggestion_style,
         "prompt": prompt_result.prompt,
-        "prompt_budget": prompt_result.budget,
+        "evidence": evidence,
+        "ai_request": request_record,
+        "prompt_budget": prompt_budget,
     }
 
 
@@ -4972,6 +5435,8 @@ def _run_draft_suggest(
     model_provider: str | None = None,
     tone: str | None = None,
     commit_intent_inference: str | None = None,
+    model_privacy: str | None = None,
+    allow_remote_patches: bool = False,
 ) -> int:
     updated = _request_draft_model_input(
         base=base,
@@ -4981,6 +5446,8 @@ def _run_draft_suggest(
         model_provider=model_provider,
         tone=tone,
         commit_intent_inference=commit_intent_inference,
+        model_privacy=model_privacy,
+        allow_remote_patches=allow_remote_patches,
     )
     print(json.dumps(updated.to_dict(), indent=2))
     return 0
@@ -4994,6 +5461,8 @@ def _run_draft_prompt(
     model_provider: str | None = None,
     tone: str | None = None,
     commit_intent_inference: str | None = None,
+    model_privacy: str | None = None,
+    allow_remote_patches: bool = False,
 ) -> int:
     prompt_preview = _build_draft_model_prompt(
         base=base,
@@ -5002,6 +5471,8 @@ def _run_draft_prompt(
         model_provider=model_provider,
         tone=tone,
         commit_intent_inference=commit_intent_inference,
+        model_privacy=model_privacy,
+        allow_remote_patches=allow_remote_patches,
     )
     print(json.dumps(prompt_preview, indent=2))
     return 0
@@ -5111,6 +5582,8 @@ def main(argv: list[str] | None = None) -> int:
             persist=False,
             model_provider=args.model_provider,
             commit_intent_inference=_commit_intent_inference_from_args(args),
+            model_privacy=_model_privacy_from_args(args),
+            allow_remote_patches=_allow_remote_patches_from_args(args),
         ), indent=2))
         return 0
 
@@ -5122,6 +5595,8 @@ def main(argv: list[str] | None = None) -> int:
             persist=True,
             model_provider=args.model_provider,
             commit_intent_inference=_commit_intent_inference_from_args(args),
+            model_privacy=_model_privacy_from_args(args),
+            allow_remote_patches=_allow_remote_patches_from_args(args),
         )
         print(json.dumps(items, indent=2))
         return 0
@@ -5134,6 +5609,8 @@ def main(argv: list[str] | None = None) -> int:
             persist=False,
             model_provider=args.model_provider,
             commit_intent_inference=_commit_intent_inference_from_args(args),
+            model_privacy=_model_privacy_from_args(args),
+            allow_remote_patches=_allow_remote_patches_from_args(args),
         )
         print(json.dumps({"unpublished": items, "count": len(items)}, indent=2))
         return 0
@@ -5225,7 +5702,7 @@ def main(argv: list[str] | None = None) -> int:
             base, head = _resolve_range(args)
             if args.trace_suggestions:
                 os.environ["VERLATO_TRACE_MODEL_CALLS"] = "1"
-            if args.preview:
+            if args.preview or args.preflight:
                 suggestions = _preview_draft_model_suggestions(
                     base=base,
                     head=head,
@@ -5243,6 +5720,9 @@ def main(argv: list[str] | None = None) -> int:
                     refresh_cache=args.refresh_cache,
                     adaptive_recommendations=args.adaptive_recommendations,
                     commit_intent_inference=_commit_intent_inference_from_args(args),
+                    model_privacy=_model_privacy_from_args(args),
+                    allow_remote_patches=_allow_remote_patches_from_args(args),
+                    preflight=args.preflight,
                 )
                 print(json.dumps(suggestions, indent=2))
                 return 0
@@ -5258,6 +5738,8 @@ def main(argv: list[str] | None = None) -> int:
                 model_provider=args.model_provider,
                 tone=args.tone,
                 commit_intent_inference=_commit_intent_inference_from_args(args),
+                model_privacy=_model_privacy_from_args(args),
+                allow_remote_patches=_allow_remote_patches_from_args(args),
             )
         if args.draft_command == "prompt":
             base, head = _resolve_range(args)
@@ -5268,6 +5750,8 @@ def main(argv: list[str] | None = None) -> int:
                 model_provider=args.model_provider,
                 tone=args.tone,
                 commit_intent_inference=_commit_intent_inference_from_args(args),
+                model_privacy=_model_privacy_from_args(args),
+                allow_remote_patches=_allow_remote_patches_from_args(args),
             )
         base, head = _resolve_range(args)
         document = build_draft_document(
@@ -5278,6 +5762,8 @@ def main(argv: list[str] | None = None) -> int:
             include_provenance=args.include_provenance,
             model_provider=args.model_provider,
             commit_intent_inference=_commit_intent_inference_from_args(args),
+            model_privacy=_model_privacy_from_args(args),
+            allow_remote_patches=_allow_remote_patches_from_args(args),
         )
         if args.draft_command == "preview":
             _trace_progress(

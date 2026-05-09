@@ -226,6 +226,38 @@ test("preview suggestions passes configured parallelism and batch size to the CL
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_PROMPT_PROFILE, "conservative");
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS, "0");
   assert.equal(spawnCalls[0].options.env.VERLATO_OLLAMA_SUGGEST_MODEL, "");
+  assert.equal(spawnCalls[0].options.env.VERLATO_MODEL_PRIVACY, "metadata-only");
+  assert.equal(spawnCalls[0].options.env.VERLATO_ALLOW_REMOTE_PATCHES, "0");
+});
+
+test("preview suggestions passes explicit privacy mode and remote patch opt-in", async () => {
+  const spawnCalls = [];
+  const child = makeChild(555);
+  const client = makeClient((command, args, options) => {
+    spawnCalls.push({ command, args, options });
+    return child;
+  }, {
+    modelPrivacy: "trusted-provider-patch",
+    allowRemotePatches: true,
+  });
+
+  const pending = client.previewDraftSuggestions({ base: "v1.0.0", head: "HEAD" });
+  await waitForSpawn(spawnCalls);
+  child.stdout.emit("data", JSON.stringify({
+    base_ref: "v1.0.0",
+    head_ref: "HEAD",
+    provider: "mock",
+    count: 1,
+    items: [],
+  }));
+  child.emit("close", 0);
+  await pending;
+
+  assert.ok(spawnCalls[0].args.includes("--privacy"));
+  assert.equal(spawnCalls[0].args[spawnCalls[0].args.indexOf("--privacy") + 1], "trusted-provider-patch");
+  assert.ok(spawnCalls[0].args.includes("--allow-remote-patches"));
+  assert.equal(spawnCalls[0].options.env.VERLATO_MODEL_PRIVACY, "trusted-provider-patch");
+  assert.equal(spawnCalls[0].options.env.VERLATO_ALLOW_REMOTE_PATCHES, "1");
 });
 
 test("preview suggestions can refresh the persistent suggestion cache", async () => {

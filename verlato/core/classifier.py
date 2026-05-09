@@ -6,10 +6,12 @@ import sys
 from dataclasses import dataclass
 
 from verlato.core.changelog import VALID_CHANGE_KINDS, normalize_change_kind
+from verlato.core.change_summary import build_change_summary_payload, raw_patch_chars_available
 from verlato.core.checksum import CHECKSUM_VERSION, build_checksum
 from verlato.core.commit_intent import commit_intent_payload, effective_conventional_commit
 from verlato.core.conventional import parse_conventional_commit
 from verlato.core.diff_evidence import DiffEvidenceBuilder
+from verlato.core.model_privacy import DEFAULT_MODEL_PRIVACY, OMITTED_PATCH_EVIDENCE, model_request_record
 from verlato.core.models import (
     ChangeGroup,
     ChangeItem,
@@ -67,7 +69,7 @@ class PromptBudgetProfile:
 @dataclass(frozen=True)
 class SummaryPrompt:
     prompt: str
-    budget: dict[str, int | str]
+    budget: dict[str, object]
 
 
 SUMMARY_PROMPT_PROFILE = PromptBudgetProfile(
@@ -175,6 +177,8 @@ class Classifier:
         style_guidance: str = "",
         project_vocabulary: list[str] | None = None,
         banned_phrases: list[str] | None = None,
+        model_privacy: str = DEFAULT_MODEL_PRIVACY,
+        provider_mode: str | None = None,
     ) -> None:
         self.diff_builder = DiffEvidenceBuilder()
         self.provider = provider
@@ -182,6 +186,8 @@ class Classifier:
         self.style_guidance = style_guidance
         self.project_vocabulary = project_vocabulary or []
         self.banned_phrases = banned_phrases or []
+        self.model_privacy = model_privacy
+        self.provider_mode = provider_mode
 
     def classify(self, group: ChangeGroup, base_ref: str, head_ref: str, *, summary_only: bool = False) -> list[ChangeItem]:
         pr = group.pr
@@ -373,19 +379,10 @@ class Classifier:
         evidence = {
             "title": title,
             "labels": labels,
-            "pr_body": group.pr.body if group.pr else "",
-            "commits": [commit.message for commit in group.commits],
-            "commit_subjects": [commit.message.splitlines()[0] for commit in group.commits],
+            "change_summary": build_change_summary_payload(group=group, diff=diff),
             "inferred_commit_intents": [
                 payload for commit in group.commits if (payload := commit_intent_payload(commit.inferred_intent))
             ],
-            "diff_summary": diff.summary,
-            "files_by_area": diff.files_by_area,
-            "file_statuses": diff.file_statuses,
-            "api_changes": diff.api_changes,
-            "migration_changes": diff.migration_changes,
-            "config_changes": diff.config_changes,
-            "representative_hunks": diff.representative_hunks,
         }
         summary_prompt = self._build_summary_prompt(
             title=title,
@@ -399,10 +396,27 @@ class Classifier:
             style_guidance=self.style_guidance,
             project_vocabulary=self.project_vocabulary,
             banned_phrases=self.banned_phrases,
+            include_hunks=False,
+        )
+        evidence["request"] = model_request_record(
+            task="summarize",
+            provider=self.provider_mode,
+            privacy_mode=self.model_privacy,
+            prompt=summary_prompt,
+            evidence=evidence,
+            raw_patch_chars_available=raw_patch_chars_available(changed_files_for_group(group)),
+            raw_patch_chars_sent=0,
+            omitted_fields=list(OMITTED_PATCH_EVIDENCE),
+            omission_reasons=["classifier provider assist uses ChangeSummary evidence by default"],
         )
         self._trace_model_call_start("summarize", title)
         summary_response = provider.summarize(
-            ProviderRequest(task="summarize", prompt=summary_prompt, evidence=evidence)
+            ProviderRequest(
+                task="summarize",
+                prompt=summary_prompt,
+                evidence=evidence,
+                metadata={"privacy_mode": self.model_privacy, "request": evidence["request"]},
+            )
         )
         self._trace_model_call("summarize", title, summary_response.model, summary_response.confidence)
         summary_rejection = self._summary_rejection_reason(summary_response.content, title, group)
@@ -431,7 +445,12 @@ class Classifier:
             )
             self._trace_model_call_start("classify", title)
             classify_response = provider.classify(
-                ProviderRequest(task="classify", prompt=classify_prompt, evidence=evidence)
+                ProviderRequest(
+                    task="classify",
+                    prompt=classify_prompt,
+                    evidence=evidence,
+                    metadata={"privacy_mode": self.model_privacy, "request": evidence["request"]},
+                )
             )
             self._trace_model_call("classify", title, classify_response.model, classify_response.confidence)
             provider_classification = self._parse_provider_classification(classify_response.content)
@@ -467,6 +486,7 @@ class Classifier:
         project_vocabulary: list[str] | None = None,
         banned_phrases: list[str] | None = None,
         prompt_profile: str = "summary",
+        include_hunks: bool = False,
     ) -> str:
         return self._build_summary_prompt_with_budget(
             title=title,
@@ -482,6 +502,7 @@ class Classifier:
             project_vocabulary=project_vocabulary,
             banned_phrases=banned_phrases,
             prompt_profile=prompt_profile,
+            include_hunks=include_hunks,
         ).prompt
 
     def _build_summary_prompt_with_budget(
@@ -500,6 +521,7 @@ class Classifier:
         project_vocabulary: list[str] | None = None,
         banned_phrases: list[str] | None = None,
         prompt_profile: str = "summary",
+        include_hunks: bool = False,
     ) -> SummaryPrompt:
         profile = _prompt_budget_profile(prompt_profile)
         commit_subjects = [_commit_prompt_line(commit) for commit in commits[:profile.commits]]
@@ -521,17 +543,20 @@ class Classifier:
         included_hunk_files = 0
         included_hunks = 0
         included_hunk_chars = 0
-        for path, hunks in list(diff.representative_hunks.items())[:profile.hunk_files]:
-            included_hunk_files += 1
-            hunk_lines.append(f"{path}:")
-            for hunk in hunks[:profile.hunks_per_file]:
-                compact_hunk = _truncate_prompt_text(hunk, profile.hunk_chars)
-                included_hunks += 1
-                included_hunk_chars += len(compact_hunk)
-                hunk_lines.append(f"  {compact_hunk}")
-            if len(hunks) > profile.hunks_per_file:
-                hunk_lines.append(f"  ... and {len(hunks) - profile.hunks_per_file} more hunk(s)")
-        hunk_text = "\n".join(hunk_lines) or "none"
+        if include_hunks:
+            for path, hunks in list(diff.representative_hunks.items())[:profile.hunk_files]:
+                included_hunk_files += 1
+                hunk_lines.append(f"{path}:")
+                for hunk in hunks[:profile.hunks_per_file]:
+                    compact_hunk = _truncate_prompt_text(hunk, profile.hunk_chars)
+                    included_hunks += 1
+                    included_hunk_chars += len(compact_hunk)
+                    hunk_lines.append(f"  {compact_hunk}")
+                if len(hunks) > profile.hunks_per_file:
+                    hunk_lines.append(f"  ... and {len(hunks) - profile.hunks_per_file} more hunk(s)")
+            hunk_text = "\n".join(hunk_lines) or "none"
+        else:
+            hunk_text = "omitted by privacy mode; use the deterministic change summary and file/status signals"
         pr_body_text = _truncate_prompt_text(pr_body.strip(), profile.pr_body_chars) or "none"
         diff_summary = _truncate_prompt_text(diff.summary, profile.diff_summary_chars)
         context_bits = []
@@ -556,7 +581,7 @@ class Classifier:
         )
         style_text = f"{style_lines}\n" if style_lines else ""
         prompt = (
-            f"Write a useful Verlato release-note description based primarily on the file diffs.\n"
+            f"Write a useful Verlato release-note description based on privacy-filtered change evidence.\n"
             f"Verlato renders the final release note as Markdown with a version heading and change-type "
             f"subheadings; return only the entry body for this change, without top-level Markdown headings.\n"
             f"Lead with what changed and why it matters. Name the observable behavior, workflow, API, docs, "
@@ -605,6 +630,9 @@ class Classifier:
                 "hunk_chars_included": included_hunk_chars,
                 "hunk_chars_total": total_hunk_chars,
                 "hunk_chars_skipped": max(total_hunk_chars - included_hunk_chars, 0),
+                "raw_patch_text_included": include_hunks,
+                "raw_patch_chars_sent": included_hunk_chars if include_hunks else 0,
+                "omitted_fields": "" if include_hunks else ", ".join(OMITTED_PATCH_EVIDENCE),
             },
         )
 

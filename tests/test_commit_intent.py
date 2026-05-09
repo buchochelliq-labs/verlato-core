@@ -106,6 +106,56 @@ def test_inference_provider_errors_are_ignored():
     assert commits[0].inferred_intent is None
 
 
+def test_commit_intent_inference_uses_patch_free_evidence_by_default():
+    provider = _CapturingIntentProvider()
+    commit = Commit(
+        sha="a1",
+        message="add token endpoint",
+        files=[ChangedFile(path="api/tokens.py", patch="@@ -1 +1 @@\n-old\n+REMOTE_INTENT_SENTINEL")],
+    )
+
+    inferred = infer_commit_intents(
+        [commit],
+        provider,
+        privacy_mode="metadata-only",
+        provider_mode="litellm",
+    )
+    request = provider.calls[0]
+
+    assert inferred == 1
+    assert commit.inferred_intent is not None
+    assert "REMOTE_INTENT_SENTINEL" not in request.prompt
+    assert "@@" not in request.prompt
+    assert "patch_excerpt" not in request.prompt
+    assert request.evidence["raw_patch_chars_sent"] == 0
+    assert request.metadata["request"]["raw_patch_chars_sent"] == 0
+    assert request.metadata["request"]["contains_raw_patch_markers"] is False
+
+
+def test_commit_intent_inference_allows_bounded_patch_evidence_for_local_mode():
+    provider = _CapturingIntentProvider()
+    commit = Commit(
+        sha="a1",
+        message="add token endpoint",
+        files=[ChangedFile(path="api/tokens.py", patch="@@ -1 +1 @@\n-old\n+LOCAL_INTENT_SENTINEL")],
+    )
+
+    inferred = infer_commit_intents(
+        [commit],
+        provider,
+        privacy_mode="local-summary-then-ai",
+        provider_mode="ollama",
+    )
+    request = provider.calls[0]
+
+    assert inferred == 1
+    assert "LOCAL_INTENT_SENTINEL" in request.prompt
+    assert request.evidence["files"][0]["patch_excerpt"].endswith("LOCAL_INTENT_SENTINEL")
+    assert request.evidence["raw_patch_chars_sent"] > 0
+    assert request.metadata["request"]["raw_patch_chars_sent"] > 0
+    assert request.metadata["request"]["contains_raw_patch_markers"] is True
+
+
 def test_cli_commit_intent_inference_enriches_eligible_commits(monkeypatch, tmp_path: Path):
     (tmp_path / "verlato.json").write_text(json.dumps({"commit_intent_inference": "low-signal"}))
     monkeypatch.chdir(tmp_path)
@@ -154,6 +204,31 @@ def test_cli_commit_intent_inference_respects_fanout_guard(monkeypatch, tmp_path
 class _ErroringProvider(VerlatoProvider):
     def summarize(self, request: ProviderRequest) -> ProviderResponse:
         raise RuntimeError("provider unavailable")
+
+    def classify(self, request: ProviderRequest) -> ProviderResponse:
+        raise AssertionError("classify should not be called")
+
+
+class _CapturingIntentProvider(VerlatoProvider):
+    def __init__(self):
+        self.calls: list[ProviderRequest] = []
+
+    def summarize(self, request: ProviderRequest) -> ProviderResponse:
+        self.calls.append(request)
+        return ProviderResponse(
+            content=json.dumps(
+                {
+                    "type": "feat",
+                    "scope": "api",
+                    "description": "add token endpoint",
+                    "breaking": False,
+                    "confidence": 0.9,
+                    "rationale": "Touches API token endpoint metadata.",
+                }
+            ),
+            confidence=0.9,
+            model="test-model",
+        )
 
     def classify(self, request: ProviderRequest) -> ProviderResponse:
         raise AssertionError("classify should not be called")

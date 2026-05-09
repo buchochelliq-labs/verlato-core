@@ -158,6 +158,7 @@ export class VerlatoClient implements vscode.Disposable {
   }
 
   async getModelPrompt(request: DraftRangeRequest, itemId: string): Promise<DraftPromptPreview> {
+    const settings = this.getModelSettings();
     return this.runJsonCommand<DraftPromptPreview>([
       "draft",
       "prompt",
@@ -167,6 +168,7 @@ export class VerlatoClient implements vscode.Disposable {
       request.head ?? "HEAD",
       "--id",
       itemId,
+      ...privacyArgs(settings),
     ]);
   }
 
@@ -300,6 +302,8 @@ export class VerlatoClient implements vscode.Disposable {
       suggestionParallelism: config.get<number>("suggestionParallelism") ?? 2,
       suggestionBatchSize: config.get<number>("suggestionBatchSize") ?? 5,
       suggestionStrategy: config.get<string>("suggestionStrategy") || "auto",
+      modelPrivacy: config.get<string>("modelPrivacy") || "metadata-only",
+      allowRemotePatches: config.get<boolean>("allowRemotePatches") ?? false,
       commitIntentInference: config.get<boolean>("commitIntentInference") ?? false,
       suggestionAutoWarmCache: config.get<boolean>("suggestionAutoWarmCache") ?? false,
       suggestionPromptProfile: config.get<string>("suggestionPromptProfile") || "conservative",
@@ -353,6 +357,12 @@ export class VerlatoClient implements vscode.Disposable {
     }
     if (settings.suggestionStrategy !== undefined) {
       await config.update("suggestionStrategy", settings.suggestionStrategy, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.modelPrivacy !== undefined) {
+      await config.update("modelPrivacy", settings.modelPrivacy, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.allowRemotePatches !== undefined) {
+      await config.update("allowRemotePatches", settings.allowRemotePatches, vscode.ConfigurationTarget.Workspace);
     }
     if (settings.commitIntentInference !== undefined) {
       await config.update("commitIntentInference", settings.commitIntentInference, vscode.ConfigurationTarget.Workspace);
@@ -955,6 +965,8 @@ export class VerlatoClient implements vscode.Disposable {
     env.VERLATO_SUGGESTION_PARALLELISM = String(settings.suggestionParallelism);
     env.VERLATO_SUGGESTION_BATCH_SIZE = String(settings.suggestionBatchSize);
     env.VERLATO_SUGGESTION_STRATEGY = settings.suggestionStrategy;
+    env.VERLATO_MODEL_PRIVACY = settings.modelPrivacy;
+    env.VERLATO_ALLOW_REMOTE_PATCHES = settings.allowRemotePatches ? "1" : "0";
     env.VERLATO_COMMIT_INTENT_INFERENCE = settings.commitIntentInference ? "low-signal" : "off";
     env.VERLATO_SUGGESTION_PROMPT_PROFILE = settings.suggestionPromptProfile;
     env.VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS = settings.suggestionAdaptiveRecommendations ? "1" : "0";
@@ -1195,7 +1207,8 @@ function formatModelSettings(settings: ModelSettings): string {
   const warm = settings.provider === "ollama" ? `; cache warm: ${settings.suggestionAutoWarmCache ? "on" : "off"}` : "";
   const adaptive = settings.suggestionAdaptiveRecommendations ? "; adaptive advice on" : "";
   const commitIntent = settings.commitIntentInference ? "; commit intents on" : "";
-  return `${settings.provider}${model}${suggestionModel}; ${service}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; parallelism: ${settings.suggestionParallelism}; batch size: ${settings.suggestionBatchSize}; strategy: ${settings.suggestionStrategy}; prompt profile: ${settings.suggestionPromptProfile}; tone: ${settings.suggestionTone}${commitIntent}${warm}${adaptive}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
+  const privacy = `; privacy: ${settings.modelPrivacy}${settings.allowRemotePatches ? " + remote patches" : ""}`;
+  return `${settings.provider}${model}${suggestionModel}; ${service}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; parallelism: ${settings.suggestionParallelism}; batch size: ${settings.suggestionBatchSize}; strategy: ${settings.suggestionStrategy}; prompt profile: ${settings.suggestionPromptProfile}; tone: ${settings.suggestionTone}${privacy}${commitIntent}${warm}${adaptive}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
 }
 
 function suggestModelArgs(settings: ModelSettings): string[] {
@@ -1221,6 +1234,7 @@ function draftSuggestionPreviewArgs(request: DraftRangeRequest, settings: ModelS
     String(settings.suggestionBatchSize),
     "--strategy",
     settings.suggestionStrategy,
+    ...privacyArgs(settings),
     "--prompt-profile",
     settings.suggestionPromptProfile,
     ...suggestModelArgs(settings),
@@ -1228,6 +1242,17 @@ function draftSuggestionPreviewArgs(request: DraftRangeRequest, settings: ModelS
     settings.suggestionTone,
     ...(settings.suggestionAdaptiveRecommendations ? ["--adaptive-recommendations"] : []),
   ];
+}
+
+function privacyArgs(settings: ModelSettings): string[] {
+  const args: string[] = [];
+  if (settings.modelPrivacy && settings.modelPrivacy !== "metadata-only") {
+    args.push("--privacy", settings.modelPrivacy);
+  }
+  if (settings.allowRemotePatches) {
+    args.push("--allow-remote-patches");
+  }
+  return args;
 }
 
 interface SuggestionPartialState {
@@ -1248,6 +1273,14 @@ function createSuggestionPartialState(
       model: settings.model,
       suggest_model: settings.suggestionModel || null,
       effective_suggest_model: settings.suggestionModel || settings.model,
+      privacy: {
+        mode: settings.modelPrivacy,
+        provider: settings.provider,
+        raw_patch_chars_available: 0,
+        raw_patch_chars_sent: 0,
+        will_send: ["change summary", "PR metadata", "commit metadata", "file paths and statuses"],
+        will_not_send: settings.allowRemotePatches ? [] : ["raw patches", "patch excerpts", "representative hunks"],
+      },
       count: settings.suggestionCount,
       tone: settings.suggestionTone,
       prompt_profile: settings.suggestionPromptProfile,
@@ -1255,6 +1288,7 @@ function createSuggestionPartialState(
         parallelism: settings.suggestionParallelism,
         batch_size: settings.suggestionBatchSize,
         strategy: settings.suggestionStrategy,
+        privacy_mode: settings.modelPrivacy,
       },
       items: [],
     },
@@ -1326,6 +1360,10 @@ function coerceSuggestionPreview(
     effective_suggest_model: typeof value.effective_suggest_model === "string"
       ? value.effective_suggest_model
       : fallback.effective_suggest_model,
+    privacy: isRecord(value.privacy)
+      ? value.privacy as DraftSuggestionPreview["privacy"]
+      : fallback.privacy,
+    preflight: typeof value.preflight === "boolean" ? value.preflight : fallback.preflight,
     count: typeof value.count === "number" ? value.count : fallback.count,
     prompt_profile: typeof value.prompt_profile === "string" ? value.prompt_profile : fallback.prompt_profile,
     tone: typeof value.tone === "string" ? value.tone : fallback.tone,
@@ -1351,7 +1389,7 @@ function coerceSuggestionItem(value: unknown): DraftSuggestionItem | undefined {
     return undefined;
   }
   const suggestions = value.suggestions.filter((suggestion): suggestion is string => typeof suggestion === "string");
-  if (!suggestions.length) {
+  if (!suggestions.length && value.preflight !== true) {
     return undefined;
   }
   return {

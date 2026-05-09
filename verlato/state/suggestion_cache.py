@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import uuid
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -46,6 +47,8 @@ class SuggestionCacheBackend(Protocol):
 
 SuggestionCacheBackendFactory = Callable[[str, int], SuggestionCacheBackend]
 _CACHE_BACKENDS: dict[str, SuggestionCacheBackendFactory] = {}
+_PROCESS_LOCKS: dict[Path, threading.Lock] = {}
+_PROCESS_LOCKS_GUARD = threading.Lock()
 
 
 def register_suggestion_cache_backend(name: str, factory: SuggestionCacheBackendFactory) -> None:
@@ -253,12 +256,27 @@ register_suggestion_cache_backend("json", lambda path, ttl_days: JsonSuggestionC
 def _cache_file_lock(path: Path) -> Iterator[None]:
     lock_path = path.with_name(f"{path.name}.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+b") as lock_file:
-        _lock_file(lock_file)
-        try:
-            yield
-        finally:
-            _unlock_file(lock_file)
+    process_lock = _process_lock_for(lock_path)
+    with process_lock:
+        with lock_path.open("a+b") as lock_file:
+            _lock_file(lock_file)
+            try:
+                yield
+            finally:
+                _unlock_file(lock_file)
+
+
+def _process_lock_for(path: Path) -> threading.Lock:
+    try:
+        key = path.resolve()
+    except OSError:
+        key = path.absolute()
+    with _PROCESS_LOCKS_GUARD:
+        lock = _PROCESS_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _PROCESS_LOCKS[key] = lock
+        return lock
 
 
 def _lock_file(lock_file) -> None:

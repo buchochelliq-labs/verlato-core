@@ -2862,6 +2862,8 @@ def test_draft_suggest_ollama_batches_two_uncached_items(monkeypatch, tmp_path: 
         "--preview",
         "--model-provider",
         "ollama",
+        "--privacy",
+        "local-summary-then-ai",
         "--strategy",
         "full-diff-json",
         "--batch-size",
@@ -2892,6 +2894,135 @@ def test_draft_suggest_ollama_batches_two_uncached_items(monkeypatch, tmp_path: 
     assert all(item["timings"]["strategy"] == "full-diff-json" for item in preview["items"])
     assert all("batch_model_ms" in item["timings"] for item in preview["items"])
     assert all(item["full_diff"]["patch_chars"] == len("+ change") for item in preview["items"])
+
+
+def test_draft_suggest_preflight_builds_sanitized_envelope_without_provider_call(
+    monkeypatch, tmp_path: Path, capsys
+):
+    class NoCallProvider:
+        model = "litellm:test-model"
+
+        def __init__(self):
+            self.calls = 0
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            self.calls += 1
+            raise AssertionError("preflight should not call the provider")
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            raise AssertionError("preflight should not classify with the provider")
+
+    patch = "@@ -1 +1 @@\n-old auth\n+PREFLIGHT_SENTINEL"
+    group = _mk_group(
+        number=7,
+        title="Improve auth privacy",
+        commit_sha="a1",
+        commit_message="feat: improve auth privacy",
+        patch=patch,
+    )
+    provider = NoCallProvider()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
+    monkeypatch.setattr(
+        "verlato.cli.main.build_provider",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("preflight should not build a provider")),
+    )
+
+    rc = main([
+        "draft",
+        "suggest",
+        "--base",
+        "v1.0.0",
+        "--all-visible",
+        "--preflight",
+        "--no-cache",
+        "--model-provider",
+        "litellm",
+        "--strategy",
+        "full-diff-json",
+    ])
+    preview = json.loads(capsys.readouterr().out)
+    envelope = preview["items"][0]["request_envelope"]
+    envelope_json = json.dumps(envelope, sort_keys=True)
+
+    assert rc == 0
+    assert provider.calls == 0
+    assert preview["preflight"] is True
+    assert preview["performance"]["model_call_count"] == 0
+    assert preview["performance"]["strategy"] == "single"
+    assert preview["privacy"]["mode"] == "metadata-only"
+    assert preview["privacy"]["raw_patch_chars_available"] == len(patch)
+    assert preview["privacy"]["raw_patch_chars_sent"] == 0
+    assert preview["items"][0]["preflight"] is True
+    assert preview["items"][0]["suggestions"] == []
+    assert preview["items"][0]["ai_request"]["raw_patch_chars_sent"] == 0
+    assert preview["items"][0]["ai_request"]["contains_raw_patch_markers"] is False
+    assert "PREFLIGHT_SENTINEL" not in envelope_json
+    assert "@@" not in envelope_json
+    assert '"patch":' not in envelope_json
+
+
+def test_draft_suggest_remote_default_never_sends_raw_patch_payload(
+    monkeypatch, tmp_path: Path, capsys
+):
+    class CapturingProvider:
+        def __init__(self):
+            self.calls: list[ProviderRequest] = []
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            self.calls.append(request)
+            return ProviderResponse(
+                content="Clarifies authentication release-note behavior for reviewers without exposing raw diff text.",
+                confidence=0.9,
+                model="litellm:test-model",
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="litellm:test-model")
+
+    patch = "@@ -1 +1 @@\n-old auth\n+REMOTE_SENTINEL"
+    group = _mk_group(
+        number=7,
+        title="Improve auth privacy",
+        commit_sha="a1",
+        commit_message="feat: improve auth privacy",
+        patch=patch,
+    )
+    provider = CapturingProvider()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
+
+    rc = main([
+        "draft",
+        "suggest",
+        "--base",
+        "v1.0.0",
+        "--all-visible",
+        "--preview",
+        "--no-cache",
+        "--model-provider",
+        "litellm",
+        "--strategy",
+        "full-diff-json",
+    ])
+    preview = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert len(provider.calls) == 1
+    request = provider.calls[0]
+    evidence_json = json.dumps(request.evidence, sort_keys=True)
+    assert preview["performance"]["strategy"] == "single"
+    assert preview["performance"]["raw_patch_chars_available"] == len(patch)
+    assert preview["performance"]["raw_patch_chars_sent"] == 0
+    assert preview["privacy"]["mode"] == "metadata-only"
+    assert preview["items"][0]["ai_request"]["raw_patch_chars_sent"] == 0
+    assert preview["items"][0]["ai_request"]["contains_raw_patch_markers"] is False
+    assert "REMOTE_SENTINEL" not in request.prompt
+    assert "@@" not in request.prompt
+    assert "REMOTE_SENTINEL" not in evidence_json
+    assert "@@" not in evidence_json
+    assert '"patch":' not in evidence_json
 
 
 def test_draft_suggest_full_diff_json_sends_uncapped_patch_body_and_files(monkeypatch, tmp_path: Path, capsys):
@@ -2954,6 +3085,8 @@ def test_draft_suggest_full_diff_json_sends_uncapped_patch_body_and_files(monkey
         "--preview",
         "--model-provider",
         "ollama",
+        "--privacy",
+        "local-summary-then-ai",
         "--strategy",
         "full-diff-json",
     ])
@@ -3030,6 +3163,8 @@ def test_draft_suggest_full_diff_json_uses_commit_patch_when_pr_patch_missing(
         "--preview",
         "--model-provider",
         "ollama",
+        "--privacy",
+        "local-summary-then-ai",
         "--strategy",
         "full-diff-json",
     ])
@@ -3088,6 +3223,8 @@ def test_draft_suggest_auto_uses_ollama_tool_retrieval(monkeypatch, tmp_path: Pa
         "--preview",
         "--model-provider",
         "ollama",
+        "--privacy",
+        "local-summary-then-ai",
     ])
     preview = json.loads(capsys.readouterr().out)
 
@@ -3188,6 +3325,8 @@ def test_draft_suggest_batch_falls_back_to_single_item_calls(monkeypatch, tmp_pa
         "--preview",
         "--model-provider",
         "ollama",
+        "--privacy",
+        "local-summary-then-ai",
         "--strategy",
         "paired",
         "--batch-size",
@@ -3281,6 +3420,8 @@ def test_draft_suggest_batch_retries_missing_unusable_and_error_items(monkeypatc
             "--preview",
             "--model-provider",
             "ollama",
+            "--privacy",
+            "local-summary-then-ai",
             "--strategy",
             "paired",
             "--batch-size",

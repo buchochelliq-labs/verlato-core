@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from verlato.core.model_privacy import DEFAULT_MODEL_PRIVACY, normalize_model_privacy
+
 
 class ConfigError(RuntimeError):
     pass
@@ -53,6 +55,7 @@ class SuggestionStyleConfig:
 class VerlatoConfig:
     state_path: str = ".verlato_state.json"
     commit_intent_inference: str = "off"
+    model_privacy: str = DEFAULT_MODEL_PRIVACY
     suggestion_cache_backend: str = "json"
     suggestion_cache_path: str = ".verlato_suggestion_cache.json"
     suggestion_cache_ttl_days: int = 30
@@ -93,6 +96,8 @@ def load_config(cwd: str | None = None) -> VerlatoConfig:
         config.commit_intent_inference = (
             configured_inference if configured_inference in {"off", "low-signal"} else "off"
         )
+    if raw.get("model_privacy") is not None:
+        config.model_privacy = normalize_model_privacy(raw["model_privacy"])
     if raw.get("suggestion_cache_backend"):
         config.suggestion_cache_backend = str(raw["suggestion_cache_backend"]).strip() or config.suggestion_cache_backend
     if raw.get("suggestion_cache_path"):

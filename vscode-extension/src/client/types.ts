@@ -107,9 +107,12 @@ export interface DraftPromptPreview {
   item_id: string;
   title: string;
   provider: string;
+  privacy?: DraftAiPrivacy;
   tone?: string;
   style_profile?: SuggestionStyleProfile;
   prompt: string;
+  evidence?: Record<string, unknown>;
+  ai_request?: DraftAiRequestRecord;
   prompt_budget?: DraftPromptBudget;
 }
 
@@ -170,6 +173,8 @@ export interface ModelSettings {
   suggestionParallelism: number;
   suggestionBatchSize: number;
   suggestionStrategy: "auto" | "single" | "paired" | "full-diff-json" | "tool-retrieval" | string;
+  modelPrivacy: "metadata-only" | "local-summary-then-ai" | "trusted-provider-patch" | string;
+  allowRemotePatches: boolean;
   commitIntentInference: boolean;
   suggestionAutoWarmCache: boolean;
   suggestionPromptProfile: "conservative" | "lean" | "minimal" | string;
@@ -210,13 +215,53 @@ export interface DraftSuggestionItem {
   provider_reasoning?: string;
   source_evidence?: DraftSuggestionEvidence[];
   prompt_budget?: DraftPromptBudget;
+  privacy?: DraftAiPrivacy;
+  ai_request?: DraftAiRequestRecord;
+  ai_response?: DraftAiResponseRecord;
+  request_envelope?: Record<string, unknown>;
   suggestion_details?: DraftSuggestionDetail[];
   rejected_candidates?: DraftRejectedSuggestion[];
   timings?: DraftSuggestionTimings;
   cache?: DraftSuggestionCache;
   provisional?: DraftSuggestionProvisional;
   full_diff?: DraftSuggestionFullDiff;
+  preflight?: boolean;
   suggestions: string[];
+}
+
+export interface DraftAiPrivacy {
+  mode?: string;
+  provider?: string;
+  raw_patch_chars_available?: number;
+  raw_patch_chars_sent?: number;
+  will_send?: string[];
+  will_not_send?: string[];
+}
+
+export interface DraftAiRequestRecord {
+  task?: string;
+  provider?: string;
+  model?: string | null;
+  privacy_mode?: string;
+  request_hash?: string;
+  prompt_hash?: string;
+  evidence_hash?: string;
+  prompt_chars?: number;
+  evidence_chars?: number;
+  estimated_tokens?: number;
+  raw_patch_chars_available?: number;
+  raw_patch_chars_sent?: number;
+  omitted_fields?: string[];
+  omission_reasons?: string[];
+  contains_raw_patch_markers?: boolean;
+}
+
+export interface DraftAiResponseRecord {
+  model?: string;
+  response_chars?: number;
+  parse_result?: string;
+  accepted_count?: number;
+  rejected_count?: number;
 }
 
 export interface DraftSuggestionProvisional {
@@ -263,6 +308,13 @@ export interface DraftPromptBudget {
   hunk_chars_included?: number;
   hunk_chars_total?: number;
   hunk_chars_skipped?: number;
+  raw_patch_text_included?: boolean;
+  raw_patch_chars_available?: number;
+  raw_patch_chars_sent?: number;
+  full_diff_patch_chars_available?: number;
+  full_diff_patch_chars_sent?: number;
+  privacy_mode?: string;
+  omitted_fields?: string[] | string;
 }
 
 export interface DraftSuggestionTimings {
@@ -327,6 +379,8 @@ export interface DraftSuggestionPreview {
   model?: string;
   suggest_model?: string | null;
   effective_suggest_model?: string;
+  privacy?: DraftAiPrivacy;
+  preflight?: boolean;
   count: number;
   prompt_profile?: string;
   tone?: string;
@@ -359,6 +413,9 @@ export interface DraftSuggestionPerformance {
   full_diff_prompt_chars?: number;
   full_diff_file_count?: number;
   full_diff_patch_chars?: number;
+  raw_patch_chars_available?: number;
+  raw_patch_chars_sent?: number;
+  privacy_mode?: string;
   model_calls_saved?: number;
 }
 

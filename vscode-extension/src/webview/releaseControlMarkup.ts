@@ -1087,6 +1087,8 @@ function dedupeRefOptions(
 }
 
 function renderModelPanel(state: ReleaseControlRenderState): string {
+  const modelPrivacy = state.modelSettings.modelPrivacy ?? "metadata-only";
+  const allowRemotePatches = state.modelSettings.allowRemotePatches ?? false;
   return `<details class="section tree-section model-panel">
     <summary class="section-title">${renderIcon("intent")}<span>INTENT INFERENCE</span><small>${escapeHtml(state.modelSettings.provider)}</small></summary>
     <button class="model" data-action="changeModel" title="${escapeHtml(modelDetail(state.modelSettings))}">
@@ -1099,6 +1101,14 @@ function renderModelPanel(state: ReleaseControlRenderState): string {
     <button class="telemetry-toggle" data-action="togglePromptPayloads">
       <span>Prompt payloads</span>
       <small>${state.modelSettings.includePromptPayloads ? "On" : "Off"}</small>
+    </button>
+    <button class="telemetry-toggle" data-action="changeModel" title="${escapeHtml(modelDetail(state.modelSettings))}">
+      <span>Privacy mode</span>
+      <small>${escapeHtml(modelPrivacy)}</small>
+    </button>
+    <button class="telemetry-toggle" data-action="changeModel" title="${escapeHtml(modelDetail(state.modelSettings))}">
+      <span>Remote patches</span>
+      <small>${allowRemotePatches ? "Allowed" : "Blocked"}</small>
     </button>
     <button class="telemetry-toggle" data-action="toggleReasoningPayloads">
       <span>Reasoning payloads</span>
@@ -1179,6 +1189,8 @@ function modelDetail(settings: ModelSettings): string {
     `Parallelism: ${settings.suggestionParallelism}`,
     `Batch size: ${settings.suggestionBatchSize}`,
     `Strategy: ${settings.suggestionStrategy}`,
+    `Privacy: ${settings.modelPrivacy ?? "metadata-only"}`,
+    `Remote patches: ${settings.allowRemotePatches ? "allowed" : "blocked"}`,
     `Commit intent inference: ${settings.commitIntentInference ? "on" : "off"}`,
     `Auto-warm cache: ${settings.suggestionAutoWarmCache ? "on" : "off"}`,
     `Prompt profile: ${settings.suggestionPromptProfile}`,
@@ -1307,6 +1319,7 @@ function renderSuggestions(preview: DraftSuggestionPreview | undefined, modelBus
     <div class="section-title">${renderIcon("intent")}<span>INTENT INFERENCE</span><button class="inline-action model-action" data-action="regenerateAll"${modelBusy ? " disabled" : ""}>Regenerate</button></div>
     ${renderOllamaQueueWarning(preview)}
     ${renderSuggestionBatching(preview)}
+    ${renderAiRunDetails(preview)}
     ${renderAdaptiveRecommendations(preview.adaptive_recommendations)}
     ${preview.items.map((item) => `<article class="suggestion">
       <div class="item-head">
@@ -1317,6 +1330,7 @@ function renderSuggestions(preview: DraftSuggestionPreview | undefined, modelBus
         ${renderSuggestionProvisionalBadge(item)}
       </div>
       ${renderSuggestionDiagnostics(item)}
+      ${renderItemAiDetails(item)}
       ${renderSuggestionComparison(item)}
       ${renderProviderReasoning(item)}
       ${renderSuggestionEvidence(item)}
@@ -1388,6 +1402,53 @@ function renderAdaptiveRecommendations(
     .map((item) => `${item.title}${item.confidence ? ` (${item.confidence})` : ""}: ${item.detail}`)
     .join(" | ");
   return `<div class="model-diagnostic">${renderIcon("intent")}<span>Adaptive advice: ${escapeHtml(text)}</span></div>`;
+}
+
+function renderAiRunDetails(preview: DraftSuggestionPreview): string {
+  const privacy = preview.privacy;
+  const performance = preview.performance;
+  const parts = [
+    privacy?.mode ? `mode ${privacy.mode}` : "",
+    privacy?.provider ? `provider ${privacy.provider}` : "",
+    typeof privacy?.raw_patch_chars_available === "number" ? `${formatCompactCount(privacy.raw_patch_chars_available)} patch chars available` : "",
+    typeof privacy?.raw_patch_chars_sent === "number" ? `${formatCompactCount(privacy.raw_patch_chars_sent)} patch chars sent` : "",
+    typeof performance?.prompt_chars === "number" ? `${formatCompactCount(performance.prompt_chars)} prompt chars` : "",
+    typeof performance?.model_call_count === "number" ? `${performance.model_call_count} request${performance.model_call_count === 1 ? "" : "s"}` : "",
+  ].filter(Boolean);
+  if (!parts.length) {
+    return "";
+  }
+  const willSend = privacy?.will_send?.length ? `<small>Will send: ${escapeHtml(privacy.will_send.join(", "))}</small>` : "";
+  const willNotSend = privacy?.will_not_send?.length ? `<small>Will not send: ${escapeHtml(privacy.will_not_send.join(", "))}</small>` : "";
+  return `<details class="ai-run-details">
+    <summary>${renderIcon("intent")}<span>AI Run Details</span><small>${escapeHtml(parts.join(" | "))}</small></summary>
+    ${willSend}
+    ${willNotSend}
+  </details>`;
+}
+
+function renderItemAiDetails(item: DraftSuggestionItem): string {
+  const request = item.ai_request;
+  const response = item.ai_response;
+  if (!request && !response && !item.request_envelope) {
+    return "";
+  }
+  const summary = [
+    request?.privacy_mode ? `mode ${request.privacy_mode}` : "",
+    request?.request_hash ? `request ${request.request_hash.slice(0, 12)}` : "",
+    typeof request?.prompt_chars === "number" ? `${formatCompactCount(request.prompt_chars)} prompt chars` : "",
+    typeof request?.raw_patch_chars_sent === "number" ? `${formatCompactCount(request.raw_patch_chars_sent)} patch chars sent` : "",
+    response?.parse_result ? `parse ${response.parse_result}` : "",
+  ].filter(Boolean).join(" | ");
+  const envelope = item.request_envelope
+    ? `<details class="payload"><summary>Payload preview</summary><pre tabindex="0">${escapeHtml(JSON.stringify(item.request_envelope, null, 2))}</pre></details>`
+    : "";
+  return `<details class="evidence ai-item-details">
+    <summary>AI request <span>${escapeHtml(summary || item.item_id)}</span></summary>
+    ${request ? `<pre>${escapeHtml(JSON.stringify(request, null, 2))}</pre>` : ""}
+    ${response ? `<pre>${escapeHtml(JSON.stringify(response, null, 2))}</pre>` : ""}
+    ${envelope}
+  </details>`;
 }
 
 function renderSuggestionCacheBadge(item: DraftSuggestionItem): string {
@@ -3085,6 +3146,28 @@ function styles(): string {
     }
     .suggestions { border-left: 2px solid var(--verlato-purple); padding-left: 6px; background: color-mix(in srgb, var(--verlato-purple) 8%, transparent); }
     .suggestion { padding: 6px 0; border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.18)); }
+    .ai-run-details,
+    .ai-item-details {
+      margin: 6px 0;
+      border: 1px solid var(--vscode-input-border, rgba(127,127,127,.25));
+      background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent);
+    }
+    .ai-run-details summary,
+    .ai-item-details summary {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px;
+      cursor: pointer;
+      min-width: 0;
+    }
+    .ai-run-details small,
+    .ai-item-details small {
+      display: block;
+      padding: 0 6px 6px;
+      color: var(--vscode-descriptionForeground);
+      overflow-wrap: anywhere;
+    }
     .release-card {
       margin: 5px 0;
       border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(127,127,127,.18));

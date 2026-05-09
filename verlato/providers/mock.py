@@ -50,6 +50,35 @@ class MockProvider(VerlatoProvider):
 
 def _summarize_from_evidence(evidence: dict | None) -> str:
     evidence = evidence or {}
+    change_summary = evidence.get("change_summary")
+    if isinstance(change_summary, dict):
+        files = change_summary.get("files")
+        if isinstance(files, list) and files:
+            statuses: dict[str, int] = {}
+            paths: list[str] = []
+            for file in files:
+                if not isinstance(file, dict):
+                    continue
+                status = str(file.get("status") or "modified")
+                statuses[status] = statuses.get(status, 0) + 1
+                path = str(file.get("path") or "").strip()
+                if path:
+                    paths.append(path)
+            if paths:
+                status_text = ", ".join(f"{status} {count}" for status, count in sorted(statuses.items()))
+                shown_paths = sorted(paths)[:6]
+                suffix = f", plus {len(paths) - len(shown_paths)} more" if len(paths) > len(shown_paths) else ""
+                return f"Updates {len(paths)} changed file(s) ({status_text}): {', '.join(shown_paths)}{suffix}."
+        commits = change_summary.get("commits")
+        if isinstance(commits, list) and commits:
+            first = commits[0]
+            if isinstance(first, dict):
+                subject = str(first.get("subject") or first.get("message") or "").splitlines()[0]
+            else:
+                subject = str(first).splitlines()[0]
+            if subject:
+                return f"Updates release scope from commit evidence: {subject}."
+
     file_statuses = evidence.get("file_statuses")
     if isinstance(file_statuses, dict) and file_statuses:
         statuses: dict[str, int] = {}

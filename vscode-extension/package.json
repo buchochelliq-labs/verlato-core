@@ -270,7 +270,22 @@
             "full-diff-json",
             "tool-retrieval"
           ],
-          "description": "Suggestion generation strategy. Auto uses full-diff structured JSON batching for capable providers and single-item diff prompts for others."
+          "description": "Suggestion generation strategy. Auto uses privacy-filtered metadata-only prompts by default and enables patch-backed modes only when privacy settings allow it."
+        },
+        "verlato.modelPrivacy": {
+          "type": "string",
+          "default": "metadata-only",
+          "enum": [
+            "metadata-only",
+            "local-summary-then-ai",
+            "trusted-provider-patch"
+          ],
+          "description": "Controls what AI providers may receive. Metadata-only sends sanitized ChangeSummary evidence. Local-summary-then-ai allows local providers to inspect patches. Trusted-provider-patch allows raw patches for explicitly approved providers."
+        },
+        "verlato.allowRemotePatches": {
+          "type": "boolean",
+          "default": false,
+          "description": "Explicitly allow trusted-provider-patch mode for remote providers. Leave disabled unless your team approves sending raw patches to the configured provider."
         },
         "verlato.commitIntentInference": {
           "type": "boolean",

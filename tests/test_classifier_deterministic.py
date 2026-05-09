@@ -228,7 +228,7 @@ def test_classifier_uses_commit_diff_for_non_pr_summary():
     assert item.evidence.files == ["src/search.py"]
 
 
-def test_provider_summary_prompt_includes_diff_hunks_and_files():
+def test_provider_summary_prompt_uses_patch_free_change_summary_by_default():
     provider = _CapturingProvider("Search now ranks matching results")
     group = ChangeGroup(
         pr=PullRequest(
@@ -253,8 +253,14 @@ def test_provider_summary_prompt_includes_diff_hunks_and_files():
     assert "renders the final release note as Markdown" in provider.summary_request.prompt
     assert "use polished release-note wording" in provider.summary_request.prompt
     assert "src/search.py" in provider.summary_request.prompt
-    assert "+return ranked_results" in provider.summary_request.prompt
-    assert provider.summary_request.evidence["representative_hunks"]["src/search.py"]
+    assert "+return ranked_results" not in provider.summary_request.prompt
+    assert "omitted by privacy mode" in provider.summary_request.prompt
+    assert "representative_hunks" not in provider.summary_request.evidence
+    change_summary = provider.summary_request.evidence["change_summary"]
+    assert change_summary["files"][0]["path"] == "src/search.py"
+    assert change_summary["files"][0]["patch_chars_available"] > 0
+    assert change_summary["privacy"]["raw_patch_chars_sent"] == 0
+    assert provider.summary_request.metadata["request"]["contains_raw_patch_markers"] is False
 
 
 def test_provider_summary_prompt_supports_configurable_variants():
@@ -481,6 +487,7 @@ def test_suggestion_prompt_profile_uses_conservative_budget():
         project_vocabulary=["Release Control"],
         banned_phrases=["nice things"],
         prompt_profile="suggestion",
+        include_hunks=True,
     )
 
     assert result.budget["prompt_chars"] == len(result.prompt)
