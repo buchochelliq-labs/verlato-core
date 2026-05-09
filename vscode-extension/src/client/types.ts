@@ -54,6 +54,7 @@ export interface ConventionalCommitDraft {
   previous_sha?: string | null;
   initial_commit?: boolean;
   authored_subject?: string;
+  evidence_mode?: "diff-only" | "subject-hint" | string;
   header: string;
   message: string;
   body: string[];
@@ -69,6 +70,16 @@ export interface ConventionalCommitDraft {
   ai_request?: DraftAiRequestRecord;
   provider_metadata?: Record<string, unknown>;
   provider_reasoning?: string;
+}
+
+export interface ConventionalCommitBatchResult {
+  base_ref: string;
+  head_ref: string;
+  count: number;
+  completed: number;
+  failed: number;
+  results: ConventionalCommitDraft[];
+  errors: Array<{ sha: string; error: string }>;
 }
 
 export interface DraftSection {

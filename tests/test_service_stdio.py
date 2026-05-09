@@ -45,6 +45,20 @@ class _FakeService:
     def clear_suggestion_cache(self):
         return {"removed_entries": 0, "path": ".verlato_suggestion_cache.json"}
 
+    def draft_conventional_commit(self, **kwargs):
+        return {"sha": kwargs["sha"], "evidence_mode": kwargs.get("evidence_mode")}
+
+    def draft_conventional_commits(self, **kwargs):
+        return {
+            "base_ref": kwargs["base"],
+            "head_ref": kwargs.get("head", "HEAD"),
+            "count": len(kwargs.get("shas") or []),
+            "completed": len(kwargs.get("shas") or []),
+            "failed": 0,
+            "results": [{"sha": sha, "evidence_mode": kwargs.get("evidence_mode")} for sha in (kwargs.get("shas") or [])],
+            "errors": [],
+        }
+
 
 def _request(request_id: str, method: str, params: dict | None = None) -> str:
     return json.dumps({"id": request_id, "method": method, "params": params or {}}) + "\n"
@@ -87,6 +101,28 @@ def test_service_stdio_answers_health_info_and_shutdown():
     assert responses[0]["result"] == {"status": "ok"}
     assert responses[1]["result"]["targets"] == ["changelog"]
     assert responses[2]["result"] == {"shutdown": True}
+
+
+def test_service_stdio_routes_conventional_commit_single_and_batch():
+    output = io.StringIO()
+    rc = run_service_stdio(
+        service=_FakeService(),
+        input_stream=io.StringIO(
+            _request("1", "commit.conventional", {"base": "v1", "sha": "a1"})
+            + _request(
+                "2",
+                "commit.conventional_many",
+                {"base": "v1", "shas": ["a1", "b2"], "evidenceMode": "subject-hint"},
+            )
+        ),
+        output_stream=output,
+    )
+
+    assert rc == 0
+    responses = _responses(output)
+    assert responses[0]["result"] == {"sha": "a1", "evidence_mode": "diff-only"}
+    assert responses[1]["result"]["completed"] == 2
+    assert responses[1]["result"]["results"][0]["evidence_mode"] == "subject-hint"
 
 
 def test_service_stdio_dispatches_core_editor_methods():

@@ -349,7 +349,7 @@ test("applying a model suggestion records model provenance", async () => {
   assert.equal(reviewUpdate.summaryProvenance.source_evidence_count, 0);
 });
 
-test("generating a conventional commit stores it in the control view and copies it", async () => {
+test("inferring a conventional commit stores it in the control view and copies it", async () => {
   let requestedSha;
   let copied = "";
   const vscodeMock = makeVscodeMock({
@@ -408,11 +408,110 @@ test("generating a conventional commit stores it in the control view and copies 
     }],
   });
 
-  await provider.handleMessage({ type: "generateConventionalCommit", sha: "abc123456789" });
+  await provider.handleMessage({ type: "inferConventionalCommit", sha: "abc123456789" });
 
   assert.equal(requestedSha, "abc123456789");
   assert.match(copied, /refactor\(vscode\): revise suggestion strategy settings/);
   assert.match(htmlSnapshots.at(-1), /refactor\(vscode\): revise suggestion strategy settings/);
+  assert.match(htmlSnapshots.at(-1), /subject-hint|diff-only/);
+});
+
+test("inferring all conventional commits dedupes draft shas and keeps partial failures", async () => {
+  const requestedShas = [];
+  let copied = "";
+  const vscodeMock = makeVscodeMock({
+    env: {
+      clipboard: {
+        writeText(value) {
+          copied = value;
+          return Promise.resolve(undefined);
+        },
+      },
+    },
+  });
+  const { ReleaseControlViewProvider } = loadControlViewWithVscodeMock(vscodeMock);
+  const client = makeClient({
+    draftConventionalCommit(_range, sha) {
+      requestedShas.push(sha);
+      if (sha === "bbb222222222") {
+        return Promise.reject(new Error("provider failed"));
+      }
+      return Promise.resolve({
+        sha,
+        evidence_mode: "diff-only",
+        header: `feat(test): infer ${sha.slice(0, 3)}`,
+        message: `feat(test): infer ${sha.slice(0, 3)}`,
+        body: [],
+        type: "feat",
+        scope: "test",
+        description: `infer ${sha.slice(0, 3)}`,
+        confidence: 0.88,
+        privacy: { mode: "metadata-only", provider: "mock", raw_patch_chars_sent: 0 },
+        ai_request: { evidence_mode: "diff-only", raw_patch_chars_sent: 0 },
+      });
+    },
+  });
+  const { provider, htmlSnapshots } = makeProvider(ReleaseControlViewProvider, client);
+  provider.refresh({
+    ...draftDocument(2),
+    sections: [{
+      kind: "changed",
+      title: "Changed",
+      items: [
+        {
+          id: "ci_1",
+          title: "First",
+          summary: "First summary",
+          kind: "changed",
+          area: "backend",
+          audience: "external",
+          semver: "patch",
+          confidence: 0.82,
+          pr_number: null,
+          commit_shas: ["aaa111111111", "bbb222222222"],
+          base_ref: "v1.0.0",
+          head_ref: "HEAD",
+          files: [],
+          commit_signals: [],
+          status: "needs-review",
+          reviewed_by: null,
+          reviewed_at: null,
+          edited_summary: null,
+          hidden: false,
+        },
+        {
+          id: "ci_2",
+          title: "Second",
+          summary: "Second summary",
+          kind: "changed",
+          area: "backend",
+          audience: "external",
+          semver: "patch",
+          confidence: 0.82,
+          pr_number: null,
+          commit_shas: ["aaa111111111", "ccc333333333"],
+          base_ref: "v1.0.0",
+          head_ref: "HEAD",
+          files: [],
+          commit_signals: [],
+          status: "needs-review",
+          reviewed_by: null,
+          reviewed_at: null,
+          edited_summary: null,
+          hidden: false,
+        },
+      ],
+    }],
+  });
+
+  await provider.handleMessage({ type: "inferAllConventionalCommits" });
+
+  assert.deepEqual(requestedShas, ["aaa111111111", "bbb222222222", "ccc333333333"]);
+  assert.equal(copied, "");
+  assert.match(htmlSnapshots.at(-1), /feat\(test\): infer aaa/);
+  assert.match(htmlSnapshots.at(-1), /feat\(test\): infer ccc/);
+  assert.match(htmlSnapshots.at(-1), /provider failed/);
+  assert.match(htmlSnapshots.at(-1), /Inferred 2 conventional commit\(s\); 1 failed/);
 });
 
 test("suggestion feedback includes model source metadata", async () => {

@@ -22,14 +22,18 @@ COMMIT_INTENT_INFERENCE_CHOICES = {"off", "low-signal"}
 COMMIT_INTENT_MIN_CONFIDENCE = 0.65
 MAX_COMMIT_INTENT_FILES = 8
 MAX_COMMIT_INTENT_PATCH_CHARS = 900
-MAX_CONVENTIONAL_DRAFT_FILES = 80
+MAX_CONVENTIONAL_DRAFT_FILES = 12
 MAX_CONVENTIONAL_DRAFT_PATCH_FILES = 16
 MAX_CONVENTIONAL_DRAFT_PATCH_CHARS = 1800
 MAX_CONVENTIONAL_DRAFT_BODY_ITEMS = 8
-MAX_CONVENTIONAL_DRAFT_FACTS = 28
-MAX_CONVENTIONAL_DRAFT_SYMBOLS = 36
+MAX_CONVENTIONAL_DRAFT_FACTS = 14
+MAX_CONVENTIONAL_DRAFT_SYMBOLS = 18
+MAX_CONVENTIONAL_DRAFT_FILE_TERMS = 4
+MAX_CONVENTIONAL_DRAFT_FILE_SYMBOLS = 3
 DERIVED_COMMIT_SOURCE = "model-derived-diff"
 CONVENTIONAL_DRAFT_SOURCE = "model-drafted-commit"
+CONVENTIONAL_DRAFT_EVIDENCE_MODES = {"diff-only", "subject-hint"}
+DEFAULT_CONVENTIONAL_DRAFT_EVIDENCE_MODE = "subject-hint"
 ALLOWED_CONVENTIONAL_TYPES = {
     "feat",
     "fix",
@@ -55,6 +59,21 @@ SETTING_PATTERN = re.compile(
 )
 STRING_LITERAL_PATTERN = re.compile(r'"([^"\n]{3,80})"|`([^`\n]{3,80})`|\'([^\'\n]{3,80})\'')
 IDENTIFIER_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z0-9_]{3,}\b")
+PUBLIC_SYMBOL_PATTERNS = (
+    re.compile(r"^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\b"),
+    re.compile(r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\b"),
+    re.compile(
+        r"^\s*export\s+(?:default\s+)?(?:async\s+)?"
+        r"(?:function|class|interface|type|const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\b"
+    ),
+    re.compile(r"^\s*(?:public\s+)?(?:static\s+)?(?:async\s+)?[A-Za-z_$][A-Za-z0-9_$<>[\], ?]*\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\("),
+)
+TEST_NAME_PATTERNS = (
+    re.compile(r"^\s*(?:async\s+)?def\s+(test_[A-Za-z0-9_]+)\b"),
+    re.compile(r"""^\s*(?:test|it)\(\s*["'`]([^"'`]{3,120})["'`]"""),
+)
+UI_ACTION_PATTERN = re.compile(r"""(?:data-action=|action\s*===|type:\s*)["'`]([A-Za-z][A-Za-z0-9_-]{2,80})["'`]""")
+CONFIG_KEY_PATTERN = re.compile(r"""["'`]((?:verlato|VERLATO)[A-Za-z0-9_.-]{2,})["'`]""")
 
 
 @dataclass
@@ -69,6 +88,7 @@ class ConventionalCommitDraft:
     ai_request: dict[str, Any] | None = None
     provider_metadata: dict[str, Any] | None = None
     provider_reasoning: str = ""
+    evidence_mode: str = DEFAULT_CONVENTIONAL_DRAFT_EVIDENCE_MODE
 
     def to_dict(self) -> dict[str, Any]:
         header = conventional_commit_message(self.intent)
@@ -80,6 +100,7 @@ class ConventionalCommitDraft:
             "previous_sha": self.previous_sha,
             "initial_commit": self.initial_commit,
             "authored_subject": self.authored_subject,
+            "evidence_mode": self.evidence_mode,
             **intent_payload,
             "header": header,
             "message": message,
@@ -95,6 +116,17 @@ class ConventionalCommitDraft:
 def normalize_commit_intent_mode(value: object, *, default: str = "off") -> str:
     normalized = str(value or "").strip().lower()
     if normalized in COMMIT_INTENT_INFERENCE_CHOICES:
+        return normalized
+    return default
+
+
+def normalize_conventional_draft_evidence_mode(
+    value: object,
+    *,
+    default: str = DEFAULT_CONVENTIONAL_DRAFT_EVIDENCE_MODE,
+) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in CONVENTIONAL_DRAFT_EVIDENCE_MODES:
         return normalized
     return default
 
@@ -308,15 +340,22 @@ def draft_conventional_commit(
     privacy_mode: str = DEFAULT_MODEL_PRIVACY,
     provider_mode: str | None = None,
     min_confidence: float = COMMIT_INTENT_MIN_CONFIDENCE,
+    evidence_mode: str = DEFAULT_CONVENTIONAL_DRAFT_EVIDENCE_MODE,
 ) -> ConventionalCommitDraft | None:
     provider_mode = normalize_provider_mode(provider_mode)
+    evidence_mode = normalize_conventional_draft_evidence_mode(evidence_mode)
     include_patches = can_send_raw_patches(provider_mode, privacy_mode)
-    evidence = conventional_commit_draft_evidence(commit, include_patches=include_patches)
+    evidence = conventional_commit_draft_evidence(
+        commit,
+        include_patches=include_patches,
+        evidence_mode=evidence_mode,
+    )
     prompt = build_conventional_commit_draft_prompt(
         commit,
         include_patches=include_patches,
         evidence=evidence,
         privacy_mode=privacy_mode,
+        evidence_mode=evidence_mode,
     )
     raw_patch_chars_available = sum(len(file.patch or "") for file in commit.files)
     raw_patch_chars_sent = (
@@ -338,6 +377,8 @@ def draft_conventional_commit(
         omitted_fields=[] if include_patches else list(OMITTED_COMMIT_PATCH_EVIDENCE),
         omission_reasons=[] if include_patches else ["conventional commit drafting is using structured diff facts"],
     )
+    request_record["evidence_mode"] = evidence_mode
+    request_record["authored_message_omitted"] = evidence_mode == "diff-only"
     response = provider.summarize(
         ProviderRequest(
             task="draft-conventional",
@@ -363,7 +404,8 @@ def draft_conventional_commit(
     draft.sha = commit.sha
     draft.previous_sha = commit.parent_sha
     draft.initial_commit = commit.parent_sha is None
-    draft.authored_subject = commit.message.splitlines()[0] if commit.message else ""
+    draft.authored_subject = commit.message.splitlines()[0] if commit.message and evidence_mode == "subject-hint" else ""
+    draft.evidence_mode = evidence_mode
     draft.privacy = privacy_summary(
         provider=provider_mode,
         privacy_mode=privacy_mode,
@@ -500,15 +542,29 @@ def build_conventional_commit_draft_prompt(
     include_patches: bool = False,
     evidence: dict[str, Any] | None = None,
     privacy_mode: str = DEFAULT_MODEL_PRIVACY,
+    evidence_mode: str = DEFAULT_CONVENTIONAL_DRAFT_EVIDENCE_MODE,
 ) -> str:
-    payload = evidence if evidence is not None else conventional_commit_draft_evidence(commit, include_patches=include_patches)
-    source_text = "authored subject, changed file paths, statuses, and deterministic facts extracted from the diff"
+    evidence_mode = normalize_conventional_draft_evidence_mode(evidence_mode)
+    payload = evidence if evidence is not None else conventional_commit_draft_evidence(
+        commit,
+        include_patches=include_patches,
+        evidence_mode=evidence_mode,
+    )
+    source_text = "changed file paths, statuses, and deterministic facts extracted from the diff"
+    if evidence_mode == "subject-hint":
+        source_text = "authored subject, changed file paths, statuses, and deterministic facts extracted from the diff"
     if include_patches:
         source_text += ", plus bounded patch excerpts"
+    subject_instruction = (
+        "The authored git commit message is intentionally not provided; infer from commit ID and diff evidence only.\n"
+        if evidence_mode == "diff-only"
+        else "Use the authored subject as a hint, but let the commit diff decide the type, scope, description, and body.\n"
+    )
     return (
         "Draft a full Conventional Commits message for this exact existing git commit.\n"
         f"Privacy mode: {privacy_mode}. Use only the provided {source_text}.\n"
-        "Use the authored subject as a hint, but let the commit diff decide the type, scope, description, and body.\n"
+        f"Evidence mode: {evidence_mode}.\n"
+        f"{subject_instruction}"
         "Return strict JSON matching the schema. The body array should contain 3-7 concrete, supported bullets for "
         "non-trivial commits and [] for tiny commits. Do not prefix body strings with '-' or '*'.\n"
         "Prefer `refactor` when behavior is reorganized, removed, or renamed without a clear user-facing feature; "
@@ -516,7 +572,7 @@ def build_conventional_commit_draft_prompt(
         "and `test` only when the commit is primarily tests.\n"
         "Use a concise scope such as api, cli, config, docs, mcp, release, tests, ui, or vscode when supported.\n"
         "Do not invent behavior that is not supported by the evidence.\n\n"
-        f"COMMIT_DRAFT_EVIDENCE:\n{json.dumps(payload, indent=2, sort_keys=True)}"
+        f"COMMIT_DRAFT_EVIDENCE:\n{json.dumps(payload, sort_keys=True, separators=(',', ':'))}"
     )
 
 
@@ -582,25 +638,35 @@ def commit_diff_intent_evidence(commit: Commit, *, include_patches: bool = False
     }
 
 
-def conventional_commit_draft_evidence(commit: Commit, *, include_patches: bool = False) -> dict[str, Any]:
+def conventional_commit_draft_evidence(
+    commit: Commit,
+    *,
+    include_patches: bool = False,
+    evidence_mode: str = DEFAULT_CONVENTIONAL_DRAFT_EVIDENCE_MODE,
+) -> dict[str, Any]:
+    evidence_mode = normalize_conventional_draft_evidence_mode(evidence_mode)
     raw_patch_chars = sum(len(file.patch or "") for file in commit.files)
-    files = commit.files[:MAX_CONVENTIONAL_DRAFT_FILES]
-    return {
+    fact_files = _draft_fact_files(commit.files)
+    files = _selected_draft_files(fact_files)
+    payload: dict[str, Any] = {
         "schema": "verlato.conventional-commit-draft-evidence.v1",
+        "evidence_mode": evidence_mode,
         "sha": commit.sha,
         "previous_sha": commit.parent_sha,
         "initial_commit": commit.parent_sha is None,
-        "authored_subject": commit.message.splitlines()[0] if commit.message else "",
-        "authored_message": commit.message,
+        "authored_message_omitted": evidence_mode == "diff-only",
         "files": [
             _draft_file_payload(file, include_patch=include_patches and index < MAX_CONVENTIONAL_DRAFT_PATCH_FILES)
             for index, file in enumerate(files)
         ],
         "files_total": len(commit.files),
-        "file_status_counts": _file_status_counts(commit.files),
-        "files_by_area": _files_by_area(commit.files),
-        "notable_paths": _notable_paths(commit.files),
-        "diff_facts": _diff_facts(commit.files),
+        "files_analyzed": len(fact_files),
+        "files_included": len(files),
+        "omitted_files_count": max(len(commit.files) - len(files), 0),
+        "file_status_counts": _file_status_counts(fact_files),
+        "files_by_area": _files_by_area(fact_files),
+        "notable_paths": _notable_paths(fact_files),
+        "diff_facts": _diff_facts(fact_files),
         "raw_patch_chars_available": raw_patch_chars,
         "raw_patch_chars_sent": (
             sum(len((file.patch or "")[:MAX_CONVENTIONAL_DRAFT_PATCH_CHARS]) for file in commit.files[:MAX_CONVENTIONAL_DRAFT_PATCH_FILES])
@@ -609,6 +675,10 @@ def conventional_commit_draft_evidence(commit: Commit, *, include_patches: bool 
         ),
         "omitted_fields": [] if include_patches else list(OMITTED_COMMIT_PATCH_EVIDENCE),
     }
+    if evidence_mode == "subject-hint":
+        payload["authored_subject"] = commit.message.splitlines()[0] if commit.message else ""
+        payload["authored_message"] = commit.message
+    return payload
 
 
 def commit_intent_payload(intent: CommitIntent | None) -> dict[str, Any] | None:
@@ -646,14 +716,20 @@ def _file_payload(file: ChangedFile, *, include_patch: bool) -> dict[str, Any]:
 
 def _draft_file_payload(file: ChangedFile, *, include_patch: bool) -> dict[str, Any]:
     patch = file.patch or ""
+    added_lines = _patch_lines(patch, "+")
+    removed_lines = _patch_lines(patch, "-")
     payload = {
         "path": file.path,
         "area": infer_area(file.path),
         "status": file.status,
         "patch_chars_available": len(patch),
         "patch_sent": include_patch,
-        "added_terms": _notable_terms(_patch_lines(patch, "+"))[:12],
-        "removed_terms": _notable_terms(_patch_lines(patch, "-"))[:12],
+        "added_terms": _notable_terms(added_lines)[:MAX_CONVENTIONAL_DRAFT_FILE_TERMS],
+        "removed_terms": _notable_terms(removed_lines)[:MAX_CONVENTIONAL_DRAFT_FILE_TERMS],
+        "public_symbols": _public_symbols(added_lines)[:MAX_CONVENTIONAL_DRAFT_FILE_SYMBOLS],
+        "test_names": _test_names(added_lines)[:MAX_CONVENTIONAL_DRAFT_FILE_SYMBOLS],
+        "config_keys": _config_keys(added_lines)[:MAX_CONVENTIONAL_DRAFT_FILE_SYMBOLS],
+        "ui_actions": _ui_actions(added_lines)[:MAX_CONVENTIONAL_DRAFT_FILE_SYMBOLS],
     }
     if include_patch:
         payload.update(
@@ -664,6 +740,44 @@ def _draft_file_payload(file: ChangedFile, *, include_patch: bool) -> dict[str, 
             }
         )
     return payload
+
+
+def _draft_fact_files(files: list[ChangedFile]) -> list[ChangedFile]:
+    signal_files = [file for file in files if not _is_low_value_draft_file(file.path)]
+    return signal_files or list(files)
+
+
+def _selected_draft_files(files: list[ChangedFile]) -> list[ChangedFile]:
+    return sorted(files, key=_draft_file_rank)[:MAX_CONVENTIONAL_DRAFT_FILES]
+
+
+def _is_low_value_draft_file(path: str) -> bool:
+    normalized = path.replace("\\", "/").lower()
+    name = normalized.rsplit("/", 1)[-1]
+    return (
+        normalized.startswith(".verlato_")
+        or "/.verlato_" in normalized
+        or name in {".verlato_state.json", ".verlato_suggestion_cache.json.lock"}
+        or name.endswith(".vsix")
+    )
+
+
+def _draft_file_rank(file: ChangedFile) -> tuple[int, str]:
+    path = file.path.replace("\\", "/").lower()
+    rank = 0
+    if "vscode-extension/src" in path:
+        rank -= 50
+    if path.startswith("verlato/"):
+        rank -= 45
+    if any(part in path for part in ("commit_intent", "model_privacy", "releasecontrol", "commands", "config")):
+        rank -= 25
+    if "test" in path:
+        rank -= 10
+    if path.endswith((".md", ".lock")) or "changelog" in path:
+        rank += 20
+    if _is_low_value_draft_file(file.path):
+        rank += 80
+    return rank, path
 
 
 def _file_status_counts(files: list[ChangedFile]) -> dict[str, int]:
@@ -703,6 +817,10 @@ def _diff_facts(files: list[ChangedFile]) -> dict[str, Any]:
     removed_settings: dict[str, str] = {}
     added_terms: list[str] = []
     removed_terms: list[str] = []
+    public_symbols: list[str] = []
+    test_names: list[str] = []
+    config_keys: list[str] = []
+    ui_actions: list[str] = []
     patch_files = 0
     for file in files:
         patch = file.patch or ""
@@ -715,6 +833,10 @@ def _diff_facts(files: list[ChangedFile]) -> dict[str, Any]:
         removed_settings.update(_settings_from_lines(removed_lines))
         added_terms.extend(_notable_terms(added_lines))
         removed_terms.extend(_notable_terms(removed_lines))
+        public_symbols.extend(f"{file.path}:{symbol}" for symbol in _public_symbols(added_lines))
+        test_names.extend(_test_names(added_lines))
+        config_keys.extend(_config_keys(added_lines))
+        ui_actions.extend(_ui_actions(added_lines))
 
     changed_settings = []
     for key in sorted(set(added_settings) | set(removed_settings)):
@@ -732,6 +854,10 @@ def _diff_facts(files: list[ChangedFile]) -> dict[str, Any]:
         "changed_settings": changed_settings[:MAX_CONVENTIONAL_DRAFT_FACTS],
         "added_terms": _unique_preserve_order(added_terms)[:MAX_CONVENTIONAL_DRAFT_FACTS],
         "removed_terms": _unique_preserve_order(removed_terms)[:MAX_CONVENTIONAL_DRAFT_FACTS],
+        "public_symbols": _unique_preserve_order(public_symbols)[:MAX_CONVENTIONAL_DRAFT_FACTS],
+        "test_names": _unique_preserve_order(test_names)[:MAX_CONVENTIONAL_DRAFT_FACTS],
+        "config_keys": _unique_preserve_order(config_keys)[:MAX_CONVENTIONAL_DRAFT_FACTS],
+        "ui_actions": _unique_preserve_order(ui_actions)[:MAX_CONVENTIONAL_DRAFT_FACTS],
         "themes": _theme_facts(files, added_terms=added_terms, removed_terms=removed_terms, changed_settings=changed_settings),
     }
 
@@ -771,6 +897,53 @@ def _notable_terms(lines: list[str]) -> list[str]:
     ][:MAX_CONVENTIONAL_DRAFT_SYMBOLS]
 
 
+def _public_symbols(lines: list[str]) -> list[str]:
+    symbols: list[str] = []
+    for line in lines:
+        for pattern in PUBLIC_SYMBOL_PATTERNS:
+            match = pattern.search(line)
+            if match:
+                symbols.append(match.group(1))
+                break
+    return _unique_preserve_order(symbols)
+
+
+def _test_names(lines: list[str]) -> list[str]:
+    names: list[str] = []
+    for line in lines:
+        for pattern in TEST_NAME_PATTERNS:
+            match = pattern.search(line)
+            if match:
+                names.append(re.sub(r"\s+", " ", match.group(1)).strip())
+                break
+    return _unique_preserve_order(names)
+
+
+def _config_keys(lines: list[str]) -> list[str]:
+    keys: list[str] = []
+    for line in lines:
+        keys.extend(CONFIG_KEY_PATTERN.findall(line))
+        for identifier in IDENTIFIER_PATTERN.findall(line):
+            if any(marker in identifier.lower() for marker in ("privacy", "patch", "provider")):
+                keys.append(identifier)
+        for match in SETTING_PATTERN.finditer(line):
+            name = match.group("quoted") or match.group("bare")
+            if name and ("privacy" in name.lower() or "patch" in name.lower() or "provider" in name.lower()):
+                keys.append(name)
+    return _unique_preserve_order(keys)
+
+
+def _ui_actions(lines: list[str]) -> list[str]:
+    actions: list[str] = []
+    for line in lines:
+        actions.extend(UI_ACTION_PATTERN.findall(line))
+        if "showWarningMessage" in line:
+            actions.append("showWarningMessage")
+        if "Prompt Preview" in line or "prompt preview" in line.lower():
+            actions.append("promptPreview")
+    return _unique_preserve_order(actions)
+
+
 def _is_notable_term(term: str) -> bool:
     normalized = term.strip()
     if not normalized or len(normalized) > 80:
@@ -808,6 +981,14 @@ def _is_notable_term(term: str) -> bool:
             "setting",
             "privacy",
             "prompt",
+            "preview",
+            "remote",
+            "patch",
+            "raw",
+            "preflight",
+            "request",
+            "envelope",
+            "allow",
             "full-diff",
             "paired",
             "single",
@@ -827,7 +1008,22 @@ def _theme_facts(
     added = " ".join(term.lower() for term in added_terms)
     removed = " ".join(term.lower() for term in removed_terms)
     setting_names = " ".join(str(fact.get("name", "")).lower() for fact in changed_settings)
+    combined = f"{paths} {added} {removed} {setting_names}"
     themes: list[str] = []
+    if "modelprivacy" in combined or "trusted-provider-patch" in combined or "local-summary-then-ai" in combined:
+        themes.append("adds model privacy settings for AI evidence")
+    if "allowremotepatches" in combined or "raw_patch_chars_sent" in combined or "patch_excerpt" in combined:
+        themes.append("gates raw patch evidence by privacy and provider mode")
+    if "--privacy" in combined or "allow-remote-patches" in combined:
+        themes.append("adds CLI privacy flags")
+    if "preflight" in combined or "request_envelope" in combined:
+        themes.append("adds preflight request envelope preview")
+    if "draftpromptpreview" in combined or "promptpreview" in combined or "prompt preview" in combined:
+        themes.append("updates prompt preview with AI request and privacy details")
+    if "showwarningmessage" in combined or "send patch evidence" in combined or "allow remote patches" in combined:
+        themes.append("adds confirmation for sending raw patch evidence")
+    if "ai_request" in combined or "model_request_record" in combined or "request_hash" in combined:
+        themes.append("records model request privacy metadata")
     if "suggestionstrategy" in added + setting_names or "full-diff-json" in added:
         themes.append("adds configurable suggestion strategy modes")
     if "suggestionbatchsize" in setting_names:

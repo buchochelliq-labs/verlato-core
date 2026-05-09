@@ -151,6 +151,33 @@ def test_ollama_provider_sends_suggest_request_with_thinking_disabled_and_adapti
     assert all("enough context for downstream consumers" in body["messages"][0]["content"] for body in captured_bodies)
 
 
+def test_ollama_provider_disables_thinking_for_conventional_draft(monkeypatch):
+    _clear_ollama_tuning_env(monkeypatch)
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        @staticmethod
+        def read():
+            return json.dumps({"message": {"content": "{}"}}).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr("verlato.providers.ollama.request.urlopen", fake_urlopen)
+
+    provider = OllamaProvider(model="test-model")
+    provider.summarize(ProviderRequest(task="draft-conventional", prompt="Draft commit"))
+
+    assert captured["body"]["think"] is False
+
+
 def test_ollama_provider_routes_only_suggestions_to_suggest_model(monkeypatch):
     _clear_ollama_tuning_env(monkeypatch)
     captured_bodies: list[dict[str, object]] = []

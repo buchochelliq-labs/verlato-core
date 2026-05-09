@@ -2,9 +2,13 @@
   "servers": {
     "verlato": {
       "type": "stdio",
-      "command": "verlato-mcp",
-      "args": [],
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "-m",
+        "verlato.mcp.server"
+      ],
       "env": {
+        "PYTHONPATH": "${workspaceFolder}",
         "PYTHONIOENCODING": "utf-8"
       }
     }

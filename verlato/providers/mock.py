@@ -176,12 +176,14 @@ def _draft_conventional_from_evidence(evidence: dict | None) -> dict[str, object
         commit_type = "docs"
     elif "test" in lowered_subject and "src" not in joined_paths:
         commit_type = "test"
-    elif "add" in lowered_subject or "adds configurable" in " ".join(themes):
+    elif "add" in lowered_subject or "adds configurable" in " ".join(themes) or "adds model privacy" in " ".join(themes):
         commit_type = "feat"
     else:
         commit_type = "chore"
 
-    if "vscode-extension" in joined_paths:
+    if "commit_intent" in joined_paths or "commit-intent" in " ".join(themes):
+        scope = "commit-intent"
+    elif "vscode-extension" in joined_paths:
         scope = "vscode"
     elif "mcp" in joined_paths:
         scope = "mcp"
@@ -209,6 +211,9 @@ def _draft_conventional_from_evidence(evidence: dict | None) -> dict[str, object
 
 def _draft_description(subject: str, themes: list[str]) -> str:
     lowered = subject.lower()
+    theme_text = " ".join(themes).lower()
+    if "model privacy" in theme_text or "raw patch evidence" in theme_text:
+        return "enhance commit intent inference with privacy settings"
     if "suggestion strategy" in " ".join(themes).lower() or "suggestion" in lowered:
         return "revise suggestion strategy settings"
     if lowered.startswith("refactor "):
@@ -219,6 +224,16 @@ def _draft_description(subject: str, themes: list[str]) -> str:
 def _draft_body(*, themes: list[str], added_terms: str, removed_terms: str, file_paths: list[str]) -> list[str]:
     body: list[str] = []
     theme_text = " ".join(themes).lower()
+    if "model privacy" in theme_text:
+        body.append("Added model privacy modes for metadata-only, local-summary-then-ai, and trusted-provider-patch inference.")
+    if "raw patch evidence" in theme_text:
+        body.append("Gated raw patch evidence by privacy mode and provider trust.")
+    if "model request privacy metadata" in theme_text:
+        body.append("Recorded privacy request metadata for model-backed commit inference.")
+    if "prompt preview" in theme_text:
+        body.append("Updated prompt previews to show AI request and privacy details.")
+    if "confirmation" in theme_text:
+        body.append("Added confirmation before sending raw patch evidence to trusted providers.")
     if "batch-size" in theme_text or "suggestionbatchsize" in added_terms:
         body.append("Updated suggestion batch-size defaults and configuration.")
     if "strategy" in theme_text or "full-diff-json" in added_terms:

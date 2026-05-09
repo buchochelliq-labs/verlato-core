@@ -33,6 +33,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   private overview: RepositoryOverview | undefined;
   private suggestions: DraftSuggestionPreview | undefined;
   private conventionalCommits: Record<string, ConventionalCommitDraft> = {};
+  private conventionalCommitErrors: Record<string, string> = {};
   private ollamaDoctor: OllamaDoctorResult | undefined;
   private requests: CommandRequestSnapshot[] = [];
   private modelSettings: ModelSettings;
@@ -156,8 +157,11 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     if (message.type === "suggest" && message.itemId) {
       await this.suggest(message.itemId);
     }
-    if (message.type === "generateConventionalCommit" && message.sha) {
-      await this.generateConventionalCommit(message.sha);
+    if ((message.type === "generateConventionalCommit" || message.type === "inferConventionalCommit") && message.sha) {
+      await this.inferConventionalCommit(message.sha);
+    }
+    if (message.type === "inferAllConventionalCommits") {
+      await this.inferAllConventionalCommits();
     }
     if (message.type === "suggestAll") {
       await this.suggest();
@@ -463,7 +467,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async generateConventionalCommit(sha: string): Promise<void> {
+  private async inferConventionalCommit(sha: string): Promise<void> {
     if (!this.hasSelectedBase()) {
       this.statusMessage = "No base refs selected.";
       this.render();
@@ -480,13 +484,80 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
         [draft.sha || sha]: draft,
         [sha]: draft,
       };
+      const nextErrors = { ...this.conventionalCommitErrors };
+      delete nextErrors[sha];
+      if (draft.sha) {
+        delete nextErrors[draft.sha];
+      }
+      this.conventionalCommitErrors = nextErrors;
       await vscode.env.clipboard.writeText(draft.message);
-      this.statusMessage = `Generated and copied conventional commit for ${(draft.sha || sha).slice(0, 7)}.`;
+      this.statusMessage = `Inferred and copied conventional commit for ${(draft.sha || sha).slice(0, 7)}.`;
       this.render();
     }, { errorActions: ["View Activity", "Change Model"] });
     if (draft) {
       await handleNotificationAction(
-        await showSuccessNotification("Generated conventional commit.", "Open Verlato", "View Activity"),
+        await showSuccessNotification("Inferred conventional commit.", "Open Verlato", "View Activity"),
+      );
+    }
+  }
+
+  private async inferAllConventionalCommits(): Promise<void> {
+    if (!this.hasSelectedBase()) {
+      this.statusMessage = "No base refs selected.";
+      this.render();
+      return;
+    }
+    if (!(await this.confirmTrustedPatchMode())) {
+      return;
+    }
+    const shas = this.currentDraftCommitShas();
+    if (!shas.length) {
+      this.statusMessage = "No draft commits to infer.";
+      this.render();
+      return;
+    }
+    let completed = 0;
+    let failed = 0;
+    let finished = false;
+    await this.runBusy(async () => {
+      for (const sha of shas) {
+        this.statusMessage = `Inferring conventional commit ${completed + failed + 1} of ${shas.length} (${sha.slice(0, 7)}).`;
+        this.render();
+        try {
+          const draft = await this.client.draftConventionalCommit(this.range, sha);
+          this.conventionalCommits = {
+            ...this.conventionalCommits,
+            [draft.sha || sha]: draft,
+            [sha]: draft,
+          };
+          const nextErrors = { ...this.conventionalCommitErrors };
+          delete nextErrors[sha];
+          if (draft.sha) {
+            delete nextErrors[draft.sha];
+          }
+          this.conventionalCommitErrors = nextErrors;
+          completed += 1;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (message === "Verlato command cancelled.") {
+            throw error;
+          }
+          this.conventionalCommitErrors = {
+            ...this.conventionalCommitErrors,
+            [sha]: message,
+          };
+          failed += 1;
+        }
+        this.render();
+      }
+      this.statusMessage = failed
+        ? `Inferred ${completed} conventional commit(s); ${failed} failed.`
+        : `Inferred ${completed} conventional commit(s).`;
+      finished = true;
+    }, { errorActions: ["View Activity", "Change Model"] });
+    if (finished) {
+      await handleNotificationAction(
+        await showSuccessNotification(this.statusMessage || "Inferred conventional commits.", "Open Verlato", "View Activity"),
       );
     }
   }
@@ -851,6 +922,23 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     return this.range.base.trim().length > 0;
   }
 
+  private currentDraftCommitShas(): string[] {
+    const seen = new Set<string>();
+    const shas: string[] = [];
+    for (const section of this.document?.sections ?? []) {
+      for (const item of section.items ?? []) {
+        for (const sha of item.commit_shas ?? []) {
+          if (!sha || seen.has(sha)) {
+            continue;
+          }
+          seen.add(sha);
+          shas.push(sha);
+        }
+      }
+    }
+    return shas;
+  }
+
   private render(): void {
     if (this.pendingRender) {
       clearTimeout(this.pendingRender);
@@ -867,6 +955,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       busy: this.busy,
       suggestions: this.suggestions,
       conventionalCommits: this.conventionalCommits,
+      conventionalCommitErrors: this.conventionalCommitErrors,
       ollamaDoctor: this.ollamaDoctor,
       mcpServerStatus: this.mcpServerStatus,
       requests: this.requests,

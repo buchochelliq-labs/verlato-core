@@ -141,6 +141,17 @@ def _dispatch(service: MCPService, method: str, params: dict[str, object]) -> ob
             model_provider=_optional_string(params.get("model_provider") or params.get("modelProvider")),
             model_privacy=_optional_string(params.get("model_privacy") or params.get("modelPrivacy")),
             allow_remote_patches=bool(params.get("allow_remote_patches") or params.get("allowRemotePatches")),
+            evidence_mode=_optional_string(params.get("evidence_mode") or params.get("evidenceMode")) or "diff-only",
+        )
+    if method == "commit.conventional_many":
+        return service.draft_conventional_commits(
+            base=_required_string(params, "base"),
+            head=str(params.get("head") or "HEAD"),
+            shas=_optional_string_list(params.get("shas")),
+            model_provider=_optional_string(params.get("model_provider") or params.get("modelProvider")),
+            model_privacy=_optional_string(params.get("model_privacy") or params.get("modelPrivacy")),
+            allow_remote_patches=bool(params.get("allow_remote_patches") or params.get("allowRemotePatches")),
+            evidence_mode=_optional_string(params.get("evidence_mode") or params.get("evidenceMode")) or "diff-only",
         )
     raise ServiceProtocolError(f"Unknown service method: {method}")
 
@@ -169,6 +180,14 @@ def _optional_string(value: object) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _optional_string_list(value: object) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ServiceProtocolError("Expected list param: shas")
+    return [str(item) for item in value if str(item).strip()]
 
 
 def _optional_int(value: object, default: int) -> int:

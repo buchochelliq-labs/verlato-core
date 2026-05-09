@@ -22,6 +22,7 @@ DEFAULT_OLLAMA_SUMMARY_NUM_PREDICT = 180
 DEFAULT_OLLAMA_CLASSIFY_NUM_PREDICT = 24
 DEFAULT_OLLAMA_MIN_SUGGEST_NUM_PREDICT = 96
 DEFAULT_OLLAMA_MAX_SUGGEST_NUM_PREDICT = 180
+STRUCTURED_NO_THINK_TASKS = {"suggest", "infer-conventional", "derive-conventional", "draft-conventional"}
 
 
 class OllamaProvider(VerlatoProvider):
@@ -95,7 +96,7 @@ class OllamaProvider(VerlatoProvider):
             body["tools"] = request_data.tools
         if request_data.response_format is not None:
             body["format"] = request_data.response_format
-        if task == "suggest" and self.suggest_think is not None:
+        if task in STRUCTURED_NO_THINK_TASKS and self.suggest_think is not None:
             body["think"] = self.suggest_think
         if self.keep_alive:
             body["keep_alive"] = self.keep_alive
@@ -226,7 +227,7 @@ class OllamaProvider(VerlatoProvider):
         }
         if request_data.response_format is not None:
             body["format"] = request_data.response_format
-        if task == "suggest" and self.suggest_think is not None:
+        if task in STRUCTURED_NO_THINK_TASKS and self.suggest_think is not None:
             body["think"] = self.suggest_think
         if self.keep_alive:
             body["keep_alive"] = self.keep_alive

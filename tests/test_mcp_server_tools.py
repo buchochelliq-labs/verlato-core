@@ -115,7 +115,22 @@ class _FakeService:
         return {"item_id": item_id, "query": query, "limit": limit}
 
     def draft_conventional_commit(self, **kwargs):
-        return {"sha": kwargs["sha"], "header": "refactor(vscode): update settings"}
+        return {
+            "sha": kwargs["sha"],
+            "header": "refactor(vscode): update settings",
+            "evidence_mode": kwargs.get("evidence_mode"),
+        }
+
+    def draft_conventional_commits(self, **kwargs):
+        return {
+            "base_ref": kwargs["base"],
+            "head_ref": kwargs.get("head", "HEAD"),
+            "count": len(kwargs.get("shas") or []),
+            "completed": len(kwargs.get("shas") or []),
+            "failed": 0,
+            "results": [{"sha": sha, "evidence_mode": kwargs.get("evidence_mode")} for sha in (kwargs.get("shas") or [])],
+            "errors": [],
+        }
 
 
 def test_mcp_tool_metadata_lists_agent_facing_tools():
@@ -136,6 +151,7 @@ def test_mcp_tool_metadata_lists_agent_facing_tools():
         "verlato_get_file_patch",
         "verlato_search_item_diff",
         "verlato_draft_conventional_commit",
+        "verlato_draft_conventional_commits",
     ]
 
 
@@ -169,6 +185,7 @@ def test_create_fastmcp_server_registers_verlato_tools():
         "verlato_get_file_patch",
         "verlato_search_item_diff",
         "verlato_draft_conventional_commit",
+        "verlato_draft_conventional_commits",
     }
     assert "verlato://overview" in server.resources
     assert "verlato://guidance/{name}" in server.resources
@@ -183,6 +200,9 @@ def test_create_fastmcp_server_registers_verlato_tools():
     assert server.registered["verlato_apply_draft"](base="v1.0.0", target="changelog")["target"] == "changelog"
     assert server.registered["verlato_get_file_patch"](base="v1.0.0", item_id="ci_1", path="src/a.py")["path"] == "src/a.py"
     assert server.registered["verlato_draft_conventional_commit"](base="v1.0.0", sha="a1")["sha"] == "a1"
+    batch = server.registered["verlato_draft_conventional_commits"](base="v1.0.0", shas=["a1", "b2"])
+    assert batch["completed"] == 2
+    assert batch["results"][0]["evidence_mode"] == "diff-only"
 
 
 def test_run_mcp_stdio_uses_stdio_transport():

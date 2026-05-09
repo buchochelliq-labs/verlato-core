@@ -271,6 +271,12 @@ def build_parser() -> argparse.ArgumentParser:
     commit_conventional.add_argument("--head", default="HEAD")
     commit_conventional.add_argument("--sha", required=True)
     commit_conventional.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Override the configured model provider.")
+    commit_conventional.add_argument(
+        "--evidence-mode",
+        choices=["diff-only", "subject-hint"],
+        default="diff-only",
+        help="Use diff-only to omit authored commit text, or subject-hint to include the authored subject/message.",
+    )
     _add_model_privacy_args(commit_conventional)
 
     doctor = sub.add_parser("doctor")
@@ -5696,6 +5702,7 @@ def main(argv: list[str] | None = None) -> int:
             model_provider=args.model_provider,
             model_privacy=_model_privacy_from_args(args),
             allow_remote_patches=_allow_remote_patches_from_args(args),
+            evidence_mode=args.evidence_mode,
         )
         print(json.dumps(result, indent=2))
         return 0

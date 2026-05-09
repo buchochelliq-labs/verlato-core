@@ -218,6 +218,7 @@ export class VerlatoClient implements vscode.Disposable {
       model_provider: settings.provider === "configured" ? undefined : settings.provider,
       model_privacy: settings.modelPrivacy,
       allow_remote_patches: settings.allowRemotePatches,
+      evidence_mode: "diff-only",
     };
     const args = [
       "commit",
@@ -228,6 +229,8 @@ export class VerlatoClient implements vscode.Disposable {
       request.head ?? "HEAD",
       "--sha",
       sha,
+      "--evidence-mode",
+      "diff-only",
       ...privacyArgs(settings),
     ];
     return this.runServiceJson<ConventionalCommitDraft>(

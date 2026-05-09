@@ -4,6 +4,7 @@ from pathlib import Path
 from verlato.cli.main import _maybe_infer_commit_intents
 from verlato.core.commit_intent import (
     commit_intent_payload,
+    conventional_commit_draft_evidence,
     conventional_commit_message,
     derive_conventional_commits,
     draft_conventional_commit,
@@ -266,6 +267,7 @@ def test_conventional_commit_draft_uses_subject_and_structured_diff_facts():
         provider,
         privacy_mode="metadata-only",
         provider_mode="github-copilot",
+        evidence_mode="subject-hint",
     )
     request = provider.calls[0]
 
@@ -277,6 +279,76 @@ def test_conventional_commit_draft_uses_subject_and_structured_diff_facts():
     assert "updates the VS Code release control UI" in request.evidence["diff_facts"]["themes"]
     assert "patch_excerpt" not in request.prompt
     assert request.metadata["request"]["raw_patch_chars_sent"] == 0
+    assert request.metadata["request"]["evidence_mode"] == "subject-hint"
+
+
+def test_conventional_commit_draft_diff_only_omits_authored_message():
+    provider = _CapturingDraftProvider()
+    commit = Commit(
+        sha="a1",
+        message="Refactor Verlato extension settings and suggestion handling",
+        parent_sha="p0",
+        files=[
+            ChangedFile(
+                path="vscode-extension/src/webview/releaseControlMarkup.ts",
+                status="modified",
+                patch='@@\n+"trusted-provider-patch"\n+modelPrivacy\n+allowRemotePatches\n',
+            )
+        ],
+    )
+
+    draft = draft_conventional_commit(
+        commit,
+        provider,
+        privacy_mode="metadata-only",
+        provider_mode="github-copilot",
+        evidence_mode="diff-only",
+    )
+    request = provider.calls[0]
+
+    assert draft is not None
+    assert draft.to_dict()["evidence_mode"] == "diff-only"
+    assert draft.to_dict()["authored_subject"] == ""
+    assert request.evidence["authored_message_omitted"] is True
+    assert "authored_subject" not in request.evidence
+    assert "authored_message" not in request.evidence
+    assert "Refactor Verlato extension settings" not in request.prompt
+    assert request.metadata["request"]["evidence_mode"] == "diff-only"
+    assert request.metadata["request"]["authored_message_omitted"] is True
+
+
+def test_conventional_commit_draft_evidence_includes_subtle_privacy_facts():
+    commit = Commit(
+        sha="a1",
+        message="hidden from diff-only mode",
+        files=[
+            ChangedFile(
+                path="vscode-extension/src/commands/registerCommands.ts",
+                status="modified",
+                patch=(
+                    "@@\n"
+                    "+const modelPrivacy = await vscode.window.showQuickPick([\"metadata-only\", \"trusted-provider-patch\"])\n"
+                    "+await vscode.window.showWarningMessage(\"Send Patch Evidence\")\n"
+                ),
+            ),
+            ChangedFile(
+                path="tests/test_config_and_drafts.py",
+                status="modified",
+                patch="+def test_draft_suggest_preflight_builds_sanitized_envelope_without_provider_call():\n+    assert raw_patch_chars_sent == 0\n",
+            ),
+        ],
+    )
+
+    evidence = conventional_commit_draft_evidence(commit, evidence_mode="diff-only")
+    facts = evidence["diff_facts"]
+
+    assert evidence["authored_message_omitted"] is True
+    assert "authored_subject" not in evidence
+    assert "modelPrivacy" in facts["config_keys"]
+    assert "test_draft_suggest_preflight_builds_sanitized_envelope_without_provider_call" in facts["test_names"]
+    assert "adds model privacy settings for AI evidence" in facts["themes"]
+    assert "gates raw patch evidence by privacy and provider mode" in facts["themes"]
+    assert "adds confirmation for sending raw patch evidence" in facts["themes"]
 
 
 def test_conventional_commit_draft_can_include_bounded_patch_evidence():

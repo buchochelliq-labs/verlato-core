@@ -259,31 +259,68 @@ class MCPService:
         model_provider: str | None = None,
         model_privacy: str | None = None,
         allow_remote_patches: bool = False,
+        evidence_mode: str = "diff-only",
     ) -> dict:
-        config = load_config()
-        privacy_mode = resolve_model_privacy(
-            config.model_privacy,
-            requested=model_privacy,
-            allow_remote_patches=allow_remote_patches or os.getenv("VERLATO_ALLOW_REMOTE_PATCHES") == "1",
-        )
-        selected_model_provider = None if model_provider in {None, "configured"} else model_provider
-        provider_mode = selected_model_provider or os.getenv("VERLATO_MODEL_PROVIDER") or config.provider.name
-        dispatch_privacy_mode = (
-            privacy_mode
-            if _can_send_raw_patches_for_config(config.provider, provider_mode, privacy_mode)
-            else "metadata-only"
-        )
         commit = self._find_commit(base=base, head=head, sha=sha)
-        provider = build_provider(config.provider, mode=selected_model_provider)
+        context = self._conventional_draft_context(
+            model_provider=model_provider,
+            model_privacy=model_privacy,
+            allow_remote_patches=allow_remote_patches,
+        )
         draft = draft_conventional_commit(
             commit,
-            provider,
-            privacy_mode=dispatch_privacy_mode,
-            provider_mode=provider_mode,
+            context["provider"],
+            privacy_mode=str(context["privacy_mode"]),
+            provider_mode=str(context["provider_mode"]),
+            evidence_mode=evidence_mode,
         )
         if draft is None:
             raise RuntimeError(f"No conventional commit draft could be generated for {sha}")
         return draft.to_dict()
+
+    def draft_conventional_commits(
+        self,
+        *,
+        base: str,
+        head: str = "HEAD",
+        shas: list[str] | None = None,
+        model_provider: str | None = None,
+        model_privacy: str | None = None,
+        allow_remote_patches: bool = False,
+        evidence_mode: str = "diff-only",
+    ) -> dict:
+        commits = Collector(pr_adapter=_build_adapter()).collect_commits(base, head)
+        selected_commits, lookup_errors = self._select_commits(commits, shas)
+        context = self._conventional_draft_context(
+            model_provider=model_provider,
+            model_privacy=model_privacy,
+            allow_remote_patches=allow_remote_patches,
+        )
+        results: list[dict] = []
+        errors: list[dict[str, str]] = list(lookup_errors)
+        for commit in selected_commits:
+            try:
+                draft = draft_conventional_commit(
+                    commit,
+                    context["provider"],
+                    privacy_mode=str(context["privacy_mode"]),
+                    provider_mode=str(context["provider_mode"]),
+                    evidence_mode=evidence_mode,
+                )
+                if draft is None:
+                    raise RuntimeError("No conventional commit draft could be generated")
+                results.append(draft.to_dict())
+            except Exception as exc:
+                errors.append({"sha": commit.sha, "error": str(exc)})
+        return {
+            "base_ref": base,
+            "head_ref": head,
+            "count": len(selected_commits) + len(lookup_errors),
+            "completed": len(results),
+            "failed": len(errors),
+            "results": results,
+            "errors": errors,
+        }
 
     def state_show(self) -> dict:
         return {"items": [asdict(item) for item in self._store().load().items]}
@@ -335,6 +372,52 @@ class MCPService:
             if candidate == normalized or candidate.startswith(normalized) or normalized.startswith(candidate):
                 return commit
         raise KeyError(f"Commit {sha} was not found in range {base}..{head}")
+
+    def _conventional_draft_context(
+        self,
+        *,
+        model_provider: str | None,
+        model_privacy: str | None,
+        allow_remote_patches: bool,
+    ) -> dict[str, object]:
+        config = load_config()
+        privacy_mode = resolve_model_privacy(
+            config.model_privacy,
+            requested=model_privacy,
+            allow_remote_patches=allow_remote_patches or os.getenv("VERLATO_ALLOW_REMOTE_PATCHES") == "1",
+        )
+        selected_model_provider = None if model_provider in {None, "configured"} else model_provider
+        provider_mode = selected_model_provider or os.getenv("VERLATO_MODEL_PROVIDER") or config.provider.name
+        dispatch_privacy_mode = (
+            privacy_mode
+            if _can_send_raw_patches_for_config(config.provider, provider_mode, privacy_mode)
+            else "metadata-only"
+        )
+        return {
+            "provider": build_provider(config.provider, mode=selected_model_provider),
+            "provider_mode": provider_mode,
+            "privacy_mode": dispatch_privacy_mode,
+        }
+
+    @staticmethod
+    def _select_commits(commits, shas: list[str] | None):
+        if not shas:
+            return list(commits), []
+        selected = []
+        errors: list[dict[str, str]] = []
+        for sha in shas:
+            normalized = str(sha).strip().lower()
+            match = None
+            for commit in commits:
+                candidate = commit.sha.lower()
+                if candidate == normalized or candidate.startswith(normalized) or normalized.startswith(candidate):
+                    match = commit
+                    break
+            if match is None:
+                errors.append({"sha": str(sha), "error": f"Commit {sha} was not found in range"})
+            else:
+                selected.append(match)
+        return selected, errors
 
     def _suggestion_tool_provider(self, *, base: str, head: str) -> SuggestionEvidenceToolProvider:
         groups = _collect_groups(base, head)

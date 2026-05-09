@@ -653,10 +653,60 @@ test("renders a first-class conventional commit generator for changeset commits"
     },
   });
 
-  assert.match(html, /data-action="generateConventionalCommit" data-sha="abc1234"/);
+  assert.match(html, /data-action="inferConventionalCommit" data-sha="abc1234"/);
+  assert.match(html, /Infer commit/);
+  assert.match(html, /data-action="inferAllConventionalCommits"/);
   assert.match(html, /refactor\(vscode\): revise suggestion strategy settings/);
   assert.match(html, /Updated suggestion batch-size defaults/);
   assert.match(html, /data-copy-label="conventional commit"/);
+});
+
+test("renders conventional commit inference details and failures", () => {
+  const html = buildReleaseControlHtml({
+    modelSettings,
+    range,
+    busy: false,
+    document: {
+      version: "Unreleased",
+      generated_on: "2026-05-03",
+      base_ref: "v1.0.0",
+      head_ref: "HEAD",
+      targets: [],
+      rendered: {},
+      item_count: 1,
+      sections: [{
+        kind: "changed",
+        title: "Changed",
+        items: [draftItem({
+          id: "ci_1",
+          title: "Infer privacy settings",
+          commit_shas: ["abc123456789", "def987654321"],
+        })],
+      }],
+    },
+    conventionalCommits: {
+      abc123456789: {
+        sha: "abc123456789",
+        evidence_mode: "diff-only",
+        header: "feat(commit-intent): add privacy settings",
+        message: "feat(commit-intent): add privacy settings",
+        body: [],
+        type: "feat",
+        scope: "commit-intent",
+        description: "add privacy settings",
+        confidence: 0.91,
+        privacy: { mode: "metadata-only", provider: "mock", raw_patch_chars_sent: 0 },
+        ai_request: { evidence_mode: "diff-only", raw_patch_chars_sent: 0 },
+      },
+    },
+    conventionalCommitErrors: {
+      def987654321: "provider failed",
+    },
+  });
+
+  assert.match(html, /diff-only \| mock \| confidence 0\.91 \| privacy metadata-only \| 0 patch chars sent/);
+  assert.match(html, /AI request/);
+  assert.match(html, /provider failed/);
 });
 
 test("explains selected sources versus draft items and rendered release notes", () => {

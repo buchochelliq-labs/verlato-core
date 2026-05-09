@@ -82,7 +82,11 @@ _TOOL_METADATA: tuple[MCPToolMetadata, ...] = (
     ),
     MCPToolMetadata(
         name="verlato_draft_conventional_commit",
-        description="Draft a full Conventional Commits message for one commit in a git range.",
+        description="Infer or draft a full Conventional Commits message for one commit in a git range.",
+    ),
+    MCPToolMetadata(
+        name="verlato_draft_conventional_commits",
+        description="Infer or draft Conventional Commits messages for commits in a git range sequentially.",
     ),
 )
 
@@ -156,6 +160,11 @@ PatchLimit = Annotated[int, "Maximum patch characters to return."]
 SearchQuery = Annotated[str, "Case-insensitive query to search inside patch text."]
 SearchLimit = Annotated[int, "Maximum number of patch search snippets to return."]
 CommitSha = Annotated[str, "Commit SHA or unique prefix to draft a conventional commit for."]
+CommitShas = Annotated[list[str] | None, "Optional ordered commit SHAs or unique prefixes to infer. Defaults to every commit in the range."]
+EvidenceMode = Annotated[
+    Literal["diff-only", "subject-hint"],
+    "Use diff-only to omit authored commit text, or subject-hint to include the authored subject/message as model evidence.",
+]
 GuidanceName = Annotated[
     Literal["readme", "agent", "architecture", "copilot", "skill"],
     "Workspace guidance document to read.",
@@ -567,8 +576,9 @@ def _register_server_components(server, svc: MCPService) -> None:
             bool,
             "Allow raw patch excerpts to be sent to a configured remote provider for this request.",
         ] = False,
+        evidence_mode: EvidenceMode = "diff-only",
     ) -> dict[str, Any]:
-        """Draft a full Conventional Commits message for one commit in a git range."""
+        """Infer or draft a full Conventional Commits message for one commit in a git range."""
 
         return svc.draft_conventional_commit(
             base=base,
@@ -577,6 +587,44 @@ def _register_server_components(server, svc: MCPService) -> None:
             model_provider=model_provider,
             model_privacy=model_privacy,
             allow_remote_patches=allow_remote_patches,
+            evidence_mode=evidence_mode,
+        )
+
+    @server.tool(
+        annotations={
+            "title": "Draft Conventional Commits",
+            "readOnlyHint": True,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        },
+        tags={"verlato", "commit", "model"},
+        version=__version__,
+    )
+    def verlato_draft_conventional_commits(
+        base: GitRef,
+        shas: CommitShas = None,
+        head: GitRef = "HEAD",
+        model_provider: OptionalModelProvider = None,
+        model_privacy: Annotated[
+            Literal["metadata-only", "local-summary-then-ai", "trusted-provider-patch"] | None,
+            "Optional privacy mode override for commit evidence.",
+        ] = None,
+        allow_remote_patches: Annotated[
+            bool,
+            "Allow raw patch excerpts to be sent to a configured remote provider for this request.",
+        ] = False,
+        evidence_mode: EvidenceMode = "diff-only",
+    ) -> dict[str, Any]:
+        """Infer or draft Conventional Commits messages for commits in a git range sequentially."""
+
+        return svc.draft_conventional_commits(
+            base=base,
+            head=head,
+            shas=shas,
+            model_provider=model_provider,
+            model_privacy=model_privacy,
+            allow_remote_patches=allow_remote_patches,
+            evidence_mode=evidence_mode,
         )
 
 
@@ -608,3 +656,7 @@ def run_mcp_stdio(service: MCPService | None = None, fastmcp_cls: type | None = 
 
 def main() -> int:
     return run_mcp_stdio()
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised by MCP clients
+    raise SystemExit(main())

@@ -16,5 +16,16 @@
     "verlato.commitIntentInference": true,
     "verlato.suggestionPromptProfile": "conservative",
     "verlato.suggestionAdaptiveRecommendations": true,
-    "verlato.suggestionTone": "release-note"
+    "verlato.suggestionTone": "release-note",
+    "chat.mcp.serverSampling": {
+        "release-pilot/.vscode/mcp.json: verlato": {
+            "allowedModels": [
+                "copilotcli/gpt-4.1",
+                "copilot/gpt-4.1",
+                "copilot/gpt-4o",
+                "copilotcli/gpt-5-mini",
+                "copilot/gpt-5-mini"
+            ]
+        }
+    }
 }

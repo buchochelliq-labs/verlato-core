@@ -22,6 +22,7 @@ export interface ReleaseControlRenderState {
   busy: boolean;
   suggestions?: DraftSuggestionPreview;
   conventionalCommits?: Record<string, ConventionalCommitDraft>;
+  conventionalCommitErrors?: Record<string, string>;
   ollamaDoctor?: OllamaDoctorResult;
   mcpServerStatus?: McpServerStatus;
   requests?: CommandRequestSnapshot[];
@@ -109,8 +110,8 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets
           </button>
         </section>
         <section class="section changes-panel" id="changes-panel">
-          <div class="section-title">${renderIcon("diff")}<span>CHANGESETS FROM DIFFS</span><small>${draftCommitCount} commit(s) -> ${itemCount} changeset(s) -> ${visibleItemCount} release note(s)</small></div>
-          ${sections.length ? sections.map((section) => renderSection(section, modelBusy, commitsBySha, state.conventionalCommits)).join("") : renderEmptyState("diff", "No changes to analyze", "Nothing to report.")}
+          <div class="section-title">${renderIcon("diff")}<span>CHANGESETS FROM DIFFS</span><small>${draftCommitCount} commit(s) -> ${itemCount} changeset(s) -> ${visibleItemCount} release note(s)</small><button class="inline-action model-action" data-action="inferAllConventionalCommits"${modelBusy || draftCommitCount < 1 ? " disabled" : ""}>Infer all commits</button></div>
+          ${sections.length ? sections.map((section) => renderSection(section, modelBusy, commitsBySha, state.conventionalCommits, state.conventionalCommitErrors)).join("") : renderEmptyState("diff", "No changes to analyze", "Nothing to report.")}
         </section>
         <details class="section tree-section sources-panel" id="sources-panel">
           <summary class="section-title">${renderIcon("branch")}<span>CONVENTIONAL COMMITS</span><small>Base refs</small></summary>
@@ -195,7 +196,7 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets
       const button = event.target.closest('button');
       if (!button) return;
       const action = button.dataset.action;
-      if (document.body.dataset.modelBusy === 'true' && ['suggestAll', 'suggest', 'generateConventionalCommit', 'regenerateSuggestion', 'regenerateAll'].includes(action || '')) return;
+      if (document.body.dataset.modelBusy === 'true' && ['suggestAll', 'suggest', 'generateConventionalCommit', 'inferConventionalCommit', 'inferAllConventionalCommits', 'regenerateSuggestion', 'regenerateAll'].includes(action || '')) return;
       syncRange();
       if (action === 'filterItems') {
         const filter = button.dataset.filter || 'all';
@@ -244,7 +245,8 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets
       if (action === 'unhide') vscode.postMessage({ type: 'mark', itemId: button.dataset.item, status: 'needs-review' });
       if (action === 'prompt') vscode.postMessage({ type: 'prompt', itemId: button.dataset.item });
       if (action === 'suggest') vscode.postMessage({ type: 'suggest', itemId: button.dataset.item });
-      if (action === 'generateConventionalCommit') vscode.postMessage({ type: 'generateConventionalCommit', sha: button.dataset.sha });
+      if (action === 'generateConventionalCommit' || action === 'inferConventionalCommit') vscode.postMessage({ type: 'inferConventionalCommit', sha: button.dataset.sha });
+      if (action === 'inferAllConventionalCommits') vscode.postMessage({ type: 'inferAllConventionalCommits' });
       if (action === 'applySuggestion') vscode.postMessage({ type: 'applySuggestion', itemId: button.dataset.item, suggestionIndex: Number(button.dataset.index) });
       if (action === 'skipSuggestion') vscode.postMessage({ type: 'skipSuggestion', itemId: button.dataset.item });
       if (action === 'regenerateSuggestion') vscode.postMessage({ type: 'regenerateSuggestion', itemId: button.dataset.item });
@@ -566,7 +568,7 @@ function activeOperationProgress(state: ReleaseControlRenderState): ActiveOperat
     const sha = shaIndex >= 0 ? args[shaIndex + 1] : undefined;
     return {
       kind: "suggest",
-      label: "Generating conventional commit",
+      label: "Inferring conventional commit",
       detail: `${sha ? sha.slice(0, 12) : "selected commit"} with ${modelBadgeLabel(state.modelSettings)} | ${state.range.base}..${state.range.head ?? "HEAD"}`,
       requestId: running?.id,
       isModelWork: true,
@@ -1684,6 +1686,7 @@ function renderChangesetCommits(
   item: DraftItem,
   commitsBySha: Map<string, RepositoryCommit> = new Map(),
   conventionalCommits: Record<string, ConventionalCommitDraft> | undefined = undefined,
+  conventionalCommitErrors: Record<string, string> | undefined = undefined,
   modelBusy = false,
 ): string {
   const shas = item.commit_shas ?? [];
@@ -1704,6 +1707,7 @@ function renderChangesetCommits(
         const prLabel = commit?.prNumber ? `PR #${commit.prNumber}` : "No PR";
         const derived = derivedBySha.get(sha);
         const conventionalDraft = conventionalDraftForSha(conventionalCommits, sha);
+        const conventionalError = conventionalErrorForSha(conventionalCommitErrors, sha);
         return `<li>
           <button class="commit-ref" data-action="useBase" data-ref="${escapeHtml(commit?.sha ?? sha)}" title="Use ${escapeHtml(sha.slice(0, 12))} as base ref">
             <code>${escapeHtml(sha.slice(0, 12))}</code>
@@ -1712,9 +1716,10 @@ function renderChangesetCommits(
             <span>${escapeHtml(subject)}</span>
             ${derived ? `<code class="derived-conventional" title="${escapeHtml(derivedCommitTitle(derived))}">${escapeHtml(derived.message ?? derivedCommitMessage(derived))}</code>` : ""}
             ${conventionalDraft ? renderConventionalCommitDraft(conventionalDraft) : ""}
+            ${conventionalError ? renderConventionalCommitError(conventionalError) : ""}
           </div>
           <small>${escapeHtml(prLabel)}</small>
-          <button class="commit-generate" data-action="generateConventionalCommit" data-sha="${escapeHtml(commit?.sha ?? sha)}"${modelBusy ? " disabled" : ""} title="Generate a Conventional Commits message for this commit">Generate commit</button>
+          <button class="commit-generate" data-action="inferConventionalCommit" data-sha="${escapeHtml(commit?.sha ?? sha)}"${modelBusy ? " disabled" : ""} title="Infer a Conventional Commits message for this commit">Infer commit</button>
           <button class="commit-head" data-action="useHead" data-ref="${escapeHtml(commit?.sha ?? sha)}" title="Use as head ref">HEAD</button>
         </li>`;
       }).join("")}
@@ -1734,13 +1739,36 @@ function conventionalDraftForSha(
     ?? Object.entries(conventionalCommits).find(([candidate]) => candidate.startsWith(sha) || sha.startsWith(candidate))?.[1];
 }
 
+function conventionalErrorForSha(
+  conventionalCommitErrors: Record<string, string> | undefined,
+  sha: string,
+): string | undefined {
+  if (!conventionalCommitErrors) {
+    return undefined;
+  }
+  return conventionalCommitErrors[sha]
+    ?? Object.entries(conventionalCommitErrors).find(([candidate]) => candidate.startsWith(sha) || sha.startsWith(candidate))?.[1];
+}
+
 function renderConventionalCommitDraft(draft: ConventionalCommitDraft): string {
   const message = draft.message || [draft.header, "", ...(draft.body ?? []).map((line) => `- ${line}`)].join("\n").trim();
   const confidence = typeof draft.confidence === "number" ? `confidence ${draft.confidence.toFixed(2)}` : "generated";
+  const provider = draft.privacy?.provider || draft.model || "configured";
+  const privacyMode = draft.privacy?.mode || "metadata-only";
+  const patchChars = typeof draft.privacy?.raw_patch_chars_sent === "number" ? draft.privacy.raw_patch_chars_sent : 0;
+  const evidenceMode = draft.evidence_mode || "subject-hint";
+  const requestPayload = draft.ai_request && Object.keys(draft.ai_request).length
+    ? JSON.stringify(draft.ai_request, null, 2)
+    : "";
   return `<details class="conventional-draft" open>
-    <summary><span>${escapeHtml(draft.header)}</span><small>${escapeHtml(confidence)}</small><button class="copy" data-action="copyText" data-copy-label="conventional commit" title="Copy conventional commit">${renderIcon("copy")}<span>Copy</span></button></summary>
+    <summary><span>${escapeHtml(draft.header)}</span><small>${escapeHtml([evidenceMode, provider, confidence, `privacy ${privacyMode}`, `${patchChars} patch chars sent`].join(" | "))}</small><button class="copy" data-action="copyText" data-copy-label="conventional commit" title="Copy conventional commit">${renderIcon("copy")}<span>Copy</span></button></summary>
     <pre>${escapeHtml(message)}</pre>
+    ${requestPayload ? `<details class="conventional-ai-request"><summary>AI request</summary><pre>${escapeHtml(requestPayload)}</pre></details>` : ""}
   </details>`;
+}
+
+function renderConventionalCommitError(error: string): string {
+  return `<div class="conventional-error">${renderIcon("warning")}<span>${escapeHtml(error)}</span></div>`;
 }
 
 function derivedConventionalBySha(item: DraftItem): Map<string, NonNullable<DraftItem["derived_conventional_commits"]>[number]> {
@@ -2326,10 +2354,11 @@ function renderSection(
   modelBusy = false,
   commitsBySha: Map<string, RepositoryCommit> = new Map(),
   conventionalCommits: Record<string, ConventionalCommitDraft> | undefined = undefined,
+  conventionalCommitErrors: Record<string, string> | undefined = undefined,
 ): string {
   return `<details open>
     <summary>${escapeHtml(section.title)} <span>${section.items.length} changeset(s)</span></summary>
-    ${section.items.map((item) => renderItem(item, modelBusy, commitsBySha, conventionalCommits)).join("")}
+    ${section.items.map((item) => renderItem(item, modelBusy, commitsBySha, conventionalCommits, conventionalCommitErrors)).join("")}
   </details>`;
 }
 
@@ -2338,6 +2367,7 @@ function renderItem(
   modelBusy = false,
   commitsBySha: Map<string, RepositoryCommit> = new Map(),
   conventionalCommits: Record<string, ConventionalCommitDraft> | undefined = undefined,
+  conventionalCommitErrors: Record<string, string> | undefined = undefined,
 ): string {
   const pr = item.pr_number ? `#${item.pr_number}` : item.commit_shas?.[0]?.slice(0, 7) ?? "change";
   const commitCount = item.commit_shas?.length ?? 0;
@@ -2356,7 +2386,7 @@ function renderItem(
     <p>${escapeHtml(item.summary)}</p>
     ${hiddenNotice}
     <div class="item-meta">${escapeHtml(pr)} | ${commitCount} commit(s) in changeset | ${escapeHtml(item.area)} | ${escapeHtml(item.semver)} | ${item.confidence.toFixed(2)}</div>
-    ${renderChangesetCommits(item, commitsBySha, conventionalCommits, modelBusy)}
+    ${renderChangesetCommits(item, commitsBySha, conventionalCommits, conventionalCommitErrors, modelBusy)}
     <div class="actions">
       <button data-action="ready" data-item="${escapeHtml(item.id)}">Ready</button>
       <button data-action="accept" data-item="${escapeHtml(item.id)}">Accept</button>
@@ -3221,6 +3251,8 @@ function styles(): string {
     body[data-model-busy="true"] button[data-action="suggestAll"],
     body[data-model-busy="true"] button[data-action="suggest"],
     body[data-model-busy="true"] button[data-action="generateConventionalCommit"],
+    body[data-model-busy="true"] button[data-action="inferConventionalCommit"],
+    body[data-model-busy="true"] button[data-action="inferAllConventionalCommits"],
     body[data-model-busy="true"] button[data-action="regenerateSuggestion"],
     body[data-model-busy="true"] button[data-action="regenerateAll"] {
       opacity: .48;
@@ -3413,6 +3445,25 @@ function styles(): string {
       overflow-wrap: anywhere;
       color: var(--vscode-editor-foreground);
       font-size: 10px;
+    }
+    .conventional-ai-request {
+      margin-top: 4px;
+      border-top: 1px solid var(--vscode-input-border, rgba(127,127,127,.25));
+    }
+    .conventional-ai-request summary {
+      padding-top: 4px;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      font-size: 10px;
+    }
+    .conventional-error {
+      margin-top: 5px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      color: var(--vscode-errorForeground);
+      font-size: 11px;
+      overflow-wrap: anywhere;
     }
     .changeset-commits li small {
       color: var(--vscode-descriptionForeground);

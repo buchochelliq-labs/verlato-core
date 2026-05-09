@@ -185,7 +185,63 @@ def test_mcp_service_can_draft_conventional_commit(monkeypatch, tmp_path):
         ],
     )
 
-    draft = MCPService().draft_conventional_commit(base="v1.0.0", head="HEAD", sha="a1", model_provider="mock")
+    draft = MCPService().draft_conventional_commit(
+        base="v1.0.0",
+        head="HEAD",
+        sha="a1",
+        model_provider="mock",
+        evidence_mode="subject-hint",
+    )
 
     assert draft["header"].startswith("refactor(")
     assert draft["sha"] == "a1"
+    assert draft["evidence_mode"] == "subject-hint"
+
+
+def test_mcp_service_batch_drafts_conventional_commits_in_order_and_continues(monkeypatch, tmp_path):
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setenv("VERLATO_MODEL_PROVIDER", "mock")
+    monkeypatch.setattr(
+        "verlato.mcp.service.Collector.collect_commits",
+        lambda self, base, head: [
+            Commit(sha="a1", message="first", files=[]),
+            Commit(sha="b2", message="second", files=[]),
+            Commit(sha="c3", message="third", files=[]),
+        ],
+    )
+
+    seen: list[str] = []
+
+    def fake_draft(commit, provider, **kwargs):
+        seen.append(commit.sha)
+        if commit.sha == "b2":
+            raise RuntimeError("provider failed")
+
+        class _Draft:
+            def to_dict(self):
+                return {
+                    "sha": commit.sha,
+                    "header": f"feat(test): infer {commit.sha}",
+                    "message": f"feat(test): infer {commit.sha}",
+                    "body": [],
+                    "evidence_mode": kwargs["evidence_mode"],
+                }
+
+        return _Draft()
+
+    monkeypatch.setattr("verlato.mcp.service.draft_conventional_commit", fake_draft)
+
+    result = MCPService().draft_conventional_commits(
+        base="v1.0.0",
+        head="HEAD",
+        shas=["c3", "b2", "missing", "a1"],
+        model_provider="mock",
+    )
+
+    assert seen == ["c3", "b2", "a1"]
+    assert [entry["sha"] for entry in result["results"]] == ["c3", "a1"]
+    assert result["completed"] == 2
+    assert result["failed"] == 2
+    assert result["errors"][0]["sha"] == "missing"
+    assert result["errors"][1]["sha"] == "b2"
+    assert all(entry["evidence_mode"] == "diff-only" for entry in result["results"])

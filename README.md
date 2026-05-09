@@ -90,7 +90,7 @@ verlato draft prompt --base <ref> --head <ref> --id <item-id>
 verlato draft json --base <ref> --head <ref> --version v1.2.0
 verlato draft apply --base <ref> --head <ref> --target changelog --version v1.2.0
 verlato draft review --base <ref> --id <item-id> --status ready --reviewer alice
-verlato commit conventional --base <ref> --head <ref> --sha <sha>
+verlato commit conventional --base <ref> --head <ref> --sha <sha> [--evidence-mode diff-only|subject-hint]
 verlato service
 verlato serve
 verlato-mcp
@@ -110,7 +110,7 @@ verlato state mark-published --version v1.2.0 --all-unpublished
 - `draft prompt`: builds the exact summary prompt for one draft item without sending it to any model.
 - `draft apply`: updates a configured or explicit release-note target file.
 - `draft review`: persists review metadata such as status, hidden state, reviewer, and edited summary for a draft item.
-- `commit conventional`: drafts a full Conventional Commits message for one commit in the selected range, including a header and body bullets.
+- `commit conventional`: infers a full Conventional Commits message for one commit in the selected range, including a header and body bullets. It defaults to `--evidence-mode diff-only`; use `subject-hint` only when you want the authored commit text available to the model.
 - `serve`: starts the FastMCP stdio server.
 - `verlato-mcp`: packaged console entrypoint for the same MCP stdio server, intended for MCP client configuration.
 - `reconcile`: explicitly lists unpublished deltas for a ref range (no state mutation).
@@ -233,7 +233,7 @@ Editor integration:
 
 - The bundled VS Code extension uses `verlato service`, a built-in JSON-lines stdio service, for core draft/review/state/feedback flows when `verlato.serviceMode` is `auto` (the default). If the service cannot start, the extension falls back to one-off CLI commands and shows a degraded status.
 - Model-heavy flows such as `draft suggest`, Ollama doctor/warmup, and realtime model telemetry still use direct CLI commands in this first service pass.
-- The release control view exposes a `Generate commit` action beside each changeset commit. It calls the backend commit drafting contract and copies the generated Conventional Commits message to the clipboard.
+- The release control view exposes an `Infer commit` action beside each changeset commit, plus `Infer all commits` for the current draft. These call the backend commit inference contract in diff-only mode so the model sees commit IDs, file/status evidence, deterministic facts, and privacy-gated patch excerpts rather than the authored commit subject/body. Single-commit inference copies the generated Conventional Commits message to the clipboard; batch inference renders each result or per-commit error in sequence.
 - The repo includes [.vscode/mcp.json](.vscode/mcp.json) so VS Code/Copilot can attach to the FastMCP server from the workspace.
 - The MCP server exposes these tool names:
   - `verlato_service_health`
@@ -250,6 +250,7 @@ Editor integration:
   - `verlato_get_file_patch`
   - `verlato_search_item_diff`
   - `verlato_draft_conventional_commit`
+  - `verlato_draft_conventional_commits`
 - The MCP server also exposes read-only resources:
   - `verlato://overview`
   - `verlato://guidance/{name}`
@@ -259,7 +260,7 @@ Editor integration:
 MCP setup:
 
 - Install the optional FastMCP v3+ dependency with `python -m pip install -e .[mcp]`.
-- The checked-in [.vscode/mcp.json](.vscode/mcp.json) runs the packaged `verlato-mcp` stdio server entrypoint.
+- The checked-in [.vscode/mcp.json](.vscode/mcp.json) runs the workspace virtualenv Python module entrypoint (`python -m verlato.mcp.server`) so attached MCP clients do not depend on `verlato-mcp` being on PATH.
 - Start the MCP server manually with `verlato serve` or `verlato-mcp` if you are not using the workspace config. This is separate from the extension's built-in `verlato service` transport and still requires FastMCP.
 - The VS Code Verlato control view shows whether Verlato has started an MCP server terminal from the current window and includes a Start action for `verlato serve`; stdio MCP clients such as VS Code/Copilot still launch their own attached server from `.vscode/mcp.json`, so the best attached-client health check is calling `verlato_service_health`.
 
