@@ -4,9 +4,13 @@ from pathlib import Path
 from verlato.cli.main import _maybe_infer_commit_intents
 from verlato.core.commit_intent import (
     commit_intent_payload,
+    conventional_commit_message,
+    derive_conventional_commits,
+    draft_conventional_commit,
     effective_conventional_commit,
     infer_commit_intents,
     is_low_signal_commit,
+    parse_conventional_commit_draft_response,
     parse_commit_intent_response,
 )
 from verlato.core.models import ChangedFile, Commit
@@ -57,6 +61,40 @@ def test_parse_commit_intent_rejects_invalid_or_low_confidence_responses():
 
     for payload in cases:
         assert parse_commit_intent_response(json.dumps(payload), model="test-model") is None
+
+
+def test_parse_conventional_commit_draft_accepts_body():
+    draft = parse_conventional_commit_draft_response(
+        json.dumps(
+            {
+                "type": "refactor",
+                "scope": "vscode",
+                "description": "revise suggestion strategy settings",
+                "body": [
+                    "Added configurable suggestion strategy modes.",
+                    "- Removed instant provisional suggestion behavior.",
+                ],
+                "breaking": False,
+                "confidence": 0.86,
+                "rationale": "Touches VS Code suggestion settings.",
+            }
+        ),
+        model="test-model",
+    )
+
+    assert draft is not None
+    assert draft.intent.type == "refactor"
+    assert draft.intent.scope == "vscode"
+    assert draft.body == [
+        "Added configurable suggestion strategy modes.",
+        "Removed instant provisional suggestion behavior.",
+    ]
+    assert draft.to_dict()["header"] == "refactor(vscode): revise suggestion strategy settings"
+    assert draft.to_dict()["message"] == (
+        "refactor(vscode): revise suggestion strategy settings\n\n"
+        "- Added configurable suggestion strategy modes.\n"
+        "- Removed instant provisional suggestion behavior."
+    )
 
 
 def test_low_signal_detection_and_effective_conventional_metadata():
@@ -156,6 +194,112 @@ def test_commit_intent_inference_allows_bounded_patch_evidence_for_local_mode():
     assert request.metadata["request"]["contains_raw_patch_markers"] is True
 
 
+def test_derived_conventional_commit_uses_diff_only_evidence():
+    provider = _CapturingIntentProvider()
+    commit = Commit(
+        sha="a1",
+        message="feat(auth): already authored message must not leak",
+        parent_sha="p0",
+        files=[ChangedFile(path="api/tokens.py", status="modified", patch="@@ -1 +1 @@\n-old\n+NEW_TOKEN")],
+    )
+
+    derived = derive_conventional_commits(
+        [commit],
+        provider,
+        privacy_mode="metadata-only",
+        provider_mode="litellm",
+    )
+    request = provider.calls[0]
+
+    assert derived == 1
+    assert commit.derived_intent is not None
+    assert commit.derived_intent.source == "model-derived-diff"
+    assert conventional_commit_message(commit.derived_intent) == "feat(api): add token endpoint"
+    assert request.task == "derive-conventional"
+    assert "already authored message" not in request.prompt
+    assert "NEW_TOKEN" not in request.prompt
+    assert "previous_sha" in request.prompt
+    assert "message" not in request.evidence
+    assert request.metadata["request"]["raw_patch_chars_sent"] == 0
+
+
+def test_derived_conventional_commit_can_include_local_patch_evidence():
+    provider = _CapturingIntentProvider()
+    commit = Commit(
+        sha="a1",
+        message="whatever",
+        files=[ChangedFile(path="api/tokens.py", status="added", patch="@@ -0,0 +1 @@\n+LOCAL_DIFF")],
+    )
+
+    derived = derive_conventional_commits(
+        [commit],
+        provider,
+        privacy_mode="local-summary-then-ai",
+        provider_mode="ollama",
+    )
+    request = provider.calls[0]
+
+    assert derived == 1
+    assert "LOCAL_DIFF" in request.prompt
+    assert request.evidence["initial_commit"] is True
+    assert request.metadata["request"]["raw_patch_chars_sent"] > 0
+
+
+def test_conventional_commit_draft_uses_subject_and_structured_diff_facts():
+    provider = _CapturingDraftProvider()
+    commit = Commit(
+        sha="a1",
+        message="Refactor Verlato extension settings and suggestion handling",
+        parent_sha="p0",
+        files=[
+            ChangedFile(
+                path="vscode-extension/src/webview/releaseControlMarkup.ts",
+                status="modified",
+                patch='@@\n-suggestionBatchSize: 2\n+suggestionBatchSize: 5\n+"full-diff-json"\n-instantProvisionalSuggestion\n',
+            ),
+            ChangedFile(path="vscode-extension/test/releaseControlMarkup.test.js", status="modified", patch="+strategy"),
+        ],
+    )
+
+    draft = draft_conventional_commit(
+        commit,
+        provider,
+        privacy_mode="metadata-only",
+        provider_mode="github-copilot",
+    )
+    request = provider.calls[0]
+
+    assert draft is not None
+    assert draft.to_dict()["header"] == "refactor(vscode): revise suggestion strategy settings"
+    assert draft.body[0] == "Updated suggestion strategy settings."
+    assert request.task == "draft-conventional"
+    assert request.evidence["authored_subject"] == "Refactor Verlato extension settings and suggestion handling"
+    assert "updates the VS Code release control UI" in request.evidence["diff_facts"]["themes"]
+    assert "patch_excerpt" not in request.prompt
+    assert request.metadata["request"]["raw_patch_chars_sent"] == 0
+
+
+def test_conventional_commit_draft_can_include_bounded_patch_evidence():
+    provider = _CapturingDraftProvider()
+    commit = Commit(
+        sha="a1",
+        message="update suggestions",
+        files=[ChangedFile(path="vscode-extension/src/extension.ts", status="modified", patch="@@\n+LOCAL_DRAFT_SENTINEL")],
+    )
+
+    draft = draft_conventional_commit(
+        commit,
+        provider,
+        privacy_mode="trusted-provider-patch",
+        provider_mode="github-copilot",
+    )
+    request = provider.calls[0]
+
+    assert draft is not None
+    assert "LOCAL_DRAFT_SENTINEL" in request.prompt
+    assert request.metadata["request"]["raw_patch_chars_sent"] > 0
+
+
 def test_cli_commit_intent_inference_enriches_eligible_commits(monkeypatch, tmp_path: Path):
     (tmp_path / "verlato.json").write_text(json.dumps({"commit_intent_inference": "low-signal"}))
     monkeypatch.chdir(tmp_path)
@@ -179,6 +323,8 @@ def test_cli_commit_intent_inference_enriches_eligible_commits(monkeypatch, tmp_
     assert commits[0].inferred_intent.type == "feat"
     assert commits[0].inferred_intent.scope == "api"
     assert commits[1].inferred_intent is None
+    assert commits[0].derived_intent is not None
+    assert commits[1].derived_intent is not None
 
 
 def test_cli_commit_intent_inference_respects_fanout_guard(monkeypatch, tmp_path: Path):
@@ -199,6 +345,7 @@ def test_cli_commit_intent_inference_respects_fanout_guard(monkeypatch, tmp_path
     _maybe_infer_commit_intents(commits, model_provider=None, commit_intent_inference=None)
 
     assert [commit.inferred_intent for commit in commits] == [None, None]
+    assert [commit.derived_intent for commit in commits] == [None, None]
 
 
 class _ErroringProvider(VerlatoProvider):
@@ -227,6 +374,35 @@ class _CapturingIntentProvider(VerlatoProvider):
                 }
             ),
             confidence=0.9,
+            model="test-model",
+        )
+
+    def classify(self, request: ProviderRequest) -> ProviderResponse:
+        raise AssertionError("classify should not be called")
+
+
+class _CapturingDraftProvider(VerlatoProvider):
+    def __init__(self):
+        self.calls: list[ProviderRequest] = []
+
+    def summarize(self, request: ProviderRequest) -> ProviderResponse:
+        self.calls.append(request)
+        return ProviderResponse(
+            content=json.dumps(
+                {
+                    "type": "refactor",
+                    "scope": "vscode",
+                    "description": "revise suggestion strategy settings",
+                    "body": [
+                        "Updated suggestion strategy settings.",
+                        "Removed instant provisional suggestion behavior.",
+                    ],
+                    "breaking": False,
+                    "confidence": 0.88,
+                    "rationale": "Touches VS Code suggestion settings and tests.",
+                }
+            ),
+            confidence=0.88,
             model="test-model",
         )
 

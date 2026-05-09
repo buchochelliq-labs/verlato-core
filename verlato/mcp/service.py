@@ -5,6 +5,8 @@ from dataclasses import asdict, dataclass
 
 from verlato import __version__
 from verlato.cli.main import (
+    _build_adapter,
+    _can_send_raw_patches_for_config,
     _append_feedback_event,
     _build_suggestion_cache_store,
     _collect_groups,
@@ -14,8 +16,12 @@ from verlato.cli.main import (
 )
 from verlato.config import load_config
 from verlato.core.classifier import Classifier
+from verlato.core.collector import Collector
+from verlato.core.commit_intent import draft_conventional_commit
 from verlato.core.drafts import DraftDocument, DraftItem, DraftSection, DraftService, DraftTarget
 from verlato.core.suggestion_tools import SuggestionEvidenceToolProvider
+from verlato.core.model_privacy import resolve_model_privacy
+from verlato.providers.factory import build_provider
 from verlato.state.store import StateStore
 
 
@@ -244,6 +250,41 @@ class MCPService:
             limit=limit,
         )
 
+    def draft_conventional_commit(
+        self,
+        *,
+        base: str,
+        sha: str,
+        head: str = "HEAD",
+        model_provider: str | None = None,
+        model_privacy: str | None = None,
+        allow_remote_patches: bool = False,
+    ) -> dict:
+        config = load_config()
+        privacy_mode = resolve_model_privacy(
+            config.model_privacy,
+            requested=model_privacy,
+            allow_remote_patches=allow_remote_patches or os.getenv("VERLATO_ALLOW_REMOTE_PATCHES") == "1",
+        )
+        selected_model_provider = None if model_provider in {None, "configured"} else model_provider
+        provider_mode = selected_model_provider or os.getenv("VERLATO_MODEL_PROVIDER") or config.provider.name
+        dispatch_privacy_mode = (
+            privacy_mode
+            if _can_send_raw_patches_for_config(config.provider, provider_mode, privacy_mode)
+            else "metadata-only"
+        )
+        commit = self._find_commit(base=base, head=head, sha=sha)
+        provider = build_provider(config.provider, mode=selected_model_provider)
+        draft = draft_conventional_commit(
+            commit,
+            provider,
+            privacy_mode=dispatch_privacy_mode,
+            provider_mode=provider_mode,
+        )
+        if draft is None:
+            raise RuntimeError(f"No conventional commit draft could be generated for {sha}")
+        return draft.to_dict()
+
     def state_show(self) -> dict:
         return {"items": [asdict(item) for item in self._store().load().items]}
 
@@ -285,6 +326,15 @@ class MCPService:
     def _store(self) -> StateStore:
         config = load_config()
         return StateStore(path=os.getenv("VERLATO_STATE_PATH", config.state_path))
+
+    def _find_commit(self, *, base: str, head: str, sha: str):
+        commits = Collector(pr_adapter=_build_adapter()).collect_commits(base, head)
+        normalized = sha.strip().lower()
+        for commit in commits:
+            candidate = commit.sha.lower()
+            if candidate == normalized or candidate.startswith(normalized) or normalized.startswith(candidate):
+                return commit
+        raise KeyError(f"Commit {sha} was not found in range {base}..{head}")
 
     def _suggestion_tool_provider(self, *, base: str, head: str) -> SuggestionEvidenceToolProvider:
         groups = _collect_groups(base, head)
@@ -340,6 +390,10 @@ class MCPService:
                     head_ref=str(item["head_ref"]),
                     files=[str(path) for path in item.get("files", [])],
                     commit_signals=[str(signal) for signal in item.get("commit_signals", [])],
+                    derived_conventional_commits=[
+                        entry for entry in item.get("derived_conventional_commits", []) if isinstance(entry, dict)
+                    ],
+                    grouping_reason=str(item.get("grouping_reason") or ""),
                     status=str(item["status"]),
                     reviewed_by=item.get("reviewed_by"),
                     reviewed_at=item.get("reviewed_at"),

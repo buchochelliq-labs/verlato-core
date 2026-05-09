@@ -505,6 +505,18 @@ test("renders releases as a dedicated sub-panel with notes, commits, and suggest
           id: "ci_1",
           title: "Improve API",
           commit_shas: ["abc123456789", "def567890123"],
+          derived_conventional_commits: [
+            {
+              sha: "abc123456789",
+              previous_sha: "000000000000",
+              message: "feat(api): improve review flow",
+              type: "feat",
+              scope: "api",
+              description: "improve review flow",
+              confidence: 0.88,
+              model: "mock-local",
+            },
+          ],
           grouping_reason: "Grouped by PR #12.",
         })],
       }],
@@ -576,7 +588,9 @@ test("renders releases as a dedicated sub-panel with notes, commits, and suggest
   assert.match(html, /Grouped by PR #12\./);
   assert.match(html, /abc123456789/);
   assert.match(html, /def567890123/);
-  assert.match(html, /class="commit-message" title="Improve API review">Improve API review<\/span>/);
+  assert.match(html, /class="commit-message" title="Improve API review"/);
+  assert.match(html, /feat\(api\): improve review flow/);
+  assert.match(html, /Derived from diff against previous 000000000000; confidence 0\.88; mock-local/);
   assert.match(html, /data-action="useBase" data-ref="abc1234"/);
   assert.match(html, /data-action="useHead" data-ref="abc1234"/);
   assert.match(html, /INTENT INFERENCE/);
@@ -593,6 +607,56 @@ test("renders releases as a dedicated sub-panel with notes, commits, and suggest
   assert.match(html, /body\[data-filter="released"\] \.release-card\[data-release-state="unreleased"\]/);
   assert.match(html, /body\[data-filter="unreleased"\] \.release-card\[data-release-state="released"\]/);
   assert.doesNotMatch(html, /Associated Releases/);
+});
+
+test("renders a first-class conventional commit generator for changeset commits", () => {
+  const html = buildReleaseControlHtml({
+    modelSettings,
+    range,
+    busy: false,
+    document: {
+      version: "Unreleased",
+      generated_on: "2026-05-03",
+      base_ref: "v1.0.0",
+      head_ref: "HEAD",
+      targets: [],
+      rendered: {},
+      item_count: 1,
+      sections: [{
+        kind: "changed",
+        title: "Changed",
+        items: [draftItem({
+          id: "ci_1",
+          title: "Refactor settings",
+          commit_shas: ["abc123456789"],
+        })],
+      }],
+    },
+    overview: {
+      branches: [],
+      tags: [],
+      commits: [{ sha: "abc1234", subject: "Refactor Verlato extension settings", author: "n1ckyb", prNumber: null, release: null }],
+      releases: [],
+      unpublishedCount: 1,
+    },
+    conventionalCommits: {
+      abc123456789: {
+        sha: "abc123456789",
+        header: "refactor(vscode): revise suggestion strategy settings",
+        message: "refactor(vscode): revise suggestion strategy settings\n\n- Updated suggestion batch-size defaults.",
+        body: ["Updated suggestion batch-size defaults."],
+        type: "refactor",
+        scope: "vscode",
+        description: "revise suggestion strategy settings",
+        confidence: 0.88,
+      },
+    },
+  });
+
+  assert.match(html, /data-action="generateConventionalCommit" data-sha="abc1234"/);
+  assert.match(html, /refactor\(vscode\): revise suggestion strategy settings/);
+  assert.match(html, /Updated suggestion batch-size defaults/);
+  assert.match(html, /data-copy-label="conventional commit"/);
 });
 
 test("explains selected sources versus draft items and rendered release notes", () => {

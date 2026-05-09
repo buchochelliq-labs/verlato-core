@@ -2,8 +2,19 @@
     "verlato.modelProvider": "ollama",
     "verlato.ollamaModel": "gemma4",
     "verlato.ollamaEndpoint": "http://127.0.0.1:11434/api/chat",
-    "verlato.maxModelItems": 25,
-    "verlato.suggestionCount": 3,
+    "verlato.maxModelItems": 1,
+    "verlato.suggestionCount": 1,
     "verlato.telemetry.includeReasoningPayloads": true,
-    "verlato.telemetry.includePromptPayloads": true
+    "verlato.telemetry.includePromptPayloads": true,
+    "verlato.ollamaSuggestionModel": "gemma4:e2b",
+    "verlato.ollamaTimeoutSeconds": 120,
+    "verlato.suggestionParallelism": 1,
+    "verlato.suggestionBatchSize": 1,
+    "verlato.suggestionStrategy": "tool-retrieval",
+    "verlato.modelPrivacy": "local-summary-then-ai",
+    "verlato.allowRemotePatches": false,
+    "verlato.commitIntentInference": true,
+    "verlato.suggestionPromptProfile": "conservative",
+    "verlato.suggestionAdaptiveRecommendations": true,
+    "verlato.suggestionTone": "release-note"
 }

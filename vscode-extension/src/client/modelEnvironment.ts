@@ -1,5 +1,10 @@
 export function commandUsesConfiguredModel(args: string[]): boolean {
-  return (args[0] === "draft" && (args[1] === "suggest" || args[1] === "prompt")) || (args[0] === "doctor" && args[1] === "ollama");
+  return (
+    (args[0] === "draft" && (args[1] === "suggest" || args[1] === "prompt")) ||
+    (args[0] === "commit" && args[1] === "conventional") ||
+    args[0] === "service" ||
+    (args[0] === "doctor" && args[1] === "ollama")
+  );
 }
 
 export function resolveCommandModelProvider(args: string[], configuredProvider: string): string {
@@ -13,5 +18,9 @@ export function resolveCommandModelProvider(args: string[], configuredProvider: 
 }
 
 export function shouldAttachGithubToken(args: string[], provider: string): boolean {
-  return provider === "github-copilot" && args[0] === "draft" && args[1] === "suggest";
+  return provider === "github-copilot" && (
+    (args[0] === "draft" && args[1] === "suggest") ||
+    (args[0] === "commit" && args[1] === "conventional") ||
+    args[0] === "service"
+  );
 }

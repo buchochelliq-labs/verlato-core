@@ -9,7 +9,21 @@ def test_suggestion_evidence_tools_return_manifest_and_patch_chunks():
     patch = "@@ -1 +1 @@\n-old auth\n+new auth\n"
     group = ChangeGroup(
         pr=PullRequest(number=7, title="Improve auth"),
-        commits=[Commit(sha="a1", message="feat: improve auth")],
+        commits=[
+            Commit(
+                sha="a1",
+                message="feat: improve auth",
+                parent_sha="p0",
+                derived_intent=CommitIntent(
+                    type="feat",
+                    scope="auth",
+                    description="improve auth flow",
+                    confidence=0.82,
+                    model="mock",
+                    source="model-derived-diff",
+                ),
+            )
+        ],
         files=[ChangedFile(path="src/auth.py", status="modified", patch=patch)],
     )
     item = Classifier().classify(group, base_ref="v1.0.0", head_ref="HEAD")[0]
@@ -25,7 +39,10 @@ def test_suggestion_evidence_tools_return_manifest_and_patch_chunks():
 
     assert listed["items"][0]["item_id"] == item.id
     assert listed["items"][0]["files"][0]["patch_available"] is True
+    assert detail["commit_boundaries"]["first"]["previous_sha"] == "p0"
+    assert detail["commit_boundaries"]["first"]["derived_conventional"] == "feat(auth): improve auth flow"
     assert detail["commits"][0]["subject"] == "feat: improve auth"
+    assert detail["commits"][0]["derived_conventional"]["message"] == "feat(auth): improve auth flow"
     assert chunk["patch"] == patch[:12]
     assert chunk["truncated"] is True
     assert search["results"][0]["path"] == "src/auth.py"

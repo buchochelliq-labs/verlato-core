@@ -80,6 +80,10 @@ _TOOL_METADATA: tuple[MCPToolMetadata, ...] = (
         name="verlato_search_item_diff",
         description="Search patch text for one suggestion item and return compact snippets.",
     ),
+    MCPToolMetadata(
+        name="verlato_draft_conventional_commit",
+        description="Draft a full Conventional Commits message for one commit in a git range.",
+    ),
 )
 
 _RESOURCE_METADATA: tuple[MCPResourceMetadata, ...] = (
@@ -151,6 +155,7 @@ PatchOffset = Annotated[int, "Character offset into the requested patch."]
 PatchLimit = Annotated[int, "Maximum patch characters to return."]
 SearchQuery = Annotated[str, "Case-insensitive query to search inside patch text."]
 SearchLimit = Annotated[int, "Maximum number of patch search snippets to return."]
+CommitSha = Annotated[str, "Commit SHA or unique prefix to draft a conventional commit for."]
 GuidanceName = Annotated[
     Literal["readme", "agent", "architecture", "copilot", "skill"],
     "Workspace guidance document to read.",
@@ -538,6 +543,41 @@ def _register_server_components(server, svc: MCPService) -> None:
         """Search patch text for one suggestion item and return compact snippets."""
 
         return svc.search_item_diff(base=base, head=head, item_id=item_id, query=query, limit=limit)
+
+    @server.tool(
+        annotations={
+            "title": "Draft Conventional Commit",
+            "readOnlyHint": True,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        },
+        tags={"verlato", "commit", "model"},
+        version=__version__,
+    )
+    def verlato_draft_conventional_commit(
+        base: GitRef,
+        sha: CommitSha,
+        head: GitRef = "HEAD",
+        model_provider: OptionalModelProvider = None,
+        model_privacy: Annotated[
+            Literal["metadata-only", "local-summary-then-ai", "trusted-provider-patch"] | None,
+            "Optional privacy mode override for commit evidence.",
+        ] = None,
+        allow_remote_patches: Annotated[
+            bool,
+            "Allow raw patch excerpts to be sent to a configured remote provider for this request.",
+        ] = False,
+    ) -> dict[str, Any]:
+        """Draft a full Conventional Commits message for one commit in a git range."""
+
+        return svc.draft_conventional_commit(
+            base=base,
+            head=head,
+            sha=sha,
+            model_provider=model_provider,
+            model_privacy=model_privacy,
+            allow_remote_patches=allow_remote_patches,
+        )
 
 
 def create_fastmcp_server(service: MCPService | None = None, fastmcp_cls: type | None = None):

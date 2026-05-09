@@ -5,10 +5,14 @@ import re
 import sys
 from dataclasses import dataclass
 
-from verlato.core.changelog import VALID_CHANGE_KINDS, normalize_change_kind
 from verlato.core.change_summary import build_change_summary_payload, raw_patch_chars_available
+from verlato.core.changelog import VALID_CHANGE_KINDS, normalize_change_kind
 from verlato.core.checksum import CHECKSUM_VERSION, build_checksum
-from verlato.core.commit_intent import commit_intent_payload, effective_conventional_commit
+from verlato.core.commit_intent import (
+    commit_intent_payload,
+    conventional_commit_message,
+    effective_conventional_commit,
+)
 from verlato.core.conventional import parse_conventional_commit
 from verlato.core.diff_evidence import DiffEvidenceBuilder
 from verlato.core.model_privacy import DEFAULT_MODEL_PRIVACY, OMITTED_PATCH_EVIDENCE, model_request_record
@@ -325,10 +329,12 @@ class Classifier:
             labels=pr.labels if pr else [],
             files=[f.path for f in changed_files],
             commit_signals=commit_signals,
+            derived_conventional_commits=_derived_conventional_commit_payloads(group.commits),
             diff_summary={
                 "summary": diff.summary,
                 "files_by_area": diff.files_by_area,
                 "file_statuses": diff.file_statuses,
+                "commit_boundaries": _commit_boundaries(group.commits),
                 "api_changes": diff.api_changes,
                 "migrations": diff.migration_changes,
                 "config_changes": diff.config_changes,
@@ -528,6 +534,7 @@ class Classifier:
         commit_lines = "; ".join(commit_subjects) or "none"
         if len(commits) > profile.commits:
             commit_lines += f"; ... and {len(commits) - profile.commits} more"
+        boundary_text = _commit_boundary_prompt_text(commits)
         label_text = ", ".join(labels) if labels else "none"
         file_statuses = sorted(diff.file_statuses.items())
         included_files = file_statuses[:profile.changed_files]
@@ -597,6 +604,7 @@ class Classifier:
             f"Title: {title}\n"
             f"Release context: {context_text}\n"
             f"Labels: {label_text}\n"
+            f"{boundary_text}\n"
             f"Commits: {commit_lines}\n"
             f"PR body: {pr_body_text}\n"
             f"Changed files:\n{file_lines}\n"
@@ -615,6 +623,7 @@ class Classifier:
                 "commits_included": len(commit_subjects),
                 "commits_total": len(commits),
                 "commits_skipped": max(len(commits) - len(commit_subjects), 0),
+                "commit_boundaries_included": bool(commits),
                 "pr_body_chars_included": pr_body_chars_included,
                 "pr_body_chars_total": len(pr_body.strip()),
                 "pr_body_chars_skipped": max(len(pr_body.strip()) - pr_body_chars_included, 0),
@@ -790,13 +799,78 @@ def _truncate_prompt_text(value: str, limit: int) -> str:
 
 
 def _commit_prompt_line(commit) -> str:
-    subject = commit.message.splitlines()[0]
+    subject = commit.message.splitlines()[0] if commit.message else ""
+    annotations = []
     intent = getattr(commit, "inferred_intent", None)
-    if not intent:
+    if intent:
+        annotations.append(f"inferred {conventional_commit_message(intent)}")
+    derived = getattr(commit, "derived_intent", None)
+    if derived:
+        annotations.append(f"derived {conventional_commit_message(derived)}")
+    if not annotations:
         return subject
-    scope = f"({intent.scope})" if intent.scope else ""
-    breaking = "!" if intent.breaking else ""
-    return f"{subject} [inferred {intent.type}{scope}{breaking}: {intent.description}]"
+    return f"{subject} [{' | '.join(annotations)}]"
+
+
+def _commit_boundary_prompt_text(commits: list) -> str:
+    if not commits:
+        return "First commit: none\nLast commit: none"
+    first = commits[0]
+    last = commits[-1]
+    return "\n".join(
+        [
+            f"First commit: {_commit_boundary_line(first)}",
+            f"Last commit: {_commit_boundary_line(last)}",
+        ]
+    )
+
+
+def _commit_boundary_line(commit) -> str:
+    previous = getattr(commit, "parent_sha", None)
+    base = "initial commit" if previous is None else f"previous {previous[:12]}"
+    subject = commit.message.splitlines()[0] if commit.message else ""
+    derived = getattr(commit, "derived_intent", None)
+    derived_text = f"; derived {conventional_commit_message(derived)}" if derived else ""
+    return f"{commit.sha[:12]} ({base}) {subject}{derived_text}"
+
+
+def _commit_boundaries(commits: list) -> dict[str, object]:
+    if not commits:
+        return {"first": None, "last": None}
+    return {
+        "first": _commit_boundary_payload(commits[0]),
+        "last": _commit_boundary_payload(commits[-1]),
+    }
+
+
+def _commit_boundary_payload(commit) -> dict[str, object]:
+    derived = getattr(commit, "derived_intent", None)
+    return {
+        "sha": commit.sha,
+        "subject": commit.message.splitlines()[0] if commit.message else "",
+        "previous_sha": getattr(commit, "parent_sha", None),
+        "initial_commit": getattr(commit, "parent_sha", None) is None,
+        "derived_conventional": conventional_commit_message(derived) if derived else None,
+    }
+
+
+def _derived_conventional_commit_payloads(commits: list) -> list[dict[str, object]]:
+    payloads: list[dict[str, object]] = []
+    for commit in commits:
+        derived = getattr(commit, "derived_intent", None)
+        if derived is None:
+            continue
+        payload = commit_intent_payload(derived) or {}
+        payloads.append(
+            {
+                "sha": commit.sha,
+                "previous_sha": getattr(commit, "parent_sha", None),
+                "initial_commit": getattr(commit, "parent_sha", None) is None,
+                "authored_subject": commit.message.splitlines()[0] if commit.message else "",
+                **payload,
+            }
+        )
+    return payloads
 
 
 def _summary_style_lines(*, guidance: str, project_vocabulary: list[str], banned_phrases: list[str]) -> str:

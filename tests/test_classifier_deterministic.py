@@ -263,6 +263,53 @@ def test_provider_summary_prompt_uses_patch_free_change_summary_by_default():
     assert provider.summary_request.metadata["request"]["contains_raw_patch_markers"] is False
 
 
+def test_summary_prompt_and_state_include_commit_boundaries_and_derived_conventional():
+    provider = _CapturingProvider("Summarizes derived commit context")
+    group = ChangeGroup(
+        pr=None,
+        commits=[
+            Commit(
+                sha="a11111111111",
+                message="feat: authored first",
+                parent_sha="p00000000000",
+                files=[ChangedFile(path="api/one.py", status="modified", patch="+one")],
+                derived_intent=CommitIntent(
+                    type="fix",
+                    scope="api",
+                    description="repair token endpoint",
+                    confidence=0.82,
+                    model="mock",
+                    source="model-derived-diff",
+                ),
+            ),
+            Commit(
+                sha="b22222222222",
+                message="update second",
+                parent_sha="a11111111111",
+                files=[ChangedFile(path="api/two.py", status="modified", patch="+two")],
+                derived_intent=CommitIntent(
+                    type="feat",
+                    scope="api",
+                    description="add token lookup",
+                    confidence=0.84,
+                    model="mock",
+                    source="model-derived-diff",
+                ),
+            ),
+        ],
+        files=[ChangedFile(path="api/one.py", status="modified", patch="+one")],
+    )
+
+    item = Classifier(provider=provider).classify(group, base_ref="v1.0.0", head_ref="main")[0]
+
+    assert "First commit: a11111111111" in provider.summary_request.prompt
+    assert "Last commit: b22222222222" in provider.summary_request.prompt
+    assert "derived fix(api): repair token endpoint" in provider.summary_request.prompt
+    assert item.evidence.diff_summary["commit_boundaries"]["first"]["sha"] == "a11111111111"
+    assert item.evidence.derived_conventional_commits[0]["message"] == "fix(api): repair token endpoint"
+    assert item.evidence.derived_conventional_commits[1]["authored_subject"] == "update second"
+
+
 def test_provider_summary_prompt_supports_configurable_variants():
     group = ChangeGroup(
         pr=PullRequest(
@@ -404,7 +451,8 @@ def test_provider_summary_prompt_truncates_large_context():
     )
 
     assert "update one; update two; update three; ... and 1 more" in prompt
-    assert "update four" not in prompt
+    assert "Last commit: d (initial commit) update four" in prompt
+    assert "Commits: update one; update two; update three; ... and 1 more" in prompt
     assert "src/fourth.py:" not in prompt
     assert len(prompt) < 4000
 

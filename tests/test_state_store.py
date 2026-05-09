@@ -17,7 +17,19 @@ def test_state_store_roundtrip(tmp_path):
         source=SourceRef(pr_number=1, commit_shas=["abc"], base_ref="v1", head_ref="v2"),
         classification=Classification(kind="added", area="api", audience="external", semver="minor"),
         content=Content(title="Add API", summary="Adds endpoint"),
-        evidence=Evidence(labels=["feature"], files=["api/x.py"], commit_signals=["conventional:feat"]),
+        evidence=Evidence(
+            labels=["feature"],
+            files=["api/x.py"],
+            commit_signals=["conventional:feat"],
+            derived_conventional_commits=[
+                {
+                    "sha": "abc",
+                    "previous_sha": "def",
+                    "message": "feat(api): add endpoint",
+                    "source": "model-derived-diff",
+                }
+            ],
+        ),
         confidence=0.9,
         checksum="sum1",
         status="edited",
@@ -45,6 +57,7 @@ def test_state_store_roundtrip(tmp_path):
         "model": "mock-local",
         "prompt_sha": "abc123",
     }
+    assert loaded.items[0].evidence.derived_conventional_commits[0]["message"] == "feat(api): add endpoint"
     assert loaded.feedback_events == [{"event": "suggestion_applied", "item_id": "ci_1"}]
 
 

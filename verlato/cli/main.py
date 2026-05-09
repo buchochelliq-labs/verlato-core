@@ -18,17 +18,18 @@ from urllib import request as urlrequest
 
 from verlato.config import ProviderConfig, VerlatoConfig, load_config
 from verlato.core.adapters import NullPullRequestAdapter, PullRequestAdapter, StandardGitAdapter
-from verlato.core.classifier import Classifier
 from verlato.core.change_summary import build_change_summary_payload, raw_patch_chars_available
+from verlato.core.classifier import Classifier
 from verlato.core.collector import Collector
 from verlato.core.commit_intent import (
-    infer_commit_intents,
+    commit_intent_payload,
+    conventional_commit_message,
+    derive_conventional_commits,
     is_low_signal_commit,
     normalize_commit_intent_mode,
 )
 from verlato.core.drafts import DraftDocument, DraftService
 from verlato.core.grouper import Grouper
-from verlato.core.models import ChangeGroup, ChangeItem, Commit, changed_files_for_group
 from verlato.core.model_privacy import (
     MODEL_PRIVACY_CHOICES,
     OMITTED_PATCH_EVIDENCE,
@@ -38,6 +39,7 @@ from verlato.core.model_privacy import (
     privacy_summary,
     resolve_model_privacy,
 )
+from verlato.core.models import ChangeGroup, ChangeItem, Commit, changed_files_for_group
 from verlato.core.reconciler import Reconciler
 from verlato.core.suggestion_tools import SuggestionEvidenceToolProvider
 from verlato.github.adapter import GitHubApiAdapter
@@ -261,6 +263,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("serve")
     sub.add_parser("service")
+
+    commit = sub.add_parser("commit")
+    commit_sub = commit.add_subparsers(dest="commit_command", required=True)
+    commit_conventional = commit_sub.add_parser("conventional")
+    commit_conventional.add_argument("--base", required=True)
+    commit_conventional.add_argument("--head", default="HEAD")
+    commit_conventional.add_argument("--sha", required=True)
+    commit_conventional.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Override the configured model provider.")
+    _add_model_privacy_args(commit_conventional)
 
     doctor = sub.add_parser("doctor")
     doctor_sub = doctor.add_subparsers(dest="doctor_command", required=True)
@@ -581,23 +592,23 @@ def _maybe_infer_commit_intents(
     if mode == "off":
         return
     eligible = [commit for commit in commits if is_low_signal_commit(commit)]
-    total = len(eligible)
+    total = len(commits)
     _trace_progress(
         "inferring_commit_intents",
-        "Inferring conventional commit intents",
-        detail=f"{total} eligible commit(s)",
+        "Deriving conventional commit intents from diffs",
+        detail=f"{total} commit(s), {len(eligible)} eligible for grouping inference",
         current=0,
         total=total,
         unit="commit",
     )
-    if not eligible:
+    if not commits:
         return
     max_model_items = _resolve_max_model_items(config.provider.max_items_per_scan)
     if max_model_items >= 0 and total > max_model_items:
         _trace_progress(
             "inferring_commit_intents",
             "Skipped commit intent inference",
-            detail=f"{total} eligible commit(s) exceeds fanout guard {max_model_items}",
+            detail=f"{total} commit(s) exceeds fanout guard {max_model_items}",
             current=0,
             total=total,
             unit="commit",
@@ -610,12 +621,18 @@ def _maybe_infer_commit_intents(
             if _can_send_raw_patches_for_config(config.provider, model_provider or config.provider.name, privacy_mode)
             else "metadata-only"
         )
-        inferred = infer_commit_intents(
-            eligible,
+        derived = derive_conventional_commits(
+            commits,
             provider,
             privacy_mode=dispatch_privacy_mode,
             provider_mode=model_provider or config.provider.name,
         )
+        inferred = 0
+        for commit in eligible:
+            if commit.derived_intent is None:
+                continue
+            commit.inferred_intent = commit.derived_intent
+            inferred += 1
     except Exception as exc:
         _trace_progress(
             "inferring_commit_intents",
@@ -628,8 +645,8 @@ def _maybe_infer_commit_intents(
         return
     _trace_progress(
         "inferring_commit_intents",
-        "Inferred conventional commit intents",
-        detail=f"{inferred}/{total} commit(s)",
+        "Derived conventional commit intents",
+        detail=f"{derived}/{total} derived; {inferred}/{len(eligible)} used for grouping inference",
         current=total,
         total=total,
         unit="commit",
@@ -4539,15 +4556,8 @@ def _build_full_diff_suggestion_payload_item(
             if group.pr
             else None
         ),
-        "commits": [
-            {
-                "sha": commit.sha,
-                "subject": commit.message.splitlines()[0],
-                "message": commit.message,
-                "author": commit.author,
-            }
-            for commit in group.commits
-        ],
+        "commit_boundaries": _commit_boundaries_payload(group.commits),
+        "commits": [_commit_payload_for_prompt(commit) for commit in group.commits],
         "files": file_payloads,
         "file_count": len(file_payloads),
         "patch_chars_available": patch_chars_available,
@@ -4563,6 +4573,41 @@ def _build_full_diff_suggestion_payload_item(
             "migration_changes": diff.migration_changes,
             "config_changes": diff.config_changes,
         },
+    }
+
+
+def _commit_payload_for_prompt(commit: Commit) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "sha": commit.sha,
+        "subject": commit.message.splitlines()[0] if commit.message else "",
+        "message": commit.message,
+        "author": commit.author,
+        "previous_sha": commit.parent_sha,
+        "initial_commit": commit.parent_sha is None,
+    }
+    if commit.inferred_intent:
+        payload["inferred_conventional"] = commit_intent_payload(commit.inferred_intent)
+    if commit.derived_intent:
+        payload["derived_conventional"] = commit_intent_payload(commit.derived_intent)
+    return payload
+
+
+def _commit_boundaries_payload(commits: list[Commit]) -> dict[str, object]:
+    if not commits:
+        return {"first": None, "last": None}
+    return {
+        "first": _commit_boundary_payload(commits[0]),
+        "last": _commit_boundary_payload(commits[-1]),
+    }
+
+
+def _commit_boundary_payload(commit: Commit) -> dict[str, object]:
+    return {
+        "sha": commit.sha,
+        "subject": commit.message.splitlines()[0] if commit.message else "",
+        "previous_sha": commit.parent_sha,
+        "initial_commit": commit.parent_sha is None,
+        "derived_conventional": conventional_commit_message(commit.derived_intent) if commit.derived_intent else None,
     }
 
 
@@ -5640,6 +5685,20 @@ def main(argv: list[str] | None = None) -> int:
         from verlato.service_stdio import run_service_stdio
 
         return run_service_stdio()
+
+    if args.command == "commit" and args.commit_command == "conventional":
+        from verlato.mcp.service import MCPService
+
+        result = MCPService().draft_conventional_commit(
+            base=args.base,
+            head=args.head,
+            sha=args.sha,
+            model_provider=args.model_provider,
+            model_privacy=_model_privacy_from_args(args),
+            allow_remote_patches=_allow_remote_patches_from_args(args),
+        )
+        print(json.dumps(result, indent=2))
+        return 0
 
     if args.command == "doctor" and args.doctor_command == "ollama":
         print(

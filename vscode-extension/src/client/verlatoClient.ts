@@ -13,6 +13,7 @@ import {
   CommandLogEntry,
   CommandRequestSnapshot,
   CommandRequestStatus,
+  ConventionalCommitDraft,
   DraftDocument,
   DraftItem,
   DraftPromptPreview,
@@ -206,6 +207,35 @@ export class VerlatoClient implements vscode.Disposable {
       ...draftSuggestionPreviewArgs(request, settings),
       "--all-visible",
     ]);
+  }
+
+  async draftConventionalCommit(request: DraftRangeRequest, sha: string): Promise<ConventionalCommitDraft> {
+    const settings = this.getModelSettings();
+    const params = {
+      base: request.base,
+      head: request.head ?? "HEAD",
+      sha,
+      model_provider: settings.provider === "configured" ? undefined : settings.provider,
+      model_privacy: settings.modelPrivacy,
+      allow_remote_patches: settings.allowRemotePatches,
+    };
+    const args = [
+      "commit",
+      "conventional",
+      "--base",
+      request.base,
+      "--head",
+      request.head ?? "HEAD",
+      "--sha",
+      sha,
+      ...privacyArgs(settings),
+    ];
+    return this.runServiceJson<ConventionalCommitDraft>(
+      "commit.conventional",
+      params,
+      "service commit.conventional",
+      () => this.runJsonCommand<ConventionalCommitDraft>(args),
+    );
   }
 
   async recordFeedback(event: string, itemId: string, metadata: Record<string, unknown> = {}): Promise<void> {

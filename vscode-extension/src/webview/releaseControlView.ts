@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { VerlatoClient } from "../client/verlatoClient";
 import {
   CommandRequestSnapshot,
+  ConventionalCommitDraft,
   DraftDocument,
   DraftRangeRequest,
   DraftSuggestionItem,
@@ -31,6 +32,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   private document: DraftDocument | undefined;
   private overview: RepositoryOverview | undefined;
   private suggestions: DraftSuggestionPreview | undefined;
+  private conventionalCommits: Record<string, ConventionalCommitDraft> = {};
   private ollamaDoctor: OllamaDoctorResult | undefined;
   private requests: CommandRequestSnapshot[] = [];
   private modelSettings: ModelSettings;
@@ -153,6 +155,9 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     }
     if (message.type === "suggest" && message.itemId) {
       await this.suggest(message.itemId);
+    }
+    if (message.type === "generateConventionalCommit" && message.sha) {
+      await this.generateConventionalCommit(message.sha);
     }
     if (message.type === "suggestAll") {
       await this.suggest();
@@ -455,6 +460,34 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     }, { errorActions: ["View Activity", "Change Model"] });
     if (successMessage) {
       await handleNotificationAction(await showSuccessNotification(successMessage, "Review Suggestions", "View Activity"));
+    }
+  }
+
+  private async generateConventionalCommit(sha: string): Promise<void> {
+    if (!this.hasSelectedBase()) {
+      this.statusMessage = "No base refs selected.";
+      this.render();
+      return;
+    }
+    if (!(await this.confirmTrustedPatchMode())) {
+      return;
+    }
+    let draft: ConventionalCommitDraft | undefined;
+    await this.runBusy(async () => {
+      draft = await this.client.draftConventionalCommit(this.range, sha);
+      this.conventionalCommits = {
+        ...this.conventionalCommits,
+        [draft.sha || sha]: draft,
+        [sha]: draft,
+      };
+      await vscode.env.clipboard.writeText(draft.message);
+      this.statusMessage = `Generated and copied conventional commit for ${(draft.sha || sha).slice(0, 7)}.`;
+      this.render();
+    }, { errorActions: ["View Activity", "Change Model"] });
+    if (draft) {
+      await handleNotificationAction(
+        await showSuccessNotification("Generated conventional commit.", "Open Verlato", "View Activity"),
+      );
     }
   }
 
@@ -833,6 +866,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       range: this.range,
       busy: this.busy,
       suggestions: this.suggestions,
+      conventionalCommits: this.conventionalCommits,
       ollamaDoctor: this.ollamaDoctor,
       mcpServerStatus: this.mcpServerStatus,
       requests: this.requests,
@@ -865,6 +899,7 @@ type ViewMessage = {
   itemId?: string;
   status?: "needs-review" | "ready" | "accepted" | "hidden";
   ref?: string;
+  sha?: string;
   slot?: "base" | "head";
   suggestionIndex?: number;
   requestId?: number;

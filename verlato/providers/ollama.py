@@ -61,7 +61,11 @@ class OllamaProvider(VerlatoProvider):
         self.log_sink = log_sink or default_model_log_sink()
 
     def summarize(self, request_data: ProviderRequest) -> ProviderResponse:
-        task = request_data.task if request_data.task in {"suggest", "infer-conventional"} else "summarize"
+        task = (
+            request_data.task
+            if request_data.task in {"suggest", "infer-conventional", "derive-conventional", "draft-conventional"}
+            else "summarize"
+        )
         return self._invoke(task=task, request_data=request_data)
 
     def classify(self, request_data: ProviderRequest) -> ProviderResponse:

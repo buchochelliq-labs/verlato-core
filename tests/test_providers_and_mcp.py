@@ -169,3 +169,23 @@ def test_mcp_service_info_includes_mcp_tools(monkeypatch, tmp_path):
     assert "verlato://overview" in info["mcp_resources"]
     assert "mcp_prompts" in info
     assert "verlato_review_request" in info["mcp_prompts"]
+
+
+def test_mcp_service_can_draft_conventional_commit(monkeypatch, tmp_path):
+    monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setenv("VERLATO_MODEL_PROVIDER", "mock")
+    monkeypatch.setattr(
+        "verlato.mcp.service.Collector.collect_commits",
+        lambda self, base, head: [
+            Commit(
+                sha="a1",
+                message="Refactor Verlato extension settings and suggestion handling",
+                files=[],
+            )
+        ],
+    )
+
+    draft = MCPService().draft_conventional_commit(base="v1.0.0", head="HEAD", sha="a1", model_provider="mock")
+
+    assert draft["header"].startswith("refactor(")
+    assert draft["sha"] == "a1"

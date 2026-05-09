@@ -54,6 +54,7 @@ export class PreviewPanel {
                       </div>
                       <div>PR: ${renderPullRequestLink(item.pr_number, document.repository_url)}</div>
                       <div>Commits: ${renderCommitLinks(item.commit_shas ?? [], document.repository_url)}</div>
+                      ${renderDerivedConventionalCommits(item)}
                       <div>${escapeHtml(`Signals: ${item.commit_signals.join(", ") || "none"}`)}</div>
                       <div class="files">Files: ${renderFileLinks(item.files, document.repository_url, item.commit_shas ?? [], item.head_ref)}</div>
                       <div>${escapeHtml(`Reviewer: ${item.reviewed_by || "unassigned"} | Reviewed: ${item.reviewed_at || "not yet"}`)}</div>
@@ -140,6 +141,25 @@ function renderCommitLinks(commitShas: string[], repositoryUrl?: string | null):
       return `<a href="${escapeHtml(`${repositoryUrl}/commit/${encodeURIComponent(sha)}`)}">${escapeHtml(label)}</a>`;
     })
     .join(", ");
+}
+
+function renderDerivedConventionalCommits(item: { derived_conventional_commits?: { sha: string; message?: string; type?: string; scope?: string | null; description?: string; breaking?: boolean }[] }): string {
+  const commits = item.derived_conventional_commits ?? [];
+  if (!commits.length) {
+    return "";
+  }
+  const rendered = commits.slice(0, 5).map((entry) => {
+    const message = entry.message ?? derivedCommitMessage(entry);
+    return `${entry.sha.slice(0, 7)} ${message}`;
+  });
+  const suffix = commits.length > rendered.length ? `, +${commits.length - rendered.length} more` : "";
+  return `<div>${escapeHtml(`Derived conventional commits: ${rendered.join("; ")}${suffix}`)}</div>`;
+}
+
+function derivedCommitMessage(entry: { type?: string; scope?: string | null; description?: string; breaking?: boolean }): string {
+  const scope = entry.scope ? `(${entry.scope})` : "";
+  const breaking = entry.breaking ? "!" : "";
+  return `${entry.type ?? "chore"}${scope}${breaking}: ${entry.description ?? "update commit diff"}`;
 }
 
 function renderFileLinks(files: string[], repositoryUrl: string | null | undefined, commitShas: string[], headRef: string): string {

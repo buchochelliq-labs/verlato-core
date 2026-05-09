@@ -4,9 +4,13 @@ import re
 from collections import Counter
 from typing import Any
 
-from verlato.core.commit_intent import commit_intent_payload, effective_conventional_commit
+from verlato.core.commit_intent import (
+    commit_intent_payload,
+    conventional_commit_message,
+    effective_conventional_commit,
+)
 from verlato.core.model_privacy import OMITTED_PATCH_EVIDENCE, estimate_token_count
-from verlato.core.models import ChangeGroup, ChangeItem, ChangedFile, DiffEvidence, changed_files_for_group
+from verlato.core.models import ChangedFile, ChangeGroup, ChangeItem, DiffEvidence, changed_files_for_group
 
 MAX_CHANGE_SUMMARY_COMMITS = 12
 MAX_CHANGE_SUMMARY_FILES = 80
@@ -47,6 +51,7 @@ def build_change_summary_payload(
         "current_summary": item.content.summary if item else "",
         "classification": item.classification.__dict__ if item else None,
         "pull_request": _pr_payload(group),
+        "commit_boundaries": _commit_boundaries(group.commits),
         "commits": commits,
         "commits_total": len(group.commits),
         "commits_omitted": max(len(group.commits) - len(commits), 0),
@@ -106,11 +111,14 @@ def raw_patch_chars_available(files: list[ChangedFile]) -> int:
 
 def _commit_payload(commit) -> dict[str, Any]:
     parsed, inferred_used = effective_conventional_commit(commit)
+    derived = commit_intent_payload(getattr(commit, "derived_intent", None))
     return {
         "sha": commit.sha,
         "subject": commit.message.splitlines()[0] if commit.message else "",
         "message": commit.message,
         "author": commit.author,
+        "previous_sha": getattr(commit, "parent_sha", None),
+        "initial_commit": getattr(commit, "parent_sha", None) is None,
         "authored_or_inferred_conventional": {
             "type": parsed.type,
             "scope": parsed.scope,
@@ -121,7 +129,28 @@ def _commit_payload(commit) -> dict[str, Any]:
         if parsed
         else None,
         "inferred_intent": commit_intent_payload(commit.inferred_intent),
+        "derived_conventional": derived,
         "files_total": len(commit.files),
+    }
+
+
+def _commit_boundaries(commits: list) -> dict[str, Any]:
+    if not commits:
+        return {"first": None, "last": None}
+    return {
+        "first": _commit_boundary_payload(commits[0]),
+        "last": _commit_boundary_payload(commits[-1]),
+    }
+
+
+def _commit_boundary_payload(commit) -> dict[str, Any]:
+    derived = getattr(commit, "derived_intent", None)
+    return {
+        "sha": commit.sha,
+        "subject": commit.message.splitlines()[0] if commit.message else "",
+        "previous_sha": getattr(commit, "parent_sha", None),
+        "initial_commit": getattr(commit, "parent_sha", None) is None,
+        "derived_conventional": conventional_commit_message(derived) if derived else None,
     }
 
 

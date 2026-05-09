@@ -133,6 +133,15 @@ def _dispatch(service: MCPService, method: str, params: dict[str, object]) -> ob
             query=_required_string(params, "query"),
             limit=_optional_int(params.get("limit"), 5),
         )
+    if method == "commit.conventional":
+        return service.draft_conventional_commit(
+            base=_required_string(params, "base"),
+            head=str(params.get("head") or "HEAD"),
+            sha=_required_string(params, "sha"),
+            model_provider=_optional_string(params.get("model_provider") or params.get("modelProvider")),
+            model_privacy=_optional_string(params.get("model_privacy") or params.get("modelPrivacy")),
+            allow_remote_patches=bool(params.get("allow_remote_patches") or params.get("allowRemotePatches")),
+        )
     raise ServiceProtocolError(f"Unknown service method: {method}")
 
 

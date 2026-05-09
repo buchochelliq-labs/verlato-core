@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from verlato.core.commit_intent import commit_intent_payload, effective_conventional_commit
+from verlato.core.commit_intent import commit_intent_payload, conventional_commit_message, effective_conventional_commit
 from verlato.core.diff_evidence import DiffEvidenceBuilder
 from verlato.core.models import ChangedFile, ChangeGroup, ChangeItem, changed_files_for_group
 from verlato.core.tooling import ToolDefinition, ToolProvider
@@ -147,6 +147,7 @@ class SuggestionEvidenceToolProvider(ToolProvider):
             **self._item_manifest(entry, include_files=True),
             "labels": list(entry.group.pr.labels if entry.group.pr else []),
             "pr": _pr_payload(entry.group),
+            "commit_boundaries": _commit_boundaries_payload(entry.group),
             "commits": _commit_payloads(entry.group),
             "diff_summary": _diff_summary_payload(entry.diff),
         }
@@ -281,9 +282,13 @@ def _commit_payloads(group: ChangeGroup) -> list[dict[str, Any]]:
             "subject": commit.message.splitlines()[0],
             "message": commit.message,
             "author": commit.author,
+            "previous_sha": commit.parent_sha,
+            "initial_commit": commit.parent_sha is None,
         }
         if commit.inferred_intent:
             payload["inferred_conventional"] = commit_intent_payload(commit.inferred_intent)
+        if commit.derived_intent:
+            payload["derived_conventional"] = commit_intent_payload(commit.derived_intent)
         if effective and used_inferred:
             payload["effective_conventional"] = {
                 "type": effective.type,
@@ -294,6 +299,25 @@ def _commit_payloads(group: ChangeGroup) -> list[dict[str, Any]]:
             }
         payloads.append(payload)
     return payloads
+
+
+def _commit_boundaries_payload(group: ChangeGroup) -> dict[str, Any]:
+    if not group.commits:
+        return {"first": None, "last": None}
+    return {
+        "first": _commit_boundary_payload(group.commits[0]),
+        "last": _commit_boundary_payload(group.commits[-1]),
+    }
+
+
+def _commit_boundary_payload(commit: Any) -> dict[str, Any]:
+    return {
+        "sha": commit.sha,
+        "subject": commit.message.splitlines()[0] if commit.message else "",
+        "previous_sha": commit.parent_sha,
+        "initial_commit": commit.parent_sha is None,
+        "derived_conventional": conventional_commit_message(commit.derived_intent) if commit.derived_intent else None,
+    }
 
 
 def _diff_summary_payload(diff: Any) -> dict[str, Any]:

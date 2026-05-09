@@ -23,6 +23,7 @@ export interface DraftItem {
   head_ref: string;
   files: string[];
   commit_signals: string[];
+  derived_conventional_commits?: DerivedConventionalCommit[];
   grouping_reason?: string;
   status: string;
   reviewed_by: string | null;
@@ -30,6 +31,44 @@ export interface DraftItem {
   edited_summary: string | null;
   summary_provenance?: SummaryProvenance | null;
   hidden: boolean;
+}
+
+export interface DerivedConventionalCommit {
+  sha: string;
+  previous_sha?: string | null;
+  initial_commit?: boolean;
+  authored_subject?: string;
+  message?: string;
+  type?: string;
+  scope?: string | null;
+  description?: string;
+  breaking?: boolean;
+  confidence?: number;
+  model?: string;
+  source?: string;
+  rationale?: string;
+}
+
+export interface ConventionalCommitDraft {
+  sha: string;
+  previous_sha?: string | null;
+  initial_commit?: boolean;
+  authored_subject?: string;
+  header: string;
+  message: string;
+  body: string[];
+  type: string;
+  scope?: string | null;
+  description: string;
+  breaking?: boolean;
+  confidence?: number;
+  model?: string;
+  source?: string;
+  rationale?: string;
+  privacy?: DraftAiPrivacy;
+  ai_request?: DraftAiRequestRecord;
+  provider_metadata?: Record<string, unknown>;
+  provider_reasoning?: string;
 }
 
 export interface DraftSection {

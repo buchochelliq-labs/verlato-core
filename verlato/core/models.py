@@ -27,8 +27,10 @@ class Commit:
     sha: str
     message: str
     author: str = ""
+    parent_sha: str | None = None
     files: list[ChangedFile] = field(default_factory=list)
     inferred_intent: CommitIntent | None = None
+    derived_intent: CommitIntent | None = None
 
 
 @dataclass
@@ -77,6 +79,7 @@ class Evidence:
     files: list[str] = field(default_factory=list)
     commit_signals: list[str] = field(default_factory=list)
     diff_summary: dict[str, Any] = field(default_factory=dict)
+    derived_conventional_commits: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

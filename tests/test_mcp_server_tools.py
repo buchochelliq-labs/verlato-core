@@ -114,6 +114,9 @@ class _FakeService:
     def search_item_diff(self, *, base: str, item_id: str, query: str, head: str = "HEAD", limit: int = 5):
         return {"item_id": item_id, "query": query, "limit": limit}
 
+    def draft_conventional_commit(self, **kwargs):
+        return {"sha": kwargs["sha"], "header": "refactor(vscode): update settings"}
+
 
 def test_mcp_tool_metadata_lists_agent_facing_tools():
     names = [tool["name"] for tool in list_tool_metadata()]
@@ -132,6 +135,7 @@ def test_mcp_tool_metadata_lists_agent_facing_tools():
         "verlato_get_suggestion_item",
         "verlato_get_file_patch",
         "verlato_search_item_diff",
+        "verlato_draft_conventional_commit",
     ]
 
 
@@ -164,6 +168,7 @@ def test_create_fastmcp_server_registers_verlato_tools():
         "verlato_get_suggestion_item",
         "verlato_get_file_patch",
         "verlato_search_item_diff",
+        "verlato_draft_conventional_commit",
     }
     assert "verlato://overview" in server.resources
     assert "verlato://guidance/{name}" in server.resources
@@ -177,6 +182,7 @@ def test_create_fastmcp_server_registers_verlato_tools():
     assert server.registered["verlato_preview_release_notes"](base="v1.0.0") == "preview:v1.0.0->HEAD"
     assert server.registered["verlato_apply_draft"](base="v1.0.0", target="changelog")["target"] == "changelog"
     assert server.registered["verlato_get_file_patch"](base="v1.0.0", item_id="ci_1", path="src/a.py")["path"] == "src/a.py"
+    assert server.registered["verlato_draft_conventional_commit"](base="v1.0.0", sha="a1")["sha"] == "a1"
 
 
 def test_run_mcp_stdio_uses_stdio_transport():

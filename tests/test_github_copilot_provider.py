@@ -106,6 +106,33 @@ def test_github_copilot_provider_sends_github_models_headers(monkeypatch):
     assert headers["X-github-api-version"] == GITHUB_MODELS_API_VERSION
 
 
+def test_github_copilot_provider_preserves_draft_conventional_task(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        @staticmethod
+        def read():
+            return json.dumps({"choices": [{"message": {"content": "{}"}}]}).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr("verlato.providers.github_copilot.request.urlopen", fake_urlopen)
+
+    provider = GitHubCopilotProvider(token="token")
+    provider.summarize(ProviderRequest(task="draft-conventional", prompt="Draft it"))
+
+    system = captured["body"]["messages"][0]["content"]
+    assert "Infer or draft a conventional commit" in system
+
+
 def test_github_copilot_provider_reports_auth_http_errors(monkeypatch):
     def fake_urlopen(req, timeout):
         raise error.HTTPError(

@@ -154,6 +154,18 @@ function makeClient(overrides = {}) {
         items: [],
       });
     },
+    draftConventionalCommit(_range, sha) {
+      return Promise.resolve({
+        sha,
+        header: "refactor(vscode): revise suggestion strategy settings",
+        message: "refactor(vscode): revise suggestion strategy settings\n\n- Updated suggestion strategy settings.",
+        body: ["Updated suggestion strategy settings."],
+        type: "refactor",
+        scope: "vscode",
+        description: "revise suggestion strategy settings",
+        confidence: 0.88,
+      });
+    },
     recordFeedback() {
       return Promise.resolve(undefined);
     },
@@ -335,6 +347,72 @@ test("applying a model suggestion records model provenance", async () => {
   assert.equal(reviewUpdate.summaryProvenance.similarity_to_current, 0.25);
   assert.equal(reviewUpdate.summaryProvenance.specificity_score, 0.7);
   assert.equal(reviewUpdate.summaryProvenance.source_evidence_count, 0);
+});
+
+test("generating a conventional commit stores it in the control view and copies it", async () => {
+  let requestedSha;
+  let copied = "";
+  const vscodeMock = makeVscodeMock({
+    env: {
+      clipboard: {
+        writeText(value) {
+          copied = value;
+          return Promise.resolve(undefined);
+        },
+      },
+    },
+  });
+  const { ReleaseControlViewProvider } = loadControlViewWithVscodeMock(vscodeMock);
+  const client = makeClient({
+    draftConventionalCommit(_range, sha) {
+      requestedSha = sha;
+      return Promise.resolve({
+        sha,
+        header: "refactor(vscode): revise suggestion strategy settings",
+        message: "refactor(vscode): revise suggestion strategy settings\n\n- Updated suggestion strategy settings.",
+        body: ["Updated suggestion strategy settings."],
+        type: "refactor",
+        scope: "vscode",
+        description: "revise suggestion strategy settings",
+        confidence: 0.88,
+      });
+    },
+  });
+  const { provider, htmlSnapshots } = makeProvider(ReleaseControlViewProvider, client);
+  provider.refresh({
+    ...draftDocument(1),
+    sections: [{
+      kind: "changed",
+      title: "Changed",
+      items: [{
+        id: "ci_1",
+        title: "Refactor settings",
+        summary: "A concise release note",
+        kind: "changed",
+        area: "backend",
+        audience: "external",
+        semver: "patch",
+        confidence: 0.82,
+        pr_number: null,
+        commit_shas: ["abc123456789"],
+        base_ref: "v1.0.0",
+        head_ref: "HEAD",
+        files: [],
+        commit_signals: [],
+        status: "needs-review",
+        reviewed_by: null,
+        reviewed_at: null,
+        edited_summary: null,
+        hidden: false,
+      }],
+    }],
+  });
+
+  await provider.handleMessage({ type: "generateConventionalCommit", sha: "abc123456789" });
+
+  assert.equal(requestedSha, "abc123456789");
+  assert.match(copied, /refactor\(vscode\): revise suggestion strategy settings/);
+  assert.match(htmlSnapshots.at(-1), /refactor\(vscode\): revise suggestion strategy settings/);
 });
 
 test("suggestion feedback includes model source metadata", async () => {

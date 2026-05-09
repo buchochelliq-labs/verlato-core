@@ -39,6 +39,7 @@ class DraftItem:
     head_ref: str
     files: list[str]
     commit_signals: list[str]
+    derived_conventional_commits: list[dict]
     grouping_reason: str
     status: str
     reviewed_by: str | None
@@ -183,6 +184,7 @@ class DraftService:
                     head_ref=item.source.head_ref,
                     files=item.evidence.files,
                     commit_signals=item.evidence.commit_signals,
+                    derived_conventional_commits=item.evidence.derived_conventional_commits,
                     grouping_reason=str(item.evidence.diff_summary.get("grouping_reason") or ""),
                     status="hidden" if item.hidden else item.status,
                     reviewed_by=item.reviewed_by,

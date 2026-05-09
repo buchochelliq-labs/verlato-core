@@ -13,12 +13,13 @@ class Collector:
         self.pr_adapter = pr_adapter
 
     def collect_commits(self, base: str, head: str) -> list[Commit]:
-        cmd = ["git", "log", "--first-parent", "--pretty=format:%H%x09%s%x09%an", f"{base}..{head}"]
+        cmd = ["git", "log", "--first-parent", "--pretty=format:%H%x09%P%x09%s%x09%an", f"{base}..{head}"]
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
         commits: list[Commit] = []
         for line in result.stdout.splitlines():
-            sha, message, author = (line.split("\t", 2) + [""])[:3]
-            commits.append(Commit(sha=sha, message=message, author=author))
+            sha, parents, message, author = (line.split("\t", 3) + ["", "", ""])[:4]
+            parent_sha = parents.split()[0] if parents.strip() else None
+            commits.append(Commit(sha=sha, message=message, author=author, parent_sha=parent_sha))
         patch_by_commit = self.changed_files_for_commits([commit.sha for commit in commits])
         for commit in commits:
             commit.files = patch_by_commit.get(commit.sha, [])

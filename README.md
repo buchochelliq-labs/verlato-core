@@ -90,6 +90,7 @@ verlato draft prompt --base <ref> --head <ref> --id <item-id>
 verlato draft json --base <ref> --head <ref> --version v1.2.0
 verlato draft apply --base <ref> --head <ref> --target changelog --version v1.2.0
 verlato draft review --base <ref> --id <item-id> --status ready --reviewer alice
+verlato commit conventional --base <ref> --head <ref> --sha <sha>
 verlato service
 verlato serve
 verlato-mcp
@@ -109,6 +110,7 @@ verlato state mark-published --version v1.2.0 --all-unpublished
 - `draft prompt`: builds the exact summary prompt for one draft item without sending it to any model.
 - `draft apply`: updates a configured or explicit release-note target file.
 - `draft review`: persists review metadata such as status, hidden state, reviewer, and edited summary for a draft item.
+- `commit conventional`: drafts a full Conventional Commits message for one commit in the selected range, including a header and body bullets.
 - `serve`: starts the FastMCP stdio server.
 - `verlato-mcp`: packaged console entrypoint for the same MCP stdio server, intended for MCP client configuration.
 - `reconcile`: explicitly lists unpublished deltas for a ref range (no state mutation).
@@ -192,7 +194,7 @@ When a provider is enabled, Verlato sends compact file-diff evidence, representa
 
 Custom model plugins are intentionally transport-only. A plugin manifest exposes `id`, `display_name`, `command`, `config_schema`, and `capabilities`; config uses JSON Schema so editor integrations can render generic settings, and secrets should be referenced through environment variables. Verlato runs third-party plugins as external commands with JSON on stdin/stdout, diagnostics on stderr, a timeout, a minimal environment, and no repo cwd by default. Before a plugin call Verlato computes `request_hash`, `prompt_hash`, `evidence_hash`, and `schema_hash`; the plugin must echo `request_hash` or the response fails. These hashes catch accidental drift and basic tampering, but a malicious plugin that receives the prompt can still lie. Use built-in providers or LiteLLM/proxy paths when Verlato must control the whole request path.
 
-You can also override the provider for one CLI run with `--model-provider mock`, `--model-provider ollama`, `--model-provider litellm`, `--model-provider plugin`, `--model-provider github-copilot`, `--model-provider codex-cli`, or `--model-provider claude-code` on `scan`, `generate`, `reconcile`, and `draft` commands. The VS Code extension exposes the same override through the `verlato.modelProvider` setting; leave it as `configured` to honor `verlato.json` or environment variables. The `draft suggest` command defaults to `ollama` when no provider is configured because suggestions must be model-backed.
+You can also override the provider for one CLI run with `--model-provider mock`, `--model-provider ollama`, `--model-provider litellm`, `--model-provider plugin`, `--model-provider github-copilot`, `--model-provider codex-cli`, or `--model-provider claude-code` on `scan`, `generate`, `reconcile`, `draft`, and `commit conventional` commands. The VS Code extension exposes the same override through the `verlato.modelProvider` setting; leave it as `configured` to honor `verlato.json` or environment variables. The `draft suggest` command defaults to `ollama` when no provider is configured because suggestions must be model-backed.
 
 Commit intent inference is opt-in. Set `commit_intent_inference` to `low-signal`, export `VERLATO_COMMIT_INTENT_INFERENCE=low-signal`, pass `--infer-commit-intents`, or enable `verlato.commitIntentInference` in VS Code to infer conventional metadata before grouping. Pass `--no-infer-commit-intents` to force it off for a command. Authored scoped conventional commits always win over inferred metadata, and inference is skipped when eligible commits exceed the configured fanout guard.
 
@@ -231,6 +233,7 @@ Editor integration:
 
 - The bundled VS Code extension uses `verlato service`, a built-in JSON-lines stdio service, for core draft/review/state/feedback flows when `verlato.serviceMode` is `auto` (the default). If the service cannot start, the extension falls back to one-off CLI commands and shows a degraded status.
 - Model-heavy flows such as `draft suggest`, Ollama doctor/warmup, and realtime model telemetry still use direct CLI commands in this first service pass.
+- The release control view exposes a `Generate commit` action beside each changeset commit. It calls the backend commit drafting contract and copies the generated Conventional Commits message to the clipboard.
 - The repo includes [.vscode/mcp.json](.vscode/mcp.json) so VS Code/Copilot can attach to the FastMCP server from the workspace.
 - The MCP server exposes these tool names:
   - `verlato_service_health`
@@ -246,6 +249,7 @@ Editor integration:
   - `verlato_get_suggestion_item`
   - `verlato_get_file_patch`
   - `verlato_search_item_diff`
+  - `verlato_draft_conventional_commit`
 - The MCP server also exposes read-only resources:
   - `verlato://overview`
   - `verlato://guidance/{name}`

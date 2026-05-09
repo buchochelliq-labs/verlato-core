@@ -42,9 +42,9 @@ def default_system_prompt(task: str) -> str:
             "You are Verlato. Write a useful release note with enough context for downstream consumers. "
             "Use paragraphs or bullet points when they make the change clearer, but stay focused and avoid padding."
         )
-    if task == "infer-conventional":
+    if task in {"infer-conventional", "derive-conventional", "draft-conventional"}:
         return (
-            "You are Verlato. Infer a conventional commit from commit evidence. "
+            "You are Verlato. Infer or draft a conventional commit from the supplied evidence. "
             "Return only strict JSON matching the requested schema."
         )
     return "You are Verlato. Return one line: kind/area/audience/semver."
