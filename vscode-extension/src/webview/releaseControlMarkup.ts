@@ -5,6 +5,7 @@ import type {
   DraftRangeRequest,
   DraftSuggestionItem,
   DraftSuggestionPreview,
+  McpServerStatus,
   ModelSettings,
   OllamaDoctorResult,
   RepositoryCommit,
@@ -20,6 +21,7 @@ export interface ReleaseControlRenderState {
   busy: boolean;
   suggestions?: DraftSuggestionPreview;
   ollamaDoctor?: OllamaDoctorResult;
+  mcpServerStatus?: McpServerStatus;
   requests?: CommandRequestSnapshot[];
   statusMessage?: string;
   errorMessage?: string;
@@ -221,6 +223,7 @@ export function buildReleaseControlHtml(state: ReleaseControlRenderState, assets
       if (action === 'changeModel') vscode.postMessage({ type: 'changeModel' });
       if (action === 'diagnoseOllama') vscode.postMessage({ type: 'diagnoseOllama' });
       if (action === 'warmupOllama') vscode.postMessage({ type: 'warmupOllama' });
+      if (action === 'startMcpServer') vscode.postMessage({ type: 'startMcpServer' });
       if (action === 'setTone') vscode.postMessage({ type: 'setTone', tone: button.dataset.tone });
       if (action === 'togglePromptPayloads') vscode.postMessage({ type: 'togglePromptPayloads' });
       if (action === 'toggleReasoningPayloads') vscode.postMessage({ type: 'toggleReasoningPayloads' });
@@ -1117,8 +1120,29 @@ function renderModelPanel(state: ReleaseControlRenderState): string {
       <span>Warm model</span>
       <small>Run</small>
     </button>
+    ${renderMcpServerControl(state.mcpServerStatus)}
     ${renderOllamaDoctor(state.ollamaDoctor)}
   </details>`;
+}
+
+function renderMcpServerControl(status: McpServerStatus | undefined): string {
+  const effective = status ?? {
+    state: "not-running",
+    label: "Not running",
+    detail: "No Verlato MCP server has been started from this window.",
+    command: "verlato serve",
+    configPath: ".vscode/mcp.json",
+  };
+  const actionLabel = effective.state === "running" || effective.state === "starting" ? "Show" : "Start";
+  const command = effective.command ? `<small>${escapeHtml(effective.command)}</small>` : "";
+  return `<div class="mcp-status ${escapeHtml(effective.state)}" title="${escapeHtml(effective.detail)}">
+      <div><strong>MCP server</strong><span>${escapeHtml(effective.label)}</span></div>
+      ${command}
+      <button class="telemetry-toggle mcp-action" data-action="startMcpServer">
+        <span>${effective.state === "running" ? "Server terminal" : "Server"}</span>
+        <small>${actionLabel}</small>
+      </button>
+    </div>`;
 }
 
 function modelBadgeLabel(settings: ModelSettings): string {
@@ -1155,6 +1179,7 @@ function modelDetail(settings: ModelSettings): string {
     `Parallelism: ${settings.suggestionParallelism}`,
     `Batch size: ${settings.suggestionBatchSize}`,
     `Strategy: ${settings.suggestionStrategy}`,
+    `Commit intent inference: ${settings.commitIntentInference ? "on" : "off"}`,
     `Auto-warm cache: ${settings.suggestionAutoWarmCache ? "on" : "off"}`,
     `Prompt profile: ${settings.suggestionPromptProfile}`,
     `Adaptive advice: ${settings.suggestionAdaptiveRecommendations ? "on" : "off"}`,
@@ -2898,6 +2923,36 @@ function styles(): string {
     body[data-filter="unreleased"] .sources-panel { opacity: .72; }
     .model, .telemetry-toggle { width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 4px 6px; text-align: left; }
     .telemetry-toggle { margin-top: 4px; }
+    .mcp-status {
+      margin-top: 5px;
+      padding: 5px 6px;
+      border-left: 2px solid var(--vscode-descriptionForeground);
+      background: color-mix(in srgb, var(--vscode-input-background, #1f1f1f) 62%, transparent);
+    }
+    .mcp-status.running { border-left-color: var(--verlato-green); }
+    .mcp-status.starting { border-left-color: var(--vscode-progressBar-background, #0e70c0); }
+    .mcp-status.not-running { border-left-color: var(--verlato-red); }
+    .mcp-status > div:first-child {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: baseline;
+    }
+    .mcp-status strong {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--vscode-foreground);
+    }
+    .mcp-status span {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+    }
+    .mcp-status small {
+      display: block;
+      margin-top: 2px;
+      overflow-wrap: anywhere;
+    }
+    .mcp-action { margin-top: 5px; }
     .tone-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; margin-top: 5px; }
     .tone-row button { min-height: 22px; padding: 3px 4px; font-size: 10px; overflow-wrap: anywhere; }
     .tone-row .selected { outline: 1px solid var(--vscode-focusBorder, #3794ff); background: color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 22%, var(--vscode-button-secondaryBackground, #2a2d2e)); }

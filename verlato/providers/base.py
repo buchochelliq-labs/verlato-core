@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 import hashlib
 import json
-from typing import Any
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Any, Callable
 
 
 @dataclass
@@ -14,6 +14,9 @@ class ProviderRequest:
     evidence: dict[str, Any] = field(default_factory=dict)
     response_format: str | dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    tools: list[dict[str, Any]] = field(default_factory=list)
+    tool_executor: Callable[[str, dict[str, Any]], Any] | None = None
+    max_tool_rounds: int = 0
 
 
 @dataclass
@@ -38,6 +41,11 @@ def default_system_prompt(task: str) -> str:
         return (
             "You are Verlato. Write a useful release note with enough context for downstream consumers. "
             "Use paragraphs or bullet points when they make the change clearer, but stay focused and avoid padding."
+        )
+    if task == "infer-conventional":
+        return (
+            "You are Verlato. Infer a conventional commit from commit evidence. "
+            "Return only strict JSON matching the requested schema."
         )
     return "You are Verlato. Return one line: kind/area/audience/semver."
 

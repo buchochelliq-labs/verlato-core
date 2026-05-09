@@ -38,7 +38,8 @@ class CodexCliProvider(VerlatoProvider):
         self.log_sink = log_sink or default_model_log_sink()
 
     def summarize(self, request: ProviderRequest) -> ProviderResponse:
-        return self._invoke(task="summarize", request_data=request)
+        task = "infer-conventional" if request.task == "infer-conventional" else "summarize"
+        return self._invoke(task=task, request_data=request)
 
     def classify(self, request: ProviderRequest) -> ProviderResponse:
         return self._invoke(task="classify", request_data=request)
@@ -155,7 +156,8 @@ class ClaudeCodeProvider(VerlatoProvider):
         self.log_sink = log_sink or default_model_log_sink()
 
     def summarize(self, request: ProviderRequest) -> ProviderResponse:
-        return self._invoke(task="summarize", request_data=request)
+        task = "infer-conventional" if request.task == "infer-conventional" else "summarize"
+        return self._invoke(task=task, request_data=request)
 
     def classify(self, request: ProviderRequest) -> ProviderResponse:
         return self._invoke(task="classify", request_data=request)

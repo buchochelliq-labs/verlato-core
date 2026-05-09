@@ -169,7 +169,8 @@ export interface ModelSettings {
   suggestionCount: number;
   suggestionParallelism: number;
   suggestionBatchSize: number;
-  suggestionStrategy: "auto" | "single" | "paired" | "full-diff-json" | string;
+  suggestionStrategy: "auto" | "single" | "paired" | "full-diff-json" | "tool-retrieval" | string;
+  commitIntentInference: boolean;
   suggestionAutoWarmCache: boolean;
   suggestionPromptProfile: "conservative" | "lean" | "minimal" | string;
   suggestionAdaptiveRecommendations: boolean;
@@ -184,6 +185,17 @@ export interface ModelSettings {
   redactPayloads: boolean;
   debugModelLogPath: string;
   ollamaStreamResponses: boolean;
+}
+
+export type McpServerState = "not-running" | "starting" | "running" | "unknown";
+
+export interface McpServerStatus {
+  state: McpServerState;
+  label: string;
+  detail: string;
+  command?: string;
+  configPath?: string;
+  startedAt?: string;
 }
 
 export interface DraftSuggestionItem {

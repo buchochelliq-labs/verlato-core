@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import * as fs from "node:fs";
 
-import { ExecutableResolution, resolveVerlatoExecutable } from "./cliResolution";
+import { ExecutableResolution, resolveSpawnCommand, resolveVerlatoExecutable } from "./cliResolution";
 import { resolveCommandModelProvider, shouldAttachGithubToken } from "./modelEnvironment";
 import { VerlatoServiceClient } from "./verlatoServiceClient";
 import {
@@ -300,6 +300,7 @@ export class VerlatoClient implements vscode.Disposable {
       suggestionParallelism: config.get<number>("suggestionParallelism") ?? 2,
       suggestionBatchSize: config.get<number>("suggestionBatchSize") ?? 5,
       suggestionStrategy: config.get<string>("suggestionStrategy") || "auto",
+      commitIntentInference: config.get<boolean>("commitIntentInference") ?? false,
       suggestionAutoWarmCache: config.get<boolean>("suggestionAutoWarmCache") ?? false,
       suggestionPromptProfile: config.get<string>("suggestionPromptProfile") || "conservative",
       suggestionAdaptiveRecommendations: config.get<boolean>("suggestionAdaptiveRecommendations") ?? false,
@@ -352,6 +353,9 @@ export class VerlatoClient implements vscode.Disposable {
     }
     if (settings.suggestionStrategy !== undefined) {
       await config.update("suggestionStrategy", settings.suggestionStrategy, vscode.ConfigurationTarget.Workspace);
+    }
+    if (settings.commitIntentInference !== undefined) {
+      await config.update("commitIntentInference", settings.commitIntentInference, vscode.ConfigurationTarget.Workspace);
     }
     if (settings.suggestionAutoWarmCache !== undefined) {
       await config.update("suggestionAutoWarmCache", settings.suggestionAutoWarmCache, vscode.ConfigurationTarget.Workspace);
@@ -751,7 +755,8 @@ export class VerlatoClient implements vscode.Disposable {
       let settled = false;
       let stdout = "";
       let stderr = "";
-      const child = spawn(options.command, options.args, {
+      const spawnSpec = resolveSpawnCommand(options.command, options.args);
+      const child = spawn(spawnSpec.command, spawnSpec.args, {
         cwd: options.cwd,
         env: options.env,
         windowsHide: true,
@@ -950,6 +955,7 @@ export class VerlatoClient implements vscode.Disposable {
     env.VERLATO_SUGGESTION_PARALLELISM = String(settings.suggestionParallelism);
     env.VERLATO_SUGGESTION_BATCH_SIZE = String(settings.suggestionBatchSize);
     env.VERLATO_SUGGESTION_STRATEGY = settings.suggestionStrategy;
+    env.VERLATO_COMMIT_INTENT_INFERENCE = settings.commitIntentInference ? "low-signal" : "off";
     env.VERLATO_SUGGESTION_PROMPT_PROFILE = settings.suggestionPromptProfile;
     env.VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS = settings.suggestionAdaptiveRecommendations ? "1" : "0";
     env.VERLATO_SUGGESTION_TONE = settings.suggestionTone;
@@ -1188,7 +1194,8 @@ function formatModelSettings(settings: ModelSettings): string {
   const timeout = settings.provider === "ollama" ? `; timeout: ${settings.ollamaTimeoutSeconds}s` : "";
   const warm = settings.provider === "ollama" ? `; cache warm: ${settings.suggestionAutoWarmCache ? "on" : "off"}` : "";
   const adaptive = settings.suggestionAdaptiveRecommendations ? "; adaptive advice on" : "";
-  return `${settings.provider}${model}${suggestionModel}; ${service}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; parallelism: ${settings.suggestionParallelism}; batch size: ${settings.suggestionBatchSize}; strategy: ${settings.suggestionStrategy}; prompt profile: ${settings.suggestionPromptProfile}; tone: ${settings.suggestionTone}${warm}${adaptive}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
+  const commitIntent = settings.commitIntentInference ? "; commit intents on" : "";
+  return `${settings.provider}${model}${suggestionModel}; ${service}; fanout guard: ${settings.maxModelItems}; suggestions: ${settings.suggestionCount}; parallelism: ${settings.suggestionParallelism}; batch size: ${settings.suggestionBatchSize}; strategy: ${settings.suggestionStrategy}; prompt profile: ${settings.suggestionPromptProfile}; tone: ${settings.suggestionTone}${commitIntent}${warm}${adaptive}${style}${timeout}${payloads}${reasoning}${redaction}${debugLog}${streaming}`;
 }
 
 function suggestModelArgs(settings: ModelSettings): string[] {

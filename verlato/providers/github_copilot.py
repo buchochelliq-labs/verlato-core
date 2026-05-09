@@ -6,7 +6,7 @@ import subprocess
 from http import HTTPStatus
 from urllib import error, request
 
-from verlato.providers.base import ProviderRequest, ProviderResponse, VerlatoProvider
+from verlato.providers.base import ProviderRequest, ProviderResponse, VerlatoProvider, default_system_prompt
 from verlato.providers.model_logging import ModelLogSink, default_model_log_sink, model_log_record
 
 DEFAULT_GITHUB_MODELS_ENDPOINT = "https://models.github.ai/inference/chat/completions"
@@ -38,7 +38,8 @@ class GitHubCopilotProvider(VerlatoProvider):
         self.log_sink = log_sink or default_model_log_sink()
 
     def summarize(self, request_data: ProviderRequest) -> ProviderResponse:
-        return self._invoke(task="summarize", request_data=request_data)
+        task = request_data.task if request_data.task == "infer-conventional" else "summarize"
+        return self._invoke(task=task, request_data=request_data)
 
     def classify(self, request_data: ProviderRequest) -> ProviderResponse:
         return self._invoke(task="classify", request_data=request_data)
@@ -52,12 +53,7 @@ class GitHubCopilotProvider(VerlatoProvider):
                 model=f"github-copilot:{self.model}",
             )
 
-        system_prompt = (
-            "You are Verlato. Write a useful release note with enough context for downstream consumers. "
-            "Use paragraphs or bullet points when they make the change clearer, but stay focused and avoid padding."
-            if task == "summarize"
-            else "You are Verlato. Return one line: kind/area/audience/semver."
-        )
+        system_prompt = default_system_prompt(task)
         body: dict[str, object] = {
             "model": self.model,
             "temperature": 0.1,

@@ -19,9 +19,9 @@ def parse_conventional_commit(message: str) -> ConventionalCommit | None:
     match = PATTERN.match(first)
     if not match:
         return None
-    breaking_text = "BREAKING CHANGE" in message
+    breaking_text = re.search(r"BREAKING[- ]CHANGE", message, flags=re.IGNORECASE) is not None
     return ConventionalCommit(
-        type=match.group("type"),
+        type=match.group("type").lower(),
         scope=match.group("scope"),
         description=match.group("description"),
         breaking=bool(match.group("breaking")) or breaking_text,

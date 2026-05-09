@@ -2,11 +2,8 @@
   "servers": {
     "verlato": {
       "type": "stdio",
-      "command": "fastmcp",
-      "args": [
-        "run",
-        "${workspaceFolder}/scripts/verlato_mcp_server.py:mcp"
-      ],
+      "command": "verlato-mcp",
+      "args": [],
       "env": {
         "PYTHONIOENCODING": "utf-8"
       }

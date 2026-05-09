@@ -11,11 +11,24 @@ def default_review_status(confidence: float) -> str:
 
 
 @dataclass
+class CommitIntent:
+    type: str
+    scope: str | None
+    description: str
+    breaking: bool = False
+    confidence: float = 0.0
+    model: str = ""
+    source: str = "model-inferred"
+    rationale: str = ""
+
+
+@dataclass
 class Commit:
     sha: str
     message: str
     author: str = ""
     files: list[ChangedFile] = field(default_factory=list)
+    inferred_intent: CommitIntent | None = None
 
 
 @dataclass
@@ -136,3 +149,34 @@ class ChangeGroup:
     commits: list[Commit]
     files: list[ChangedFile] = field(default_factory=list)
     grouping_reason: str = ""
+
+
+def changed_files_for_group(group: ChangeGroup) -> list[ChangedFile]:
+    if group.pr is None:
+        return [ChangedFile(path=f.path, status=f.status, patch=f.patch) for f in group.files]
+    return merge_changed_files(group.pr.files, group.files)
+
+
+def merge_changed_files(primary: list[ChangedFile], fallback: list[ChangedFile]) -> list[ChangedFile]:
+    if not primary:
+        return [ChangedFile(path=f.path, status=f.status, patch=f.patch) for f in fallback]
+
+    fallback_by_path = {file.path: file for file in fallback}
+    merged: list[ChangedFile] = []
+    seen_paths: set[str] = set()
+    for file in primary:
+        fallback_file = fallback_by_path.get(file.path)
+        merged.append(
+            ChangedFile(
+                path=file.path,
+                status=file.status or (fallback_file.status if fallback_file else "modified"),
+                patch=file.patch or (fallback_file.patch if fallback_file else ""),
+            )
+        )
+        seen_paths.add(file.path)
+
+    for file in fallback:
+        if file.path not in seen_paths:
+            merged.append(ChangedFile(path=file.path, status=file.status, patch=file.patch))
+
+    return merged

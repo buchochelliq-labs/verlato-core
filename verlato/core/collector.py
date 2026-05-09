@@ -36,7 +36,7 @@ class Collector:
         return self.pr_adapter.map_commits_to_prs(commits)
 
     def changed_files_for_commit(self, commit_sha: str) -> list[ChangedFile]:
-        cmd = ["git", "show", "--first-parent", "--format=", "--find-renames", "--name-status", "--patch", commit_sha]
+        cmd = ["git", "show", "--first-parent", "--format=", "--find-renames", "--patch-with-raw", commit_sha]
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
         return parse_git_show_changed_files(result.stdout)
 
@@ -49,8 +49,7 @@ class Collector:
             "--first-parent",
             f"--format={_COMMIT_PATCH_MARKER}%H",
             "--find-renames",
-            "--name-status",
-            "--patch",
+            "--patch-with-raw",
             *commit_shas,
         ]
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)

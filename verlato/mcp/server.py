@@ -64,6 +64,22 @@ _TOOL_METADATA: tuple[MCPToolMetadata, ...] = (
         name="verlato_reconcile_preview",
         description="Return a lightweight unpublished-change preview for a git ref range.",
     ),
+    MCPToolMetadata(
+        name="verlato_list_suggestion_items",
+        description="List compact suggestion items and file manifests for a git ref range.",
+    ),
+    MCPToolMetadata(
+        name="verlato_get_suggestion_item",
+        description="Return commits, PR metadata, file manifest, and diff summary for one suggestion item.",
+    ),
+    MCPToolMetadata(
+        name="verlato_get_file_patch",
+        description="Return a bounded patch chunk for one file in one suggestion item.",
+    ),
+    MCPToolMetadata(
+        name="verlato_search_item_diff",
+        description="Search patch text for one suggestion item and return compact snippets.",
+    ),
 )
 
 _RESOURCE_METADATA: tuple[MCPResourceMetadata, ...] = (
@@ -131,6 +147,10 @@ OptionalModelProvider = Annotated[
     Literal["stub", "mock", "ollama", "litellm", "plugin", "github-copilot", "codex-cli", "claude-code"] | None,
     "Optional model provider override for LLM-assisted summaries and classifications.",
 ]
+PatchOffset = Annotated[int, "Character offset into the requested patch."]
+PatchLimit = Annotated[int, "Maximum patch characters to return."]
+SearchQuery = Annotated[str, "Case-insensitive query to search inside patch text."]
+SearchLimit = Annotated[int, "Maximum number of patch search snippets to return."]
 GuidanceName = Annotated[
     Literal["readme", "agent", "architecture", "copilot", "skill"],
     "Workspace guidance document to read.",
@@ -435,6 +455,90 @@ def _register_server_components(server, svc: MCPService) -> None:
 
         return svc.reconcile_preview(base=base, head=head)
 
+    @server.tool(
+        annotations={
+            "title": "List Suggestion Items",
+            "readOnlyHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+        tags={"verlato", "suggestions", "diff"},
+        version=__version__,
+    )
+    def verlato_list_suggestion_items(
+        base: GitRef,
+        head: GitRef = "HEAD",
+        include_files: Annotated[bool, "Include changed-file path, status, and patch-size metadata."] = False,
+    ) -> dict[str, Any]:
+        """List compact suggestion items and changed-file manifests for a git ref range."""
+
+        return svc.list_suggestion_items(base=base, head=head, include_files=include_files)
+
+    @server.tool(
+        annotations={
+            "title": "Get Suggestion Item",
+            "readOnlyHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+        tags={"verlato", "suggestions", "diff"},
+        version=__version__,
+    )
+    def verlato_get_suggestion_item(base: GitRef, item_id: ItemId, head: GitRef = "HEAD") -> dict[str, Any]:
+        """Return metadata, commits, file manifest, and diff summary for one suggestion item."""
+
+        return svc.get_suggestion_item(base=base, head=head, item_id=item_id)
+
+    @server.tool(
+        annotations={
+            "title": "Get File Patch",
+            "readOnlyHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+        tags={"verlato", "suggestions", "diff"},
+        version=__version__,
+    )
+    def verlato_get_file_patch(
+        base: GitRef,
+        item_id: ItemId,
+        path: Annotated[str, "Changed file path."],
+        head: GitRef = "HEAD",
+        offset: PatchOffset = 0,
+        limit: PatchLimit = 12000,
+    ) -> dict[str, Any]:
+        """Return a bounded patch chunk for one file in one suggestion item."""
+
+        return svc.get_file_patch(
+            base=base,
+            head=head,
+            item_id=item_id,
+            path=path,
+            offset=offset,
+            limit=limit,
+        )
+
+    @server.tool(
+        annotations={
+            "title": "Search Item Diff",
+            "readOnlyHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+        tags={"verlato", "suggestions", "diff"},
+        version=__version__,
+    )
+    def verlato_search_item_diff(
+        base: GitRef,
+        item_id: ItemId,
+        query: SearchQuery,
+        head: GitRef = "HEAD",
+        limit: SearchLimit = 5,
+    ) -> dict[str, Any]:
+        """Search patch text for one suggestion item and return compact snippets."""
+
+        return svc.search_item_diff(base=base, head=head, item_id=item_id, query=query, limit=limit)
+
 
 def create_fastmcp_server(service: MCPService | None = None, fastmcp_cls: type | None = None):
     if fastmcp_cls is None:
@@ -460,3 +564,7 @@ def run_mcp_stdio(service: MCPService | None = None, fastmcp_cls: type | None = 
     server = create_fastmcp_server(service=service, fastmcp_cls=fastmcp_cls)
     server.run()
     return 0
+
+
+def main() -> int:
+    return run_mcp_stdio()

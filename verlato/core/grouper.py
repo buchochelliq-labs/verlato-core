@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import replace
 
-from verlato.core.conventional import parse_conventional_commit
+from verlato.core.commit_intent import effective_conventional_commit
 from verlato.core.diff_evidence import DiffEvidenceBuilder
 from verlato.core.models import ChangedFile, ChangeGroup, Commit, PullRequest
 
@@ -84,9 +84,11 @@ class Grouper:
         return groups
 
     def _non_pr_group_key(self, commit: Commit) -> tuple[str, ...]:
-        parsed = parse_conventional_commit(commit.message)
+        parsed, used_inferred = effective_conventional_commit(commit)
         if parsed:
             if parsed.scope:
+                if used_inferred:
+                    return ("inferred-conventional-scope", parsed.type.lower(), parsed.scope.lower())
                 return ("conventional-scope", parsed.type.lower(), parsed.scope.lower())
             return ("single", commit.sha)
 
@@ -97,6 +99,11 @@ class Grouper:
             return "Grouped as an individual non-PR commit."
         if key[0] == "conventional-scope":
             return f"Grouped because these non-PR commits share conventional type `{key[1]}` and scope `{key[2]}`."
+        if key[0] == "inferred-conventional-scope":
+            return (
+                "Grouped because these non-PR commits share inferred conventional "
+                f"type `{key[1]}` and scope `{key[2]}`."
+            )
         if key[0] == "file-overlap":
             files = ", ".join(key[1:4])
             suffix = f": {files}" if files else "."
@@ -108,17 +115,33 @@ class Grouper:
         if scoped_groups:
             return scoped_groups
 
+        commit_files = self._commit_files(commits)
         if not pr.files:
-            return [ChangeGroup(pr=pr, commits=commits, files=self._commit_files(commits), grouping_reason=f"Grouped by PR #{pr.number}.")]
+            return [
+                ChangeGroup(
+                    pr=pr,
+                    commits=commits,
+                    files=commit_files,
+                    grouping_reason=f"Grouped by PR #{pr.number}.",
+                )
+            ]
 
         diff = self.diff_builder.build(pr.files)
         user_facing_areas = [a for a in diff.files_by_area if a in self.USER_FACING_AREAS]
         if len(user_facing_areas) <= 1:
-            return [ChangeGroup(pr=pr, commits=commits, grouping_reason=f"Grouped by PR #{pr.number}.")]
+            return [
+                ChangeGroup(
+                    pr=pr,
+                    commits=commits,
+                    files=commit_files,
+                    grouping_reason=f"Grouped by PR #{pr.number}.",
+                )
+            ]
 
         split_groups: list[ChangeGroup] = []
         for area in sorted(user_facing_areas):
             files = [f for f in pr.files if self.diff_builder.infer_area(f.path) == area]
+            area_commit_files = [f for f in commit_files if self.diff_builder.infer_area(f.path) == area]
             if not files:
                 continue
             area_pr = replace(pr, title=f"{pr.title} [{area}]", files=[ChangedFile(**f.__dict__) for f in files])
@@ -126,6 +149,7 @@ class Grouper:
                 ChangeGroup(
                     pr=area_pr,
                     commits=commits,
+                    files=area_commit_files,
                     grouping_reason=f"Grouped by PR #{pr.number}, then split by changed area `{area}`.",
                 )
             )
@@ -137,10 +161,12 @@ class Grouper:
             return []
 
         buckets: dict[str, list[Commit]] = defaultdict(list)
+        inferred_scopes = False
         for commit in commits:
-            parsed = parse_conventional_commit(commit.message)
+            parsed, used_inferred = effective_conventional_commit(commit)
             if not parsed or not parsed.scope:
                 return []
+            inferred_scopes = inferred_scopes or used_inferred
             buckets[parsed.scope.lower()].append(commit)
 
         if len(buckets) <= 1:
@@ -161,7 +187,8 @@ class Grouper:
                     files=files,
                     grouping_reason=(
                         f"Grouped by PR #{pr.number}, then split because the PR contains "
-                        f"multiple explicit conventional scopes; this changeset uses scope `{scope}`."
+                        f"multiple {'inferred or explicit' if inferred_scopes else 'explicit'} "
+                        f"conventional scopes; this changeset uses scope `{scope}`."
                     ),
                 )
             )

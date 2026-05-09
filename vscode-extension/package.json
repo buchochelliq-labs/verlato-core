@@ -37,6 +37,7 @@
     "onCommand:verlato.suggestItemSummary",
     "onCommand:verlato.requestModelInput",
     "onCommand:verlato.showServiceInfo",
+    "onCommand:verlato.startMcpServer",
     "onCommand:verlato.changeModel",
     "onCommand:verlato.acceptItem",
     "onCommand:verlato.unhideItem",
@@ -153,6 +154,10 @@
         "title": "Verlato: Show Service Info"
       },
       {
+        "command": "verlato.startMcpServer",
+        "title": "Verlato: Start MCP Server"
+      },
+      {
         "command": "verlato.changeModel",
         "title": "Verlato: Change AI Model"
       },
@@ -262,9 +267,15 @@
             "auto",
             "single",
             "paired",
-            "full-diff-json"
+            "full-diff-json",
+            "tool-retrieval"
           ],
           "description": "Suggestion generation strategy. Auto uses full-diff structured JSON batching for capable providers and single-item diff prompts for others."
+        },
+        "verlato.commitIntentInference": {
+          "type": "boolean",
+          "default": false,
+          "description": "Infer conventional commit intent for low-signal commits before grouping. This may add model calls."
         },
         "verlato.suggestionAutoWarmCache": {
           "type": "boolean",
@@ -421,6 +432,11 @@
         },
         {
           "command": "verlato.openActivity",
+          "when": "view == verlato.control",
+          "group": "navigation"
+        },
+        {
+          "command": "verlato.startMcpServer",
           "when": "view == verlato.control",
           "group": "navigation"
         }

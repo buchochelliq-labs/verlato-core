@@ -13,6 +13,7 @@ const modelSettings = {
   suggestionParallelism: 2,
   suggestionBatchSize: 2,
   suggestionStrategy: "auto",
+  commitIntentInference: false,
   suggestionAutoWarmCache: false,
   suggestionPromptProfile: "conservative",
   suggestionAdaptiveRecommendations: false,

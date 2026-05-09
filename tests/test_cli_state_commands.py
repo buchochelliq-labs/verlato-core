@@ -101,7 +101,7 @@ def test_state_clear_suggestion_cache_deletes_cache_file(monkeypatch, tmp_path: 
 
 def test_reconcile_command_outputs_count(monkeypatch, tmp_path: Path, capsys):
     monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
-    monkeypatch.setattr("verlato.cli.main.run_scan", lambda base, head, persist: [{"id": "ci_1"}])
+    monkeypatch.setattr("verlato.cli.main.run_scan", lambda base, head, persist, **_kwargs: [{"id": "ci_1"}])
 
     rc = main(["reconcile", "--base", "v1.0.0", "--head", "HEAD"])
     assert rc == 0
@@ -116,7 +116,10 @@ def test_reconcile_from_latest_published_marker(monkeypatch, tmp_path: Path, cap
     store = StateStore(path=str(state_path))
     store.save(StateData(items=[_mk_item("ci_1", published=True, published_in="v1.0.0")]))
     monkeypatch.setenv("VERLATO_STATE_PATH", str(state_path))
-    monkeypatch.setattr("verlato.cli.main.run_scan", lambda base, head, persist: [{"id": f"{base}->{head}"}])
+    monkeypatch.setattr(
+        "verlato.cli.main.run_scan",
+        lambda base, head, persist, **_kwargs: [{"id": f"{base}->{head}"}],
+    )
 
     rc = main(["reconcile", "--from-latest-published", "--head", "HEAD"])
     assert rc == 0

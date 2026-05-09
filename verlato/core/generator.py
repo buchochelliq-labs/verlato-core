@@ -3,16 +3,8 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date
 
+from verlato.core.changelog import changelog_section_title, normalize_change_kind, ordered_change_kinds
 from verlato.core.models import ChangeItem
-
-SECTION_MAP = {
-    "added": "Added",
-    "changed": "Changed",
-    "fixed": "Fixed",
-    "removed": "Removed",
-    "security": "Security",
-    "internal": "Internal",
-}
 
 
 class MarkdownGenerator:
@@ -60,14 +52,15 @@ class MarkdownGenerator:
     ) -> list[str]:
         by_kind: dict[str, list[ChangeItem]] = defaultdict(list)
         for item in items:
-            by_kind[item.classification.kind].append(item)
+            kind = normalize_change_kind(item.classification.kind) or item.classification.kind
+            by_kind[kind].append(item)
 
         lines: list[str] = []
-        for key in ["added", "changed", "fixed", "removed", "security", "internal"]:
+        for key in ordered_change_kinds(by_kind):
             section_items = by_kind.get(key, [])
             if not section_items:
                 continue
-            lines.append(f"### {SECTION_MAP[key]}")
+            lines.append(f"### {changelog_section_title(key)}")
             for item in section_items:
                 source = f" (PR #{item.source.pr_number})" if item.source.pr_number else ""
                 extras: list[str] = []

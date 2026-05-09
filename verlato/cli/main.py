@@ -20,10 +20,16 @@ from verlato.config import ProviderConfig, VerlatoConfig, load_config
 from verlato.core.adapters import NullPullRequestAdapter, PullRequestAdapter, StandardGitAdapter
 from verlato.core.classifier import Classifier
 from verlato.core.collector import Collector
+from verlato.core.commit_intent import (
+    infer_commit_intents,
+    is_low_signal_commit,
+    normalize_commit_intent_mode,
+)
 from verlato.core.drafts import DraftDocument, DraftService
 from verlato.core.grouper import Grouper
-from verlato.core.models import ChangeGroup, ChangeItem
+from verlato.core.models import ChangeGroup, ChangeItem, Commit, changed_files_for_group
 from verlato.core.reconciler import Reconciler
+from verlato.core.suggestion_tools import SuggestionEvidenceToolProvider
 from verlato.github.adapter import GitHubApiAdapter
 from verlato.providers.base import ProviderRequest, ProviderResponse
 from verlato.providers.factory import build_provider
@@ -40,14 +46,16 @@ from verlato.state.suggestion_cache import CachedSuggestion, SuggestionCacheBack
 MODEL_PROVIDER_CHOICES = ["stub", "mock", "ollama", "litellm", "plugin", "github-copilot", "codex-cli", "claude-code"]
 SUGGESTION_TONE_CHOICES = ["release-note", "concise", "technical", "customer-facing"]
 SUGGESTION_PROMPT_PROFILE_CHOICES = ["conservative", "lean", "minimal"]
-SUGGESTION_STRATEGY_CHOICES = ["auto", "single", "paired", "full-diff-json"]
+SUGGESTION_STRATEGY_CHOICES = ["auto", "single", "paired", "full-diff-json", "tool-retrieval"]
 MAX_SUGGESTION_PARALLELISM = 8
 MAX_SUGGESTION_BATCH_SIZE = 5
 SUGGESTION_CACHE_PROMPT_PROFILE = "suggestion-conservative"
 SINGLE_SUGGESTION_PROMPT_SHAPE = "single-prompt-v1"
 PAIRED_SUGGESTION_PROMPT_SHAPE = "paired-prepared-prompt-v1"
 FULL_DIFF_SUGGESTION_PROMPT_SHAPE = "full-diff-json-v1"
+TOOL_RETRIEVAL_SUGGESTION_PROMPT_SHAPE = "tool-retrieval-v1"
 FULL_DIFF_BATCH_PROMPT_CHAR_GUARD = 80_000
+SUGGESTION_TOOL_MAX_ROUNDS = 4
 
 
 @dataclass
@@ -71,6 +79,9 @@ class _SuggestionWork:
     full_diff_file_count: int
     full_diff_patch_chars: int
     full_diff_missing_patch_count: int
+    tools: list[dict[str, object]]
+    tool_executor: object | None
+    max_tool_rounds: int
     suggestion_count: int
     suggestion_tone: str
     suggestion_style: dict[str, object]
@@ -151,6 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--from-latest-tag", action="store_true")
         p.add_argument("--from-latest-published", action="store_true")
         p.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Override the configured model provider.")
+        _add_commit_intent_inference_args(p)
 
     draft = sub.add_parser("draft")
     draft_sub = draft.add_subparsers(dest="draft_command", required=True)
@@ -164,6 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--include-confidence", action="store_true")
         p.add_argument("--include-provenance", action="store_true")
         p.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Override the configured model provider.")
+        _add_commit_intent_inference_args(p)
     draft_apply = draft_sub.choices["apply"]
     draft_apply.add_argument("--target", choices=["changelog", "github-release"], default="changelog")
     draft_apply.add_argument("--file")
@@ -178,6 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
     draft_review.add_argument("--summary-provenance-json", help=argparse.SUPPRESS)
     draft_review.add_argument("--reviewer")
     draft_review.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Override the configured model provider.")
+    _add_commit_intent_inference_args(draft_review)
     draft_suggest = draft_sub.add_parser("suggest")
     draft_suggest.add_argument("--base")
     draft_suggest.add_argument("--head", default="HEAD")
@@ -207,6 +221,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=MODEL_PROVIDER_CHOICES,
         help="Override the configured model provider.",
     )
+    _add_commit_intent_inference_args(draft_suggest)
     draft_prompt = draft_sub.add_parser("prompt")
     draft_prompt.add_argument("--base")
     draft_prompt.add_argument("--head", default="HEAD")
@@ -215,6 +230,7 @@ def build_parser() -> argparse.ArgumentParser:
     draft_prompt.add_argument("--id", required=True)
     draft_prompt.add_argument("--tone", choices=SUGGESTION_TONE_CHOICES)
     draft_prompt.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Optional provider hint for the previewed prompt.")
+    _add_commit_intent_inference_args(draft_prompt)
 
     render = sub.add_parser("render")
     render.add_argument("--format", choices=["github-release", "changelog"], required=True)
@@ -292,6 +308,20 @@ def build_parser() -> argparse.ArgumentParser:
     mark_published.add_argument("--all-unpublished", action="store_true")
 
     return parser
+
+
+def _add_commit_intent_inference_args(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--infer-commit-intents",
+        action="store_true",
+        help="Infer conventional commit intent for low-signal commits before grouping.",
+    )
+    group.add_argument(
+        "--no-infer-commit-intents",
+        action="store_true",
+        help="Disable inferred conventional commit intent for this command.",
+    )
 
 
 def _build_store() -> StateStore:
@@ -390,13 +420,38 @@ def _classify_groups(
     return items
 
 
-def run_scan(base: str, head: str, persist: bool, model_provider: str | None = None) -> list[dict]:
-    return [asdict(i) for i in scan_change_items(base, head, persist, model_provider=model_provider)]
+def run_scan(
+    base: str,
+    head: str,
+    persist: bool,
+    model_provider: str | None = None,
+    commit_intent_inference: str | None = None,
+) -> list[dict]:
+    return [
+        asdict(i)
+        for i in scan_change_items(
+            base,
+            head,
+            persist,
+            model_provider=model_provider,
+            commit_intent_inference=commit_intent_inference,
+        )
+    ]
 
 
-def detect_change_items(base: str, head: str, model_provider: str | None = None) -> list[ChangeItem]:
+def detect_change_items(
+    base: str,
+    head: str,
+    model_provider: str | None = None,
+    commit_intent_inference: str | None = None,
+) -> list[ChangeItem]:
     config = _load_config()
-    groups = _collect_groups(base, head)
+    groups = _collect_groups(
+        base,
+        head,
+        model_provider=model_provider,
+        commit_intent_inference=commit_intent_inference,
+    )
     max_model_items = _resolve_max_model_items(config.provider.max_items_per_scan)
     provider = None
     if max_model_items < 0 or len(groups) <= max_model_items:
@@ -412,11 +467,22 @@ def detect_change_items(base: str, head: str, model_provider: str | None = None)
     return _classify_groups(groups, classifier, base, head)
 
 
-def _collect_groups(base: str, head: str):
+def _collect_groups(
+    base: str,
+    head: str,
+    *,
+    model_provider: str | None = None,
+    commit_intent_inference: str | None = None,
+):
     collector = Collector(pr_adapter=_build_adapter())
     grouper = Grouper()
     _trace_progress("collecting_commits", "Collecting commits", detail=f"{base}..{head}")
     commits = collector.collect_commits(base, head)
+    _maybe_infer_commit_intents(
+        commits,
+        model_provider=model_provider,
+        commit_intent_inference=commit_intent_inference,
+    )
     _trace_progress(
         "mapping_pull_requests",
         "Mapping commits to PRs",
@@ -444,8 +510,76 @@ def _collect_groups(base: str, head: str):
     return groups
 
 
-def _find_group_for_item_id(base: str, head: str, item_id: str) -> ChangeGroup:
-    groups = _collect_groups(base, head)
+def _maybe_infer_commit_intents(
+    commits: list[Commit],
+    *,
+    model_provider: str | None,
+    commit_intent_inference: str | None,
+) -> None:
+    config = _load_config()
+    mode = _resolve_commit_intent_inference(config.commit_intent_inference, requested=commit_intent_inference)
+    if mode == "off":
+        return
+    eligible = [commit for commit in commits if is_low_signal_commit(commit)]
+    total = len(eligible)
+    _trace_progress(
+        "inferring_commit_intents",
+        "Inferring conventional commit intents",
+        detail=f"{total} eligible commit(s)",
+        current=0,
+        total=total,
+        unit="commit",
+    )
+    if not eligible:
+        return
+    max_model_items = _resolve_max_model_items(config.provider.max_items_per_scan)
+    if max_model_items >= 0 and total > max_model_items:
+        _trace_progress(
+            "inferring_commit_intents",
+            "Skipped commit intent inference",
+            detail=f"{total} eligible commit(s) exceeds fanout guard {max_model_items}",
+            current=0,
+            total=total,
+            unit="commit",
+        )
+        return
+    try:
+        provider = build_provider(config.provider, mode=model_provider)
+        inferred = infer_commit_intents(eligible, provider)
+    except Exception as exc:
+        _trace_progress(
+            "inferring_commit_intents",
+            "Commit intent inference unavailable",
+            detail=str(exc),
+            current=0,
+            total=total,
+            unit="commit",
+        )
+        return
+    _trace_progress(
+        "inferring_commit_intents",
+        "Inferred conventional commit intents",
+        detail=f"{inferred}/{total} commit(s)",
+        current=total,
+        total=total,
+        unit="commit",
+    )
+
+
+def _find_group_for_item_id(
+    base: str,
+    head: str,
+    item_id: str,
+    *,
+    model_provider: str | None = None,
+    commit_intent_inference: str | None = None,
+) -> ChangeGroup:
+    groups = _collect_groups(
+        base,
+        head,
+        model_provider=model_provider,
+        commit_intent_inference=commit_intent_inference,
+    )
     baseline_classifier = Classifier()
     for group in groups:
         baseline_item = baseline_classifier.classify(group, base, head)[0]
@@ -454,11 +588,22 @@ def _find_group_for_item_id(base: str, head: str, item_id: str) -> ChangeGroup:
     raise SystemExit(f"Could not find draft item {item_id} for range {base}..{head}")
 
 
-def scan_change_items(base: str, head: str, persist: bool, model_provider: str | None = None) -> list[ChangeItem]:
+def scan_change_items(
+    base: str,
+    head: str,
+    persist: bool,
+    model_provider: str | None = None,
+    commit_intent_inference: str | None = None,
+) -> list[ChangeItem]:
     store = _build_store()
     reconciler = Reconciler()
 
-    detected = detect_change_items(base, head, model_provider=model_provider)
+    detected = detect_change_items(
+        base,
+        head,
+        model_provider=model_provider,
+        commit_intent_inference=commit_intent_inference,
+    )
     _trace_progress(
         "reconciling_unpublished",
         "Reconciling unpublished changes",
@@ -488,16 +633,41 @@ def scan_change_items(base: str, head: str, persist: bool, model_provider: str |
     return unpublished
 
 
-def _detect_change_items_with_provider(base: str, head: str, model_provider: str | None) -> list[ChangeItem]:
+def _detect_change_items_with_provider(
+    base: str,
+    head: str,
+    model_provider: str | None,
+    commit_intent_inference: str | None = None,
+) -> list[ChangeItem]:
     if model_provider:
-        return detect_change_items(base, head, model_provider=model_provider)
-    return _detect_review_candidates(base, head, model_provider=None)
+        return detect_change_items(
+            base,
+            head,
+            model_provider=model_provider,
+            commit_intent_inference=commit_intent_inference,
+        )
+    return _detect_review_candidates(
+        base,
+        head,
+        model_provider=None,
+        commit_intent_inference=commit_intent_inference,
+    )
 
 
-def _detect_review_candidates(base: str, head: str, model_provider: str | None) -> list[ChangeItem]:
+def _detect_review_candidates(
+    base: str,
+    head: str,
+    model_provider: str | None,
+    commit_intent_inference: str | None = None,
+) -> list[ChangeItem]:
     if model_provider:
-        return detect_change_items(base, head, model_provider=model_provider)
-    groups = _collect_groups(base, head)
+        return detect_change_items(
+            base,
+            head,
+            model_provider=model_provider,
+            commit_intent_inference=commit_intent_inference,
+        )
+    groups = _collect_groups(base, head, commit_intent_inference=commit_intent_inference)
     classifier = Classifier()
     return _classify_groups(
         groups,
@@ -509,10 +679,22 @@ def _detect_review_candidates(base: str, head: str, model_provider: str | None) 
     )
 
 
-def _run_scan_with_provider(base: str, head: str, persist: bool, model_provider: str | None) -> list[dict]:
+def _run_scan_with_provider(
+    base: str,
+    head: str,
+    persist: bool,
+    model_provider: str | None,
+    commit_intent_inference: str | None = None,
+) -> list[dict]:
     if model_provider:
-        return run_scan(base, head, persist=persist, model_provider=model_provider)
-    return run_scan(base, head, persist=persist)
+        return run_scan(
+            base,
+            head,
+            persist=persist,
+            model_provider=model_provider,
+            commit_intent_inference=commit_intent_inference,
+        )
+    return run_scan(base, head, persist=persist, commit_intent_inference=commit_intent_inference)
 
 
 def _resolve_suggest_model_provider(model_provider: str | None) -> str | None:
@@ -591,10 +773,18 @@ def build_draft_document(
     include_confidence: bool = False,
     include_provenance: bool = False,
     model_provider: str | None = None,
+    commit_intent_inference: str | None = None,
 ) -> DraftDocument:
     config = _load_config()
     _trace_progress("draft_detecting_changes", "Detecting draft changes", detail=f"{base}..{head}")
-    items = _merge_review_state(_detect_change_items_with_provider(base, head, model_provider))
+    items = _merge_review_state(
+        _detect_change_items_with_provider(
+            base,
+            head,
+            model_provider,
+            commit_intent_inference=commit_intent_inference,
+        )
+    )
     _trace_progress(
         "draft_rendering",
         "Rendering release notes",
@@ -643,6 +833,23 @@ def _resolve_max_model_items(configured: int) -> int:
         return configured
 
 
+def _resolve_commit_intent_inference(configured: str, requested: str | None = None) -> str:
+    if requested is not None:
+        return normalize_commit_intent_mode(requested)
+    raw = os.getenv("VERLATO_COMMIT_INTENT_INFERENCE")
+    if raw is not None:
+        return normalize_commit_intent_mode(raw, default=normalize_commit_intent_mode(configured))
+    return normalize_commit_intent_mode(configured)
+
+
+def _commit_intent_inference_from_args(args: argparse.Namespace) -> str | None:
+    if bool(getattr(args, "infer_commit_intents", False)):
+        return "low-signal"
+    if bool(getattr(args, "no_infer_commit_intents", False)):
+        return "off"
+    return None
+
+
 def _resolve_suggestion_count(configured: int, requested: int | None = None) -> int:
     raw = str(requested) if requested is not None else os.getenv("VERLATO_SUGGESTION_COUNT")
     value = configured
@@ -689,15 +896,22 @@ def _resolve_suggestion_strategy(configured: str, requested: str | None = None) 
 
 def _effective_suggestion_strategy(strategy: str, provider_mode: str | None) -> str:
     normalized = _resolve_suggestion_strategy(strategy)
+    normalized_provider = (provider_mode or "").strip().lower()
     provider_allows_batch = _suggestion_batching_allowed_for_provider(provider_mode)
     if normalized == "auto":
+        if normalized_provider in {"ollama", "local"}:
+            return "tool-retrieval"
         return "full-diff-json" if provider_allows_batch else "single"
+    if normalized == "tool-retrieval" and normalized_provider not in {"ollama", "local"}:
+        return "single"
     if normalized in {"paired", "full-diff-json"} and not provider_allows_batch:
         return "single"
     return normalized
 
 
 def _suggestion_prompt_shape(strategy: str) -> str:
+    if strategy == "tool-retrieval":
+        return TOOL_RETRIEVAL_SUGGESTION_PROMPT_SHAPE
     if strategy == "full-diff-json":
         return FULL_DIFF_SUGGESTION_PROMPT_SHAPE
     if strategy == "paired":
@@ -1299,6 +1513,9 @@ def _doctor_suggestion_work(
         full_diff_file_count=1,
         full_diff_patch_chars=86,
         full_diff_missing_patch_count=0,
+        tools=[],
+        tool_executor=None,
+        max_tool_rounds=0,
         suggestion_count=1,
         suggestion_tone=suggestion_tone,
         suggestion_style=suggestion_style,
@@ -1977,11 +2194,17 @@ def _update_draft_review(
     reviewer: str | None,
     model_provider: str | None = None,
     summary_provenance: dict[str, object] | None = None,
+    commit_intent_inference: str | None = None,
 ) -> ChangeItem:
     if status is None and summary is None and reviewer is None:
         raise SystemExit("Provide at least one review update: --status, --summary, or --reviewer")
 
-    candidates = _detect_review_candidates(base, head, model_provider)
+    candidates = _detect_review_candidates(
+        base,
+        head,
+        model_provider,
+        commit_intent_inference=commit_intent_inference,
+    )
     candidate = next((item for item in candidates if item.id == item_id), None)
     if not candidate:
         raise SystemExit(f"Could not find draft item {item_id} for range {base}..{head}")
@@ -2015,6 +2238,7 @@ def _run_draft_review(
     reviewer: str | None,
     model_provider: str | None = None,
     summary_provenance_json: str | None = None,
+    commit_intent_inference: str | None = None,
 ) -> int:
     summary_provenance = _parse_summary_provenance(summary_provenance_json)
     updated = _update_draft_review(
@@ -2026,6 +2250,7 @@ def _run_draft_review(
         reviewer=reviewer,
         model_provider=model_provider,
         summary_provenance=summary_provenance,
+        commit_intent_inference=commit_intent_inference,
     )
     print(json.dumps(updated.to_dict(), indent=2))
     return 0
@@ -2039,9 +2264,16 @@ def _request_draft_model_input(
     reviewer: str | None,
     model_provider: str | None = None,
     tone: str | None = None,
+    commit_intent_inference: str | None = None,
 ) -> ChangeItem:
     effective_model_provider = _resolve_suggest_model_provider(model_provider)
-    target_group = _find_group_for_item_id(base, head, item_id)
+    target_group = _find_group_for_item_id(
+        base,
+        head,
+        item_id,
+        model_provider=effective_model_provider,
+        commit_intent_inference=commit_intent_inference,
+    )
 
     config = _load_config()
     suggestion_tone = _resolve_suggestion_tone(config.suggestion_tone, requested=tone)
@@ -2102,6 +2334,7 @@ def _preview_draft_model_suggestions(
     no_cache: bool = False,
     refresh_cache: bool = False,
     adaptive_recommendations: bool = False,
+    commit_intent_inference: str | None = None,
 ) -> dict:
     if all_visible == bool(item_id):
         raise SystemExit("Provide exactly one suggestion target: --id or --all-visible")
@@ -2142,13 +2375,18 @@ def _preview_draft_model_suggestions(
         model_context = {}
     effective_suggestion_batch_size = (
         1
-        if effective_suggestion_strategy == "single"
+        if effective_suggestion_strategy in {"single", "tool-retrieval"}
         else min(requested_suggestion_batch_size, 2)
         if effective_suggestion_strategy == "paired"
         else requested_suggestion_batch_size
     )
     target_selection_start = perf_counter()
-    groups = _collect_groups(base, head)
+    groups = _collect_groups(
+        base,
+        head,
+        model_provider=effective_model_provider,
+        commit_intent_inference=commit_intent_inference,
+    )
     baseline_classifier = Classifier()
     _trace_model_suggest_stage(
         "target-selection",
@@ -2403,7 +2641,7 @@ def _preview_draft_model_suggestions(
             batch_total=len(target_batches),
         )
         evidence_start = perf_counter()
-        diff = provider_classifier.diff_builder.build(group.pr.files if group.pr else group.files)
+        diff = provider_classifier.diff_builder.build(changed_files_for_group(group))
         evidence_ms = _elapsed_ms(evidence_start)
         hunk_count = sum(len(hunks) for hunks in diff.representative_hunks.values())
         file_count = len(diff.file_statuses)
@@ -2437,6 +2675,9 @@ def _preview_draft_model_suggestions(
         source_evidence = _build_suggestion_source_evidence(diff, group)
         prompt_shape = _suggestion_prompt_shape(effective_suggestion_strategy)
         full_diff_item: dict[str, object] | None = None
+        tools: list[dict[str, object]] = []
+        tool_executor = None
+        max_tool_rounds = 0
         cache_key = ""
         prompt_result = provider_classifier._build_summary_prompt_with_budget(
             title=baseline_item.content.title,
@@ -2462,11 +2703,39 @@ def _preview_draft_model_suggestions(
                 f"No diff patch evidence was available for draft item {baseline_item.id}; "
                 "Verlato will not generate a suggestion without a diff-backed payload."
             )
+        if effective_suggestion_strategy == "tool-retrieval":
+            old_prompt_chars = int(prompt_budget.get("prompt_chars", len(prompt)))
+            tool_provider = SuggestionEvidenceToolProvider.from_groups([group], [baseline_item])
+            tools = tool_provider.ollama_tools()
+            tool_executor = tool_provider.call_tool
+            max_tool_rounds = SUGGESTION_TOOL_MAX_ROUNDS
+            prompt = _build_tool_retrieval_suggestion_prompt(
+                tool_provider=tool_provider,
+                item=baseline_item,
+                suggestion_count=suggestion_count,
+                tone=suggestion_tone,
+                style_profile=suggestion_style,
+            )
+            prompt_budget["prompt_chars"] = len(prompt)
+            prompt_budget["tool_count"] = len(tools)
+            prompt_budget["max_tool_rounds"] = max_tool_rounds
+            prompt_chars += len(prompt) - old_prompt_chars
         full_diff_file_count += int(full_diff_item.get("file_count") or 0)
         full_diff_patch_chars += int(full_diff_item.get("patch_chars") or 0)
         prompt_sha_source = (
             json.dumps(full_diff_item, sort_keys=True, separators=(",", ":"), default=str)
             if effective_suggestion_strategy == "full-diff-json"
+            else json.dumps(
+                {
+                    "prompt": prompt,
+                    "tools": tools,
+                    "manifest": full_diff_item if effective_suggestion_strategy == "tool-retrieval" else None,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            if effective_suggestion_strategy == "tool-retrieval"
             else prompt
         )
         prompt_budget["strategy"] = effective_suggestion_strategy
@@ -2474,6 +2743,10 @@ def _preview_draft_model_suggestions(
         prompt_budget["full_diff_file_count"] = full_diff_item.get("file_count", 0)
         prompt_budget["full_diff_patch_chars"] = full_diff_item.get("patch_chars", 0)
         prompt_budget["full_diff_missing_patch_count"] = full_diff_item.get("missing_patch_count", 0)
+        evidence["strategy"] = effective_suggestion_strategy
+        if tools:
+            evidence["tool_count"] = len(tools)
+            evidence["max_tool_rounds"] = max_tool_rounds
         prompt_sha = hashlib.sha256(prompt_sha_source.encode("utf-8")).hexdigest()[:12]
         cache_key = _suggestion_cache_key(
             item=baseline_item,
@@ -2526,6 +2799,9 @@ def _preview_draft_model_suggestions(
             full_diff_file_count=full_diff_file_count_for_work,
             full_diff_patch_chars=full_diff_patch_chars_for_work,
             full_diff_missing_patch_count=full_diff_missing_patch_count_for_work,
+            tools=tools,
+            tool_executor=tool_executor,
+            max_tool_rounds=max_tool_rounds,
             suggestion_count=suggestion_count,
             suggestion_tone=suggestion_tone,
             suggestion_style=suggestion_style,
@@ -3367,6 +3643,34 @@ def _build_full_diff_suggestion_batch_prompt(works: list[_SuggestionWork]) -> st
     )
 
 
+def _build_tool_retrieval_suggestion_prompt(
+    *,
+    tool_provider: SuggestionEvidenceToolProvider,
+    item: ChangeItem,
+    suggestion_count: int,
+    tone: str,
+    style_profile: dict[str, object],
+) -> str:
+    manifest = tool_provider.get_suggestion_item(item_id=item.id)
+    payload = {
+        "suggestion_count": suggestion_count,
+        "tone": tone,
+        "style_profile": style_profile,
+        "prompt_shape": TOOL_RETRIEVAL_SUGGESTION_PROMPT_SHAPE,
+        "item": manifest,
+    }
+    return (
+        "Generate release-note suggestion variants for this item using the available Verlato tools.\n"
+        "Start from the compact item manifest, then call tools to inspect the specific patches needed. "
+        "Prefer targeted file patches over reading every file. Use patches as the primary source of truth, "
+        "and do not infer behavior from titles alone.\n"
+        "Return only the suggestion text. Do not include JSON, Markdown fences, tool names, or commentary.\n"
+        f"Return exactly {suggestion_count} distinct complete release-note option(s), one per line.\n"
+        "Compact input JSON:\n"
+        + json.dumps(payload, indent=2, sort_keys=True)
+    )
+
+
 def _full_diff_batch_prompt_chars(works: list[_SuggestionWork]) -> int:
     return len(_build_full_diff_suggestion_batch_prompt(works))
 
@@ -3508,7 +3812,16 @@ def _run_suggestion_model_work(
         elapsed_ms=_elapsed_ms(work.started_at),
     )
     model_start = perf_counter()
-    response = provider.summarize(ProviderRequest(task="suggest", prompt=work.prompt, evidence=work.evidence))
+    response = provider.summarize(
+        ProviderRequest(
+            task="suggest",
+            prompt=work.prompt,
+            evidence=work.evidence,
+            tools=work.tools,
+            tool_executor=work.tool_executor,
+            max_tool_rounds=work.max_tool_rounds,
+        )
+    )
     model_ms = _elapsed_ms(model_start)
     provider_timings = _normalized_provider_timings(response.metadata, model_ms)
     _trace_model_call_result("suggest", baseline_item.content.title, response.model, response.confidence)
@@ -3762,7 +4075,7 @@ def _summary_specificity(candidate: str, group: ChangeGroup) -> float:
             group.pr.body if group.pr else "",
             " ".join(group.pr.labels if group.pr else []),
             " ".join(commit.message for commit in group.commits),
-            " ".join(file.path for file in (group.pr.files if group.pr else group.files)),
+            " ".join(file.path for file in changed_files_for_group(group)),
         ]
     )
     evidence_tokens = set(_summary_tokens(evidence_text))
@@ -3773,7 +4086,7 @@ def _summary_specificity(candidate: str, group: ChangeGroup) -> float:
 
 
 def _build_full_diff_suggestion_payload_item(group: ChangeGroup, item: ChangeItem, diff) -> dict[str, object]:
-    files = group.pr.files if group.pr else group.files
+    files = changed_files_for_group(group)
     file_payloads: list[dict[str, object]] = []
     patch_chars = 0
     missing_patch_count = 0
@@ -4526,15 +4839,22 @@ def _build_draft_model_prompt(
     item_id: str,
     model_provider: str | None = None,
     tone: str | None = None,
+    commit_intent_inference: str | None = None,
 ) -> dict[str, object]:
     effective_model_provider = _resolve_suggest_model_provider(model_provider)
     config = _load_config()
     suggestion_tone = _resolve_suggestion_tone(config.suggestion_tone, requested=tone)
     suggestion_style = _resolve_suggestion_style(config)
-    target_group = _find_group_for_item_id(base, head, item_id)
+    target_group = _find_group_for_item_id(
+        base,
+        head,
+        item_id,
+        model_provider=effective_model_provider,
+        commit_intent_inference=commit_intent_inference,
+    )
     classifier = Classifier()
     draft_item = classifier.classify(target_group, base, head)[0]
-    diff = classifier.diff_builder.build(target_group.pr.files if target_group.pr else target_group.files)
+    diff = classifier.diff_builder.build(changed_files_for_group(target_group))
     prompt_result = classifier._build_summary_prompt_with_budget(
         title=draft_item.content.title,
         labels=[label.lower() for label in (target_group.pr.labels if target_group.pr else [])],
@@ -4651,6 +4971,7 @@ def _run_draft_suggest(
     reviewer: str | None,
     model_provider: str | None = None,
     tone: str | None = None,
+    commit_intent_inference: str | None = None,
 ) -> int:
     updated = _request_draft_model_input(
         base=base,
@@ -4659,6 +4980,7 @@ def _run_draft_suggest(
         reviewer=reviewer,
         model_provider=model_provider,
         tone=tone,
+        commit_intent_inference=commit_intent_inference,
     )
     print(json.dumps(updated.to_dict(), indent=2))
     return 0
@@ -4671,6 +4993,7 @@ def _run_draft_prompt(
     item_id: str,
     model_provider: str | None = None,
     tone: str | None = None,
+    commit_intent_inference: str | None = None,
 ) -> int:
     prompt_preview = _build_draft_model_prompt(
         base=base,
@@ -4678,6 +5001,7 @@ def _run_draft_prompt(
         item_id=item_id,
         model_provider=model_provider,
         tone=tone,
+        commit_intent_inference=commit_intent_inference,
     )
     print(json.dumps(prompt_preview, indent=2))
     return 0
@@ -4781,18 +5105,36 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "scan":
         base, head = _resolve_range(args)
-        print(json.dumps(_run_scan_with_provider(base, head, persist=False, model_provider=args.model_provider), indent=2))
+        print(json.dumps(_run_scan_with_provider(
+            base,
+            head,
+            persist=False,
+            model_provider=args.model_provider,
+            commit_intent_inference=_commit_intent_inference_from_args(args),
+        ), indent=2))
         return 0
 
     if args.command == "generate":
         base, head = _resolve_range(args)
-        items = _run_scan_with_provider(base, head, persist=True, model_provider=args.model_provider)
+        items = _run_scan_with_provider(
+            base,
+            head,
+            persist=True,
+            model_provider=args.model_provider,
+            commit_intent_inference=_commit_intent_inference_from_args(args),
+        )
         print(json.dumps(items, indent=2))
         return 0
 
     if args.command == "reconcile":
         base, head = _resolve_range(args)
-        items = _run_scan_with_provider(base, head, persist=False, model_provider=args.model_provider)
+        items = _run_scan_with_provider(
+            base,
+            head,
+            persist=False,
+            model_provider=args.model_provider,
+            commit_intent_inference=_commit_intent_inference_from_args(args),
+        )
         print(json.dumps({"unpublished": items, "count": len(items)}, indent=2))
         return 0
 
@@ -4877,6 +5219,7 @@ def main(argv: list[str] | None = None) -> int:
                 reviewer=args.reviewer,
                 model_provider=args.model_provider,
                 summary_provenance_json=args.summary_provenance_json,
+                commit_intent_inference=_commit_intent_inference_from_args(args),
             )
         if args.draft_command == "suggest":
             base, head = _resolve_range(args)
@@ -4899,6 +5242,7 @@ def main(argv: list[str] | None = None) -> int:
                     no_cache=args.no_cache,
                     refresh_cache=args.refresh_cache,
                     adaptive_recommendations=args.adaptive_recommendations,
+                    commit_intent_inference=_commit_intent_inference_from_args(args),
                 )
                 print(json.dumps(suggestions, indent=2))
                 return 0
@@ -4913,6 +5257,7 @@ def main(argv: list[str] | None = None) -> int:
                 reviewer=args.reviewer,
                 model_provider=args.model_provider,
                 tone=args.tone,
+                commit_intent_inference=_commit_intent_inference_from_args(args),
             )
         if args.draft_command == "prompt":
             base, head = _resolve_range(args)
@@ -4922,6 +5267,7 @@ def main(argv: list[str] | None = None) -> int:
                 item_id=args.id,
                 model_provider=args.model_provider,
                 tone=args.tone,
+                commit_intent_inference=_commit_intent_inference_from_args(args),
             )
         base, head = _resolve_range(args)
         document = build_draft_document(
@@ -4931,6 +5277,7 @@ def main(argv: list[str] | None = None) -> int:
             include_confidence=args.include_confidence,
             include_provenance=args.include_provenance,
             model_provider=args.model_provider,
+            commit_intent_inference=_commit_intent_inference_from_args(args),
         )
         if args.draft_command == "preview":
             _trace_progress(

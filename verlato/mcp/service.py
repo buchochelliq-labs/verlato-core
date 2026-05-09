@@ -7,12 +7,15 @@ from verlato import __version__
 from verlato.cli.main import (
     _append_feedback_event,
     _build_suggestion_cache_store,
+    _collect_groups,
     _update_draft_review,
     build_draft_document,
     run_scan,
 )
 from verlato.config import load_config
+from verlato.core.classifier import Classifier
 from verlato.core.drafts import DraftDocument, DraftItem, DraftSection, DraftService, DraftTarget
+from verlato.core.suggestion_tools import SuggestionEvidenceToolProvider
 from verlato.state.store import StateStore
 
 
@@ -197,6 +200,50 @@ class MCPService:
         unpublished = self.list_unpublished_changes(base=base, head=head)
         return {"count": len(unpublished), "unpublished": unpublished}
 
+    def list_suggestion_items(
+        self,
+        *,
+        base: str,
+        head: str = "HEAD",
+        include_files: bool = False,
+    ) -> dict:
+        return self._suggestion_tool_provider(base=base, head=head).list_suggestion_items(include_files=include_files)
+
+    def get_suggestion_item(self, *, base: str, item_id: str, head: str = "HEAD") -> dict:
+        return self._suggestion_tool_provider(base=base, head=head).get_suggestion_item(item_id=item_id)
+
+    def get_file_patch(
+        self,
+        *,
+        base: str,
+        item_id: str,
+        path: str,
+        head: str = "HEAD",
+        offset: int = 0,
+        limit: int = 12_000,
+    ) -> dict:
+        return self._suggestion_tool_provider(base=base, head=head).get_file_patch(
+            item_id=item_id,
+            path=path,
+            offset=offset,
+            limit=limit,
+        )
+
+    def search_item_diff(
+        self,
+        *,
+        base: str,
+        item_id: str,
+        query: str,
+        head: str = "HEAD",
+        limit: int = 5,
+    ) -> dict:
+        return self._suggestion_tool_provider(base=base, head=head).search_item_diff(
+            item_id=item_id,
+            query=query,
+            limit=limit,
+        )
+
     def state_show(self) -> dict:
         return {"items": [asdict(item) for item in self._store().load().items]}
 
@@ -238,6 +285,12 @@ class MCPService:
     def _store(self) -> StateStore:
         config = load_config()
         return StateStore(path=os.getenv("VERLATO_STATE_PATH", config.state_path))
+
+    def _suggestion_tool_provider(self, *, base: str, head: str) -> SuggestionEvidenceToolProvider:
+        groups = _collect_groups(base, head)
+        classifier = Classifier()
+        items = [classifier.classify(group, base_ref=base, head_ref=head)[0] for group in groups]
+        return SuggestionEvidenceToolProvider.from_groups(groups, items)
 
     def _draft_document_from_dict(self, data: dict) -> DraftDocument:
         return DraftDocument(

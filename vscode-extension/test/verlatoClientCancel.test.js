@@ -183,7 +183,7 @@ test("preview suggestions passes configured parallelism and batch size to the CL
   const client = makeClient((command, args, options) => {
     spawnCalls.push({ command, args, options });
     return child;
-  }, { suggestionParallelism: 4, suggestionBatchSize: 2 });
+  }, { suggestionParallelism: 4, suggestionBatchSize: 2, commitIntentInference: true });
 
   const pending = client.previewDraftSuggestions({ base: "v1.0.0", head: "HEAD" });
   await waitForSpawn(spawnCalls);
@@ -222,6 +222,7 @@ test("preview suggestions passes configured parallelism and batch size to the CL
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_PARALLELISM, "4");
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_BATCH_SIZE, "2");
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_STRATEGY, "auto");
+  assert.equal(spawnCalls[0].options.env.VERLATO_COMMIT_INTENT_INFERENCE, "low-signal");
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_PROMPT_PROFILE, "conservative");
   assert.equal(spawnCalls[0].options.env.VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS, "0");
   assert.equal(spawnCalls[0].options.env.VERLATO_OLLAMA_SUGGEST_MODEL, "");
@@ -376,6 +377,41 @@ test("clear suggestion cache invokes the state command", async () => {
   assert.equal(result.removed_entries, 2);
 });
 
+test("configured Windows command shim is launched through cmd.exe for CLI calls", { skip: process.platform !== "win32" }, async () => {
+  const originalComSpec = process.env.ComSpec;
+  process.env.ComSpec = "C:\\Windows\\System32\\cmd.exe";
+  const spawnCalls = [];
+  const child = makeChild(570);
+  const client = makeClient((command, args, options) => {
+    spawnCalls.push({ command, args, options });
+    return child;
+  }, { serviceMode: "cli", cliPath: "C:\\tools\\verlato.cmd" });
+
+  try {
+    const pending = client.clearSuggestionCache();
+    await waitForSpawn(spawnCalls);
+    child.stdout.emit("data", JSON.stringify({ removed_entries: 2, path: ".verlato_suggestion_cache.json" }));
+    child.emit("close", 0);
+    await pending;
+  } finally {
+    if (originalComSpec === undefined) {
+      delete process.env.ComSpec;
+    } else {
+      process.env.ComSpec = originalComSpec;
+    }
+  }
+
+  assert.equal(spawnCalls[0].command, "C:\\Windows\\System32\\cmd.exe");
+  assert.deepEqual(spawnCalls[0].args, [
+    "/d",
+    "/s",
+    "/c",
+    "C:\\tools\\verlato.cmd",
+    "state",
+    "clear-suggestion-cache",
+  ]);
+});
+
 test("service mode auto uses stdio service for core flows", async () => {
   const spawnCalls = [];
   const writes = [];
@@ -402,6 +438,42 @@ test("service mode auto uses stdio service for core flows", async () => {
   assert.equal(client.getCommandRequests()[0].command, "verlato-service");
   assert.equal(client.getCommandRequests()[0].status, "completed");
   assert.equal(client.lastStatus.label, "Verlato: Service");
+});
+
+test("configured Windows command shim is launched through cmd.exe for service mode", { skip: process.platform !== "win32" }, async () => {
+  const originalComSpec = process.env.ComSpec;
+  process.env.ComSpec = "C:\\Windows\\System32\\cmd.exe";
+  const spawnCalls = [];
+  const writes = [];
+  let serviceChild;
+  serviceChild = makeChild(607, (data) => {
+    writes.push(data);
+    const request = JSON.parse(data);
+    const result = request.method === "health"
+      ? { status: "ok", version: "0.1.0" }
+      : { removed_entries: 3, path: ".verlato_suggestion_cache.json" };
+    serviceChild.stdout.emit("data", `${JSON.stringify({ id: request.id, ok: true, result })}\n`);
+  });
+  const client = makeClient((command, args, options) => {
+    spawnCalls.push({ command, args, options });
+    return serviceChild;
+  }, { serviceMode: "auto", cliPath: "C:\\tools\\verlato.cmd" });
+
+  try {
+    const result = await client.clearSuggestionCache();
+    assert.equal(result.removed_entries, 3);
+  } finally {
+    if (originalComSpec === undefined) {
+      delete process.env.ComSpec;
+    } else {
+      process.env.ComSpec = originalComSpec;
+    }
+  }
+
+  assert.equal(spawnCalls[0].command, "C:\\Windows\\System32\\cmd.exe");
+  assert.deepEqual(spawnCalls[0].args.slice(0, 5), ["/d", "/s", "/c", "C:\\tools\\verlato.cmd", "service"]);
+  assert.equal(JSON.parse(writes[0]).method, "health");
+  assert.equal(JSON.parse(writes[1]).method, "state.clear_suggestion_cache");
 });
 
 test("service start failure falls back to CLI", async () => {

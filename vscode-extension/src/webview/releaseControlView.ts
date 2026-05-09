@@ -7,15 +7,24 @@ import {
   DraftRangeRequest,
   DraftSuggestionItem,
   DraftSuggestionPreview,
+  McpServerStatus,
   ModelSettings,
   OllamaDoctorResult,
   RepositoryOverview,
 } from "../client/types";
+import { McpServerController, notRunningStatus } from "../mcpServer";
 import { type NotificationAction, handleNotificationAction, showErrorNotification, showSuccessNotification } from "../notifications";
 import { buildReleaseControlHtml } from "./releaseControlMarkup";
 import { PreviewPanel } from "./previewPanel";
 
 const SUGGESTION_CACHE_WARM_DELAY_MS = 100;
+
+type RefreshHandler = (
+  document?: DraftDocument,
+  overview?: RepositoryOverview,
+  modelSettings?: ModelSettings,
+  suggestions?: DraftSuggestionPreview,
+) => void;
 
 export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined;
@@ -34,18 +43,28 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
   private suggestionWarmTimer: NodeJS.Timeout | undefined;
   private activeSuggestionWarm: { signature: string; promise: Promise<void> } | undefined;
   private lastSuggestionWarmSignature: string | undefined;
+  private mcpServerStatus: McpServerStatus = notRunningStatus();
+  private readonly mcpServer: McpServerController | undefined;
+  private readonly onDidRefresh: RefreshHandler | undefined;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly client: VerlatoClient,
     private readonly previewPanel: PreviewPanel,
-    private readonly onDidRefresh?: (
-      document?: DraftDocument,
-      overview?: RepositoryOverview,
-      modelSettings?: ModelSettings,
-      suggestions?: DraftSuggestionPreview,
-    ) => void,
+    mcpServerOrOnDidRefresh?: McpServerController | RefreshHandler,
+    onDidRefresh?: RefreshHandler,
   ) {
+    if (typeof mcpServerOrOnDidRefresh === "function") {
+      this.onDidRefresh = mcpServerOrOnDidRefresh;
+    } else {
+      this.mcpServer = mcpServerOrOnDidRefresh;
+      this.onDidRefresh = onDidRefresh;
+    }
+    this.mcpServerStatus = this.mcpServer?.getStatus() ?? notRunningStatus();
+    this.mcpServer?.onDidChangeStatus((status) => {
+      this.mcpServerStatus = status;
+      this.render();
+    });
     this.modelSettings = client.getModelSettings();
     this.requests = client.getCommandRequests();
     this.client.onDidChangeRequests((requests) => {
@@ -192,6 +211,18 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
     }
     if (message.type === "warmupOllama") {
       await this.warmupOllama();
+    }
+    if (message.type === "startMcpServer") {
+      if (this.mcpServer) {
+        const status = await this.mcpServer.start();
+        this.mcpServerStatus = status;
+        this.statusMessage = status.state === "running"
+          ? "Verlato MCP server started from the control view."
+          : `Verlato MCP server status: ${status.label}.`;
+        this.render();
+        return;
+      }
+      await vscode.commands.executeCommand("verlato.startMcpServer");
     }
     if (message.type === "togglePromptPayloads") {
       await this.togglePromptPayloads();
@@ -776,6 +807,7 @@ export class ReleaseControlViewProvider implements vscode.WebviewViewProvider {
       busy: this.busy,
       suggestions: this.suggestions,
       ollamaDoctor: this.ollamaDoctor,
+      mcpServerStatus: this.mcpServerStatus,
       requests: this.requests,
       statusMessage: this.statusMessage,
       errorMessage: this.errorMessage,

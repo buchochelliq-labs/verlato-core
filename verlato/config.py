@@ -52,6 +52,7 @@ class SuggestionStyleConfig:
 @dataclass
 class VerlatoConfig:
     state_path: str = ".verlato_state.json"
+    commit_intent_inference: str = "off"
     suggestion_cache_backend: str = "json"
     suggestion_cache_path: str = ".verlato_suggestion_cache.json"
     suggestion_cache_ttl_days: int = 30
@@ -87,6 +88,11 @@ def load_config(cwd: str | None = None) -> VerlatoConfig:
     config = VerlatoConfig(raw=raw)
     if raw.get("state_path"):
         config.state_path = str(raw["state_path"])
+    if raw.get("commit_intent_inference") is not None:
+        configured_inference = str(raw["commit_intent_inference"]).strip().lower()
+        config.commit_intent_inference = (
+            configured_inference if configured_inference in {"off", "low-signal"} else "off"
+        )
     if raw.get("suggestion_cache_backend"):
         config.suggestion_cache_backend = str(raw["suggestion_cache_backend"]).strip() or config.suggestion_cache_backend
     if raw.get("suggestion_cache_path"):

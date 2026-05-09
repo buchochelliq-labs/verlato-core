@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 
 import { registerCommands } from "./commands/registerCommands";
 import { VerlatoClient } from "./client/verlatoClient";
+import { McpServerController } from "./mcpServer";
 import { ReleaseSourcesProvider } from "./tree/releaseSourcesProvider";
 import { ReleaseActivityViewProvider } from "./webview/releaseActivityView";
 import { PreviewPanel } from "./webview/previewPanel";
@@ -16,10 +17,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const output = vscode.window.createOutputChannel("Verlato");
   const client = new VerlatoClient(workspaceFolder, context.extensionPath, output);
+  const mcpServer = new McpServerController(workspaceFolder);
   const previewPanel = new PreviewPanel();
   const releaseSourcesProvider = new ReleaseSourcesProvider();
   let releaseReleasesView: ReleaseReleasesViewProvider;
-  const releaseControlView = new ReleaseControlViewProvider(context.extensionUri, client, previewPanel, (document, overview, _modelSettings, suggestions) => {
+  const releaseControlView = new ReleaseControlViewProvider(context.extensionUri, client, previewPanel, mcpServer, (document, overview, _modelSettings, suggestions) => {
     releaseSourcesProvider.refresh(overview);
     releaseReleasesView.refresh(document, overview, suggestions);
   });
@@ -44,6 +46,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     output,
     client,
+    mcpServer,
     statusBarItem,
     vscode.window.registerWebviewViewProvider("verlato.control", releaseControlView),
     vscode.window.registerWebviewViewProvider("verlato.releases", releaseReleasesView),
@@ -62,7 +65,7 @@ export function activate(context: vscode.ExtensionContext): void {
     statusBarItem.tooltip = status.detail;
   });
 
-  registerCommands(context, client, releaseViewState, previewPanel);
+  registerCommands(context, client, releaseViewState, previewPanel, mcpServer);
   releaseViewState.refresh(undefined, undefined, client.getModelSettings());
   void client.initialize();
 }

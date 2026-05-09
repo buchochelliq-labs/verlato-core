@@ -1,5 +1,5 @@
 from verlato.core.classifier import Classifier
-from verlato.core.models import ChangedFile, ChangeGroup, Commit, PullRequest
+from verlato.core.models import ChangedFile, ChangeGroup, Commit, CommitIntent, PullRequest
 from verlato.providers.base import ProviderRequest, ProviderResponse, VerlatoProvider
 
 
@@ -29,6 +29,160 @@ def test_classifier_marks_internal_by_label():
     )
     item = Classifier().classify(group, base_ref="v1.0.0", head_ref="main")[0]
     assert item.classification.audience == "internal"
+
+
+def test_classifier_keeps_breaking_changes_as_their_own_changelog_kind():
+    group = ChangeGroup(
+        pr=PullRequest(
+            number=7,
+            title="Replace public auth API",
+            files=[ChangedFile(path="api/auth.py", status="modified", patch="+new auth contract")],
+        ),
+        commits=[Commit(sha="abc", message="feat!: replace public auth API")],
+    )
+
+    item = Classifier().classify(group, base_ref="v1.0.0", head_ref="main")[0]
+
+    assert item.classification.kind == "breaking"
+    assert item.classification.semver == "major"
+
+
+def test_classifier_detects_breaking_change_footer_case_insensitively():
+    group = ChangeGroup(
+        pr=PullRequest(
+            number=7,
+            title="Rename configuration flags",
+            files=[ChangedFile(path="src/config.py", status="modified", patch="+new flag names")],
+        ),
+        commits=[
+            Commit(
+                sha="abc",
+                message=(
+                    "refactor: rename configuration flags\n\n"
+                    "Breaking-Change: old CI flag names are no longer accepted"
+                ),
+            )
+        ],
+    )
+
+    item = Classifier().classify(group, base_ref="v1.0.0", head_ref="main")[0]
+
+    assert item.classification.kind == "breaking"
+    assert item.classification.semver == "major"
+
+
+def test_classifier_detects_common_changelog_parts_from_conventional_types():
+    cases = [
+        ("docs: document auth setup", "docs/auth.md", "documentation"),
+        ("perf: speed up search", "src/search.py", "performance"),
+        ("refactor: split release renderer", "src/render.py", "refactoring"),
+        ("test: cover release renderer", "tests/test_render.py", "tests"),
+        ("build: update packaging", "pyproject.toml", "build"),
+    ]
+
+    for message, path, expected_kind in cases:
+        group = ChangeGroup(
+            pr=PullRequest(
+                number=8,
+                title=message,
+                files=[ChangedFile(path=path, status="modified", patch="+change")],
+            ),
+            commits=[Commit(sha=f"sha-{expected_kind}", message=message)],
+        )
+
+        item = Classifier().classify(group, base_ref="v1.0.0", head_ref="main")[0]
+
+        assert item.classification.kind == expected_kind
+
+
+def test_classifier_uses_inferred_conventional_intent():
+    group = ChangeGroup(
+        pr=PullRequest(
+            number=8,
+            title="Wire token endpoint",
+            files=[ChangedFile(path="api/tokens.py", status="modified", patch="+token endpoint")],
+        ),
+        commits=[
+            Commit(
+                sha="inf",
+                message="wire token endpoint",
+                inferred_intent=CommitIntent(
+                    type="feat",
+                    scope="api",
+                    description="add token endpoint",
+                    confidence=0.82,
+                    model="mock",
+                ),
+            )
+        ],
+    )
+
+    item = Classifier().classify(group, base_ref="v1.0.0", head_ref="main")[0]
+
+    assert item.classification.kind == "added"
+    assert item.classification.semver == "minor"
+    assert "inferred-conventional:feat(api)" in item.evidence.commit_signals
+
+
+def test_classifier_maps_inferred_breaking_intent_to_major():
+    group = ChangeGroup(
+        pr=PullRequest(
+            number=8,
+            title="Replace token endpoint",
+            files=[ChangedFile(path="api/tokens.py", status="modified", patch="+new token endpoint")],
+        ),
+        commits=[
+            Commit(
+                sha="inf",
+                message="replace token endpoint",
+                inferred_intent=CommitIntent(
+                    type="feat",
+                    scope="api",
+                    description="replace token endpoint",
+                    breaking=True,
+                    confidence=0.88,
+                    model="mock",
+                ),
+            )
+        ],
+    )
+
+    item = Classifier().classify(group, base_ref="v1.0.0", head_ref="main")[0]
+
+    assert item.classification.kind == "breaking"
+    assert item.classification.semver == "major"
+    assert "inferred-breaking" in item.evidence.commit_signals
+
+
+def test_classifier_detects_changelog_parts_from_labels_and_statuses():
+    deprecated_group = ChangeGroup(
+        pr=PullRequest(
+            number=9,
+            title="Start deprecating legacy tokens",
+            labels=["deprecated"],
+            files=[ChangedFile(path="api/tokens.py", status="modified", patch="+legacy warning")],
+        ),
+        commits=[Commit(sha="dep", message="update tokens")],
+    )
+    added_group = ChangeGroup(
+        pr=PullRequest(number=10, title="Add helper", files=[ChangedFile(path="src/new_helper.py", status="added")]),
+        commits=[Commit(sha="add", message="add helper")],
+    )
+    removed_group = ChangeGroup(
+        pr=PullRequest(
+            number=11,
+            title="Remove helper",
+            files=[ChangedFile(path="src/old_helper.py", status="removed")],
+        ),
+        commits=[Commit(sha="rm", message="remove helper")],
+    )
+
+    classifier = Classifier()
+
+    deprecated = classifier.classify(deprecated_group, base_ref="v1.0.0", head_ref="main")[0]
+    assert classifier.classify(added_group, base_ref="v1.0.0", head_ref="main")[0].classification.kind == "added"
+    assert classifier.classify(removed_group, base_ref="v1.0.0", head_ref="main")[0].classification.kind == "removed"
+    assert deprecated.classification.kind == "deprecated"
 
 
 def test_classifier_uses_pr_diff_for_summary():
@@ -432,6 +586,23 @@ def test_classifier_rejects_low_value_provider_summary():
     assert "provider-summary" not in " ".join(item.evidence.commit_signals)
 
 
+def test_provider_classification_normalizes_changelog_kind_aliases():
+    provider = _ClassifyingProvider("breaking-change/api/external/major")
+    group = ChangeGroup(
+        pr=PullRequest(
+            number=12,
+            title="Replace public auth API",
+            files=[ChangedFile(path="api/auth.py", status="modified", patch="+new auth contract")],
+        ),
+        commits=[Commit(sha="abc", message="update auth")],
+    )
+
+    item = Classifier(provider=provider).classify(group, base_ref="v1.0.0", head_ref="main")[0]
+
+    assert item.classification.kind == "breaking"
+    assert item.classification.semver == "major"
+
+
 class _CapturingProvider(VerlatoProvider):
     def __init__(self, summary: str) -> None:
         self.summary = summary
@@ -443,3 +614,18 @@ class _CapturingProvider(VerlatoProvider):
 
     def classify(self, request: ProviderRequest) -> ProviderResponse:
         return ProviderResponse(content="", confidence=0.0, model="capture")
+
+
+class _ClassifyingProvider(VerlatoProvider):
+    def __init__(self, classification: str) -> None:
+        self.classification = classification
+
+    def summarize(self, request: ProviderRequest) -> ProviderResponse:
+        return ProviderResponse(
+            content="Describes the change with enough concrete detail",
+            confidence=0.8,
+            model="capture",
+        )
+
+    def classify(self, request: ProviderRequest) -> ProviderResponse:
+        return ProviderResponse(content=self.classification, confidence=0.9, model="capture")

@@ -5,6 +5,11 @@ export interface ExecutableResolution {
   searched: string[];
 }
 
+export interface SpawnCommandResolution {
+  command: string;
+  args: string[];
+}
+
 export function resolveVerlatoExecutable(options: {
   configuredPath: string;
   workspacePath: string;
@@ -12,7 +17,7 @@ export function resolveVerlatoExecutable(options: {
   existsSync: (candidate: string) => boolean;
   platform?: NodeJS.Platform;
 }): ExecutableResolution {
-  const configuredPath = options.configuredPath || "verlato";
+  const configuredPath = normalizeExecutablePath(options.configuredPath);
   if (configuredPath !== "verlato") {
     return { executable: configuredPath, searched: [configuredPath] };
   }
@@ -27,8 +32,41 @@ export function resolveVerlatoExecutable(options: {
   return { executable, searched: [...candidates, configuredPath] };
 }
 
+export function resolveSpawnCommand(
+  command: string,
+  args: string[],
+  options: { platform?: NodeJS.Platform; comSpec?: string } = {},
+): SpawnCommandResolution {
+  const executable = normalizeExecutablePath(command);
+  if ((options.platform ?? process.platform) === "win32" && isWindowsCommandScript(executable)) {
+    return {
+      command: options.comSpec || process.env.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", executable, ...args],
+    };
+  }
+  return { command: executable, args };
+}
+
 export function getVenvExecutable(rootPath: string, platform: NodeJS.Platform = process.platform): string {
   return platform === "win32"
     ? path.join(rootPath, ".venv", "Scripts", "verlato.exe")
     : path.join(rootPath, ".venv", "bin", "verlato");
+}
+
+function normalizeExecutablePath(value: string): string {
+  const trimmed = (value || "").trim();
+  if (!trimmed) {
+    return "verlato";
+  }
+  if (
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith("\"") && trimmed.endsWith("\"")) || (trimmed.startsWith("'") && trimmed.endsWith("'")))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function isWindowsCommandScript(value: string): boolean {
+  return /\.(?:cmd|bat)$/i.test(value);
 }

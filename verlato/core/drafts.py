@@ -7,7 +7,8 @@ from datetime import date
 from pathlib import Path
 
 from verlato.config import OutputTargetConfig, VerlatoConfig, resolve_target_path
-from verlato.core.generator import MarkdownGenerator, SECTION_MAP
+from verlato.core.changelog import changelog_section_title, normalize_change_kind, ordered_change_kinds
+from verlato.core.generator import MarkdownGenerator
 from verlato.core.models import ChangeItem
 
 
@@ -161,7 +162,8 @@ class DraftService:
     def _build_sections(self, items: list[ChangeItem]) -> list[DraftSection]:
         grouped: dict[str, list[DraftItem]] = {}
         for item in items:
-            grouped.setdefault(item.classification.kind, []).append(
+            kind = normalize_change_kind(item.classification.kind) or item.classification.kind
+            grouped.setdefault(kind, []).append(
                 DraftItem(
                     id=item.id,
                     title=item.content.title,
@@ -170,7 +172,7 @@ class DraftService:
                     summary_source=self._summary_source(item),
                     classification_source=self._classification_source(item),
                     evidence_summary=self._evidence_summary(item),
-                    kind=item.classification.kind,
+                    kind=kind,
                     area=item.classification.area,
                     audience=item.classification.audience,
                     semver=item.classification.semver,
@@ -192,9 +194,9 @@ class DraftService:
             )
 
         sections: list[DraftSection] = []
-        for key in ["added", "changed", "fixed", "removed", "security", "internal"]:
+        for key in ordered_change_kinds(grouped):
             if key in grouped:
-                sections.append(DraftSection(kind=key, title=SECTION_MAP[key], items=grouped[key]))
+                sections.append(DraftSection(kind=key, title=changelog_section_title(key), items=grouped[key]))
         return sections
 
     def _resolve_target(self, target_name: str, *, target_path: str | None = None) -> OutputTargetConfig:
@@ -262,6 +264,10 @@ class DraftService:
         )
         if provider_signal:
             return f"LLM classification assist ({provider_signal.split(':', 1)[1]})"
+        if any(signal.startswith("inferred-conventional:") for signal in item.evidence.commit_signals):
+            if any(signal.startswith("conventional:") for signal in item.evidence.commit_signals):
+                return "Deterministic classification from conventional commit signal with inferred scope"
+            return "Deterministic classification from inferred conventional commit evidence"
         if any(signal.startswith("conventional:") for signal in item.evidence.commit_signals):
             return "Deterministic classification from conventional commit signal"
         if any(signal.startswith("label:") for signal in item.evidence.commit_signals):

@@ -66,17 +66,26 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
 2. **Service-first editor integration**
    - Replace remaining CLI fallback flows in the extension with a richer local service contract.
    - Add connection lifecycle states so VS Code can show when the service is starting, ready, degraded, or unavailable.
-3. **Scale and collaboration**
+3. **Changelog taxonomy and release-note intelligence**
+   - [x] Expand the built-in changelog sections beyond `Added`, `Changed`, and `Fixed` to include breaking changes, removals, deprecations, security, docs, performance, refactors, tests, build, internal work, and other changes.
+   - [ ] Add configurable section taxonomy, ordering, aliases, and display titles in `verlato.json`, with Keep a Changelog-style defaults.
+   - [ ] Detect and preserve existing changelog section conventions when applying drafts to a target file.
+   - [ ] Keep breaking changes protected: never silently hide them behind internal/test/docs filters, and always expose their major-version impact in draft/review surfaces.
+   - [ ] Add release-note fragment support inspired by Changesets/Towncrier-style workflows, so explicit human-written snippets can override or seed inferred summaries.
+   - [ ] Layer classification evidence in a predictable order: release fragments, PR labels, conventional commits, file status/path signals, diff evidence, then model suggestions.
+   - [ ] Add strictness modes for unconventional histories: require conventional commits, bucket unconventional changes under `Other`, or allow diff-first fallback inference.
+   - [ ] Include draft/review stats by changelog section, SemVer impact, author, scope, PR count, hidden item count, and suggestion provenance.
+4. **Scale and collaboration**
    - Add auth/session strategy for non-local or multi-client MCP transports.
    - Add optional DuckDB/Delta-backed analytical storage for larger repositories and feedback/model telemetry exploration.
-4. **Audited BYOM plugins**
+5. **Audited BYOM plugins**
    - [x] Keep prompts, diff evidence, schemas, validation, and provenance internal to Verlato.
    - [x] Run third-party plugins out of process with stdin/stdout JSON, stderr diagnostics, timeout, minimal env, and no repo cwd.
    - [x] Add tests for valid plugin responses, bad JSON, nonzero exit, timeout, stderr diagnostics, and hash mismatch.
    - [x] Add advisory `doctor model` probe for the selected suggestion model.
    - [ ] Surface plugin health/config metadata in VS Code settings.
    - [ ] Add a signed or trusted-plugin story if third-party plugins become distributed packages.
-5. **Diff-first suggestion quality**
+6. **Diff-first suggestion quality**
    - [x] Remove/reject the no-model `instant` suggestion path.
    - [x] Fail suggestion generation when no diff patch evidence is available.
    - [x] Record full-diff payload metrics and provider audit hashes in suggestion provenance metadata.
@@ -95,17 +104,32 @@ This backlog is the implementation tracker for the MVP and near-term follow-ups 
    - Expose tools such as `list_suggestion_items`, `get_item_diff`, and `get_file_patch`.
    - Let a model request specific diff chunks only when full-diff JSON cannot fit in context.
    - Keep this as a follow-up because tool loops add round trips and may hurt local Ollama latency.
-3. **Service-first editor integration**
+3. **Configurable changelog taxonomy and existing-section detection**
+   - Add `verlato.json` settings for section order, aliases, and display titles.
+   - Detect existing changelog headings such as `Added`, `Changed`, `Removed`, `Deprecated`, `Security`, and `Breaking Changes` before applying drafts.
+   - Preserve project-specific section names while keeping canonical internal kinds for classification and drafts.
+4. **Protected breaking-change review**
+   - Ensure breaking changes remain visible even when filters hide internal, docs, tests, or low-confidence items.
+   - Surface major-version impact in CLI JSON, rendered drafts, and the VS Code review panel.
+   - Add regression tests for breaking-change labels, conventional `!`, and footer/body signals.
+5. **Release-note fragments and evidence precedence**
+   - Support checked-in release-note fragments for teams that want explicit human-authored entries.
+   - Define precedence between fragments, PR labels, conventional commits, path/status heuristics, diff evidence, and model suggestions.
+   - Show when a summary came from a fragment versus inference or a generated suggestion.
+6. **Draft/review section analytics**
+   - Add counts by changelog section, SemVer impact, author, scope, PR count, hidden count, and suggestion source to draft JSON.
+   - Render those stats compactly in CLI output and VS Code so reviewers can spot missing categories before applying.
+7. **Service-first editor integration**
    - Replace remaining CLI-backed VS Code flows with a richer local service contract.
    - Add connection lifecycle states so VS Code can show starting, ready, degraded, and unavailable service states.
-4. **Feedback-driven prompt tuning**
+8. **Feedback-driven prompt tuning**
    - Use accepted, rejected, skipped, and regenerated suggestion feedback to recommend project style and prompt adjustments.
    - Surface safe aggregate recommendations without persisting raw prompt or response text by default.
-5. **Scale backend**
+9. **Scale backend**
    - Add optional DuckDB/Delta-backed analytical storage for larger repositories, release lineage exploration, feedback events, and model telemetry.
-6. **Model log export maturity**
+10. **Model log export maturity**
    - Add OTLP export for provider/model telemetry so model-call diagnostics can feed standard observability tooling.
-7. **BYOM plugin UX**
+11. **BYOM plugin UX**
    - Render plugin `config_schema` in VS Code.
    - Add model health warnings for slow cold starts, slow warm responses, invalid schema output, and timeouts.
    - Keep LiteLLM as the documented default recommendation, with plugins reserved for unsupported runtimes/auth paths.

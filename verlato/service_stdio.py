@@ -104,6 +104,35 @@ def _dispatch(service: MCPService, method: str, params: dict[str, object]) -> ob
         return service.clear_working_state()
     if method == "state.clear_suggestion_cache":
         return service.clear_suggestion_cache()
+    if method == "suggestion.items":
+        return service.list_suggestion_items(
+            base=_required_string(params, "base"),
+            head=str(params.get("head") or "HEAD"),
+            include_files=bool(params.get("include_files") or params.get("includeFiles")),
+        )
+    if method == "suggestion.item":
+        return service.get_suggestion_item(
+            base=_required_string(params, "base"),
+            head=str(params.get("head") or "HEAD"),
+            item_id=_required_string(params, "item_id"),
+        )
+    if method == "suggestion.patch":
+        return service.get_file_patch(
+            base=_required_string(params, "base"),
+            head=str(params.get("head") or "HEAD"),
+            item_id=_required_string(params, "item_id"),
+            path=_required_string(params, "path"),
+            offset=_optional_int(params.get("offset"), 0),
+            limit=_optional_int(params.get("limit"), 12000),
+        )
+    if method == "suggestion.search":
+        return service.search_item_diff(
+            base=_required_string(params, "base"),
+            head=str(params.get("head") or "HEAD"),
+            item_id=_required_string(params, "item_id"),
+            query=_required_string(params, "query"),
+            limit=_optional_int(params.get("limit"), 5),
+        )
     raise ServiceProtocolError(f"Unknown service method: {method}")
 
 
@@ -131,6 +160,15 @@ def _optional_string(value: object) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _optional_int(value: object, default: int) -> int:
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _write_response(output_stream: IO[str], response: dict[str, object]) -> None:

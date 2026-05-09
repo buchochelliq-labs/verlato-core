@@ -92,6 +92,7 @@ verlato draft apply --base <ref> --head <ref> --target changelog --version v1.2.
 verlato draft review --base <ref> --id <item-id> --status ready --reviewer alice
 verlato service
 verlato serve
+verlato-mcp
 verlato render --format github-release --version v1.2.0
 verlato render --format changelog --version v1.2.0
 verlato state show
@@ -109,6 +110,7 @@ verlato state mark-published --version v1.2.0 --all-unpublished
 - `draft apply`: updates a configured or explicit release-note target file.
 - `draft review`: persists review metadata such as status, hidden state, reviewer, and edited summary for a draft item.
 - `serve`: starts the FastMCP stdio server.
+- `verlato-mcp`: packaged console entrypoint for the same MCP stdio server, intended for MCP client configuration.
 - `reconcile`: explicitly lists unpublished deltas for a ref range (no state mutation).
 - `state show`: prints persisted state JSON.
 - `state mark-published`: marks items as published for a given release/tag.
@@ -141,7 +143,8 @@ Environment variables:
 - `VERLATO_OLLAMA_SUGGEST_THINK`: set to `1` to allow Ollama thinking/reasoning on suggestion requests; defaults to `0`.
 - `VERLATO_MODEL_MAX_ITEMS`: maximum grouped changes before Verlato disables provider calls for that scan (default `25`; use `-1` to disable the fanout guard).
 - `VERLATO_SUGGESTION_PARALLELISM`: maximum `draft suggest --preview` item suggestions to run at once (CLI/config default `1`, VS Code default `2`, clamped to `1`-`8`).
-- `VERLATO_SUGGESTION_STRATEGY`: suggestion generation strategy: `auto` (CLI/config and VS Code default), `single`, `paired`, or `full-diff-json`. `instant` has been removed; suggestions must be backed by Verlato-built diff evidence and a model response.
+- `VERLATO_SUGGESTION_STRATEGY`: suggestion generation strategy: `auto` (CLI/config and VS Code default), `single`, `paired`, `full-diff-json`, or `tool-retrieval`. `instant` has been removed; suggestions must be backed by Verlato-built diff evidence and a model response.
+- `VERLATO_COMMIT_INTENT_INFERENCE`: optional inferred conventional commit pass: `off` (default) or `low-signal`. When enabled, Verlato asks the configured provider to infer conventional type/scope only for non-conventional commits or conventional commits without a scope before grouping.
 - `VERLATO_SUGGESTION_PROMPT_PROFILE`: suggestion prompt budget profile: `conservative` (default), `lean`, or `minimal`.
 - `VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS`: set to `1` to include recommendation-only adaptive suggestion tuning advice in preview and doctor JSON.
 - `VERLATO_SUGGESTION_CACHE_BACKEND`: suggestion cache backend name (default `json`; additional backends can be registered by Python integrations).
@@ -191,6 +194,8 @@ Custom model plugins are intentionally transport-only. A plugin manifest exposes
 
 You can also override the provider for one CLI run with `--model-provider mock`, `--model-provider ollama`, `--model-provider litellm`, `--model-provider plugin`, `--model-provider github-copilot`, `--model-provider codex-cli`, or `--model-provider claude-code` on `scan`, `generate`, `reconcile`, and `draft` commands. The VS Code extension exposes the same override through the `verlato.modelProvider` setting; leave it as `configured` to honor `verlato.json` or environment variables. The `draft suggest` command defaults to `ollama` when no provider is configured because suggestions must be model-backed.
 
+Commit intent inference is opt-in. Set `commit_intent_inference` to `low-signal`, export `VERLATO_COMMIT_INTENT_INFERENCE=low-signal`, pass `--infer-commit-intents`, or enable `verlato.commitIntentInference` in VS Code to infer conventional metadata before grouping. Pass `--no-infer-commit-intents` to force it off for a command. Authored scoped conventional commits always win over inferred metadata, and inference is skipped when eligible commits exceed the configured fanout guard.
+
 `draft suggest` generates one suggested description by default. Use `--count`, `VERLATO_SUGGESTION_COUNT`, `suggestion_count` in `verlato.json`, or the VS Code `verlato.suggestionCount` setting to request up to five variants. Use `--parallelism`, `VERLATO_SUGGESTION_PARALLELISM`, `suggestion_parallelism`, or the VS Code `verlato.suggestionParallelism` setting to run independent preview suggestions concurrently. `auto` uses full available changed-file patches, PR body, commits, labels, current summary, and classification context as structured JSON for capable providers such as Ollama, LiteLLM, and plugins; no diff patch evidence means no generated suggestion. Use `--strategy single` for an item-by-item diff prompt, `paired` for two-item structured requests, or `full-diff-json` explicitly. Use `--batch-size`, `VERLATO_SUGGESTION_BATCH_SIZE`, `suggestion_batch_size`, or `verlato.suggestionBatchSize` to control how many uncached items can share one structured model request; the default is `5`, capped at `5`. Use `--suggest-model`, provider-specific `*_SUGGEST_MODEL` variables, `provider.suggest_model`, or `verlato.ollamaSuggestionModel` to route fresh suggestion misses to a smaller model while summaries/classification keep using the main model. Use `--prompt-profile`, `VERLATO_SUGGESTION_PROMPT_PROFILE`, `suggestion_prompt_profile`, or `verlato.suggestionPromptProfile` to choose `conservative`, `lean`, or `minimal` prompt budgets for fallback/single-item prompts. Use `--adaptive-recommendations`, `VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS`, `suggestion_adaptive_recommendations`, or `verlato.suggestionAdaptiveRecommendations` to show opt-in, recommendation-only tuning advice. Use `--tone`, `VERLATO_SUGGESTION_TONE`, `suggestion_tone`, or `verlato.suggestionTone` to choose `release-note`, `concise`, `technical`, or `customer-facing` wording. Project language controls can be set with `suggestion_style` in config, `VERLATO_STYLE_GUIDANCE`, `VERLATO_PROJECT_VOCABULARY`, `VERLATO_BANNED_PHRASES`, `VERLATO_SPECIFICITY_FLOOR`, or the matching VS Code settings. Banned phrase matches are rejected from suggestion candidates; specificity rejection is opt-in by setting a floor above `0`. Preview suggestions use the built-in `json` cache backend by default for model-backed strategies, persisted at `.verlato_suggestion_cache.json` after prompt preparation, so repeated runs can skip the provider when item checksum, prompt hash, provider/model, tone, style, count, prompt profile, and strategy still match. Use `--refresh-cache` to bypass reads and overwrite entries, `--no-cache` to bypass reads and writes, or `verlato state clear-suggestion-cache` to remove the active cache. The VS Code release control view can regenerate all visible suggestions or regenerate a single item after changing tone; regenerate requests refresh the cache for model-backed strategies. Run `verlato doctor model` to probe the selected suggestion model with a tiny diff-shaped structured request and get advisory warnings for slow or invalid output. Set `VERLATO_TRACE_MODEL_CALLS=1` or pass `draft suggest --trace-suggestions` to log model-call and suggestion parsing diagnostics to stderr without changing JSON stdout.
 
 Ollama server-side concurrency is controlled by the Ollama process, not by Verlato. If suggestion diagnostics show queue time while `suggestionParallelism` is above `1`, set `OLLAMA_NUM_PARALLEL` before starting Ollama and size it carefully with available memory; `OLLAMA_MAX_QUEUE` controls the server request queue, `OLLAMA_CONTEXT_LENGTH` affects memory use per parallel request, and `VERLATO_OLLAMA_KEEP_ALIVE` keeps the selected model loaded between nearby calls.
@@ -235,7 +240,12 @@ Editor integration:
   - `verlato_preview_release_notes`
   - `verlato_apply_draft`
   - `verlato_update_review_state`
+  - `verlato_request_model_input`
   - `verlato_reconcile_preview`
+  - `verlato_list_suggestion_items`
+  - `verlato_get_suggestion_item`
+  - `verlato_get_file_patch`
+  - `verlato_search_item_diff`
 - The MCP server also exposes read-only resources:
   - `verlato://overview`
   - `verlato://guidance/{name}`
@@ -245,8 +255,9 @@ Editor integration:
 MCP setup:
 
 - Install the optional FastMCP v3+ dependency with `python -m pip install -e .[mcp]`.
-- The checked-in [.vscode/mcp.json](.vscode/mcp.json) runs `fastmcp run ${workspaceFolder}/scripts/verlato_mcp_server.py:mcp`.
-- Start the MCP server manually with `verlato serve` if you are not using the workspace config. This is separate from the extension's built-in `verlato service` transport and still requires FastMCP.
+- The checked-in [.vscode/mcp.json](.vscode/mcp.json) runs the packaged `verlato-mcp` stdio server entrypoint.
+- Start the MCP server manually with `verlato serve` or `verlato-mcp` if you are not using the workspace config. This is separate from the extension's built-in `verlato service` transport and still requires FastMCP.
+- The VS Code Verlato control view shows whether Verlato has started an MCP server terminal from the current window and includes a Start action for `verlato serve`; stdio MCP clients such as VS Code/Copilot still launch their own attached server from `.vscode/mcp.json`, so the best attached-client health check is calling `verlato_service_health`.
 
 VS Code extension local testing:
 

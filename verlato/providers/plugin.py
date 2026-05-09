@@ -64,7 +64,7 @@ class ExternalModelPluginProvider(VerlatoProvider):
         self.timeout_seconds = timeout_seconds or DEFAULT_PLUGIN_TIMEOUT_SECONDS
 
     def summarize(self, request_data: ProviderRequest) -> ProviderResponse:
-        task = "suggest" if request_data.task == "suggest" else "summarize"
+        task = request_data.task if request_data.task in {"suggest", "infer-conventional"} else "summarize"
         return self._invoke(task=task, request_data=request_data)
 
     def classify(self, request_data: ProviderRequest) -> ProviderResponse:

@@ -248,6 +248,80 @@ def test_ollama_provider_sends_response_format_for_structured_suggestions(monkey
     assert captured["body"]["format"] == {"type": "object", "required": ["items"]}
 
 
+def test_ollama_provider_runs_tool_call_loop(monkeypatch):
+    captured_bodies: list[dict[str, object]] = []
+    responses = [
+        {
+            "message": {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "verlato_get_file_patch",
+                            "arguments": {"item_id": "ci_1", "path": "src/auth.py"},
+                        }
+                    }
+                ],
+            }
+        },
+        {"message": {"content": "Uses the retrieved auth patch."}},
+    ]
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        captured_bodies.append(json.loads(req.data.decode("utf-8")))
+        return FakeResponse(responses.pop(0))
+
+    tool_calls: list[tuple[str, dict[str, object]]] = []
+
+    def tool_executor(name: str, arguments: dict[str, object]) -> dict[str, object]:
+        tool_calls.append((name, arguments))
+        return {"patch": "@@ -1 +1 @@\n-old\n+new"}
+
+    monkeypatch.setattr("verlato.providers.ollama.request.urlopen", fake_urlopen)
+
+    provider = OllamaProvider(model="test-model")
+    response = provider.summarize(
+        ProviderRequest(
+            task="suggest",
+            prompt="Use tools before suggesting.",
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "verlato_get_file_patch",
+                        "description": "Get a patch.",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            tool_executor=tool_executor,
+            max_tool_rounds=2,
+        )
+    )
+
+    assert response.content == "Uses the retrieved auth patch."
+    assert response.metadata["tool_rounds"] == 1
+    assert response.metadata["tool_call_count"] == 1
+    assert response.metadata["tool_names"] == ["verlato_get_file_patch"]
+    assert tool_calls == [("verlato_get_file_patch", {"item_id": "ci_1", "path": "src/auth.py"})]
+    assert captured_bodies[0]["tools"]
+    assert captured_bodies[1]["messages"][-1]["role"] == "tool"
+    assert "@@ -1 +1 @@" in captured_bodies[1]["messages"][-1]["content"]
+
+
 def test_ollama_provider_streams_chat_response_chunks(monkeypatch):
     captured: dict[str, object] = {}
     records: list[ModelLogRecord] = []

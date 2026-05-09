@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const test = require("node:test");
 
-const { getVenvExecutable, resolveVerlatoExecutable } = require("../dist/client/cliResolution");
+const { getVenvExecutable, resolveSpawnCommand, resolveVerlatoExecutable } = require("../dist/client/cliResolution");
 
 const workspacePath = path.join("C:", "repos", "consumer-project");
 const extensionPath = path.join("C:", "repos", "verlato", "vscode-extension");
@@ -27,6 +27,20 @@ test("uses configured verlato CLI path without probing fallback locations", () =
     searched: [configuredPath],
   });
   assert.deepEqual(seen, []);
+});
+
+test("normalizes configured CLI path whitespace and quotes", () => {
+  const configuredPath = `"${path.join("C:", "tools", "verlato.exe")}"`;
+
+  const resolution = resolveVerlatoExecutable({
+    configuredPath: `  ${configuredPath}  `,
+    workspacePath,
+    extensionPath,
+    existsSync: () => false,
+    platform: "win32",
+  });
+
+  assert.equal(resolution.executable, path.join("C:", "tools", "verlato.exe"));
 });
 
 test("prefers a workspace-local verlato CLI when no explicit path is configured", () => {
@@ -105,4 +119,27 @@ test("builds the platform-specific verlato executable path", () => {
     getVenvExecutable(workspacePath, "win32"),
     path.join(workspacePath, ".venv", "Scripts", "verlato.exe"),
   );
+});
+
+test("wraps Windows command shims through cmd.exe", () => {
+  const shimPath = path.join("C:", "tools", "verlato.cmd");
+
+  const resolution = resolveSpawnCommand(shimPath, ["state", "show"], {
+    platform: "win32",
+    comSpec: "C:\\Windows\\System32\\cmd.exe",
+  });
+
+  assert.deepEqual(resolution, {
+    command: "C:\\Windows\\System32\\cmd.exe",
+    args: ["/d", "/s", "/c", shimPath, "state", "show"],
+  });
+});
+
+test("spawns native executables directly", () => {
+  const exePath = path.join("C:", "tools", "verlato.exe");
+
+  assert.deepEqual(resolveSpawnCommand(exePath, ["state", "show"], { platform: "win32" }), {
+    command: exePath,
+    args: ["state", "show"],
+  });
 });

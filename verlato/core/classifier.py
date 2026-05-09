@@ -5,7 +5,9 @@ import re
 import sys
 from dataclasses import dataclass
 
+from verlato.core.changelog import VALID_CHANGE_KINDS, normalize_change_kind
 from verlato.core.checksum import CHECKSUM_VERSION, build_checksum
+from verlato.core.commit_intent import commit_intent_payload, effective_conventional_commit
 from verlato.core.conventional import parse_conventional_commit
 from verlato.core.diff_evidence import DiffEvidenceBuilder
 from verlato.core.models import (
@@ -15,6 +17,7 @@ from verlato.core.models import (
     Content,
     Evidence,
     SourceRef,
+    changed_files_for_group,
     default_review_status,
 )
 from verlato.providers.base import ProviderRequest, VerlatoProvider
@@ -145,12 +148,12 @@ class Classifier:
         "test": "tests",
         "testing": "tests",
     }
-    INTERNAL_LABELS = {"internal", "chore", "maintenance", "docs", "documentation", "test", "testing"}
+    INTERNAL_LABELS = {"internal", "chore", "maintenance", "docs", "documentation", "test", "testing", "build", "ci"}
 
     PROVIDER_CLASSIFICATION = re.compile(
         r"(?P<kind>[a-z-]+)/(?P<area>[a-z0-9_-]+)/(?P<audience>[a-z-]+)/(?P<semver>[a-z-]+)"
     )
-    VALID_KINDS = {"added", "changed", "fixed", "removed", "security", "internal"}
+    VALID_KINDS = VALID_CHANGE_KINDS
     VALID_AUDIENCES = {"external", "internal"}
     VALID_SEMVER = {"major", "minor", "patch", "none"}
     LOW_DETAIL_SUGGESTIONS = {
@@ -183,7 +186,7 @@ class Classifier:
     def classify(self, group: ChangeGroup, base_ref: str, head_ref: str, *, summary_only: bool = False) -> list[ChangeItem]:
         pr = group.pr
         labels = [label.lower() for label in (pr.labels if pr else [])]
-        changed_files = (pr.files or group.files) if pr else group.files
+        changed_files = changed_files_for_group(group)
         diff = self.diff_builder.build(changed_files)
 
         kind = "changed"
@@ -192,44 +195,97 @@ class Classifier:
         audience = "external"
         confidence = 0.55
         commit_signals: list[str] = []
+        label_kind = self._classify_kind_from_labels(labels)
 
         parsed = []
+        best_authored = None
+        inferred_conventional_used = False
         for commit in group.commits:
-            parsed_commit = parse_conventional_commit(commit.message)
+            parsed_commit, used_inferred = effective_conventional_commit(commit)
             if parsed_commit:
                 parsed.append(parsed_commit)
+                authored_commit = parse_conventional_commit(commit.message)
+                if best_authored is None and authored_commit:
+                    best_authored = authored_commit
+                if used_inferred:
+                    inferred_conventional_used = True
         if parsed:
             best = parsed[0]
-            commit_signals.append(f"conventional:{best.type}")
+            if best_authored:
+                commit_signals.append(f"conventional:{best_authored.type}")
+            if inferred_conventional_used:
+                scope_suffix = f"({best.scope})" if best.scope else ""
+                commit_signals.append(f"inferred-conventional:{best.type}{scope_suffix}")
+                if best.breaking and not (best_authored and best_authored.breaking):
+                    commit_signals.append("inferred-breaking")
+            elif not best_authored:
+                commit_signals.append(f"conventional:{best.type}")
             if best.breaking:
-                kind, semver = "removed", "major"
+                kind, semver = "breaking", "major"
             elif best.type == "feat":
                 kind, semver = "added", "minor"
             elif best.type == "fix":
                 kind, semver = "fixed", "patch"
-            elif best.type in {"docs", "test", "chore"}:
+            elif best.type == "docs":
+                kind, audience, semver = "documentation", "internal", "none"
+            elif best.type == "test":
+                kind, audience, semver = "tests", "internal", "none"
+            elif best.type in {"build", "ci"}:
+                kind, audience, semver = "build", "internal", "none"
+            elif best.type == "perf":
+                kind, semver = "performance", "patch"
+            elif best.type == "refactor":
+                kind, semver = "refactoring", "patch"
+            elif best.type in {"deprecate", "deprecated"}:
+                kind, semver = "deprecated", "minor"
+            elif best.type in {"remove", "removed", "delete"}:
+                kind, semver = "removed", "patch"
+            elif best.type in {"security", "sec"}:
+                kind, semver = "security", "patch"
+            elif best.type in {"chore", "style"}:
                 kind, audience = "internal", "internal"
             confidence = 0.85
+        elif label_kind:
+            kind = label_kind
+            semver = self._semver_for_kind(kind)
+            if kind in {"documentation", "tests", "build", "internal"}:
+                audience = "internal"
+            confidence = max(confidence, 0.78)
+            commit_signals.append(f"label:{kind}")
+        else:
+            status_kind = self._classify_kind_from_statuses(diff.file_statuses)
+            if status_kind:
+                kind = status_kind
+                semver = self._semver_for_kind(kind)
 
         general_files = diff.files_by_area.get("general", [])
-        has_security_signal = any("security" in label for label in labels) or any(
+        has_breaking_signal = kind == "breaking" or self._has_breaking_signal(group, labels)
+        if has_breaking_signal:
+            kind, semver, confidence = "breaking", "major", max(confidence, 0.86)
+        has_security_signal = kind == "security" or any("security" in label for label in labels) or any(
             "security" in path.lower() for path in general_files
         )
-        if has_security_signal:
+        if has_security_signal and kind != "breaking":
             kind, semver, confidence = "security", "patch", max(confidence, 0.8)
 
-        if diff.docs_only or diff.tests_only:
-            kind, audience = "internal", "internal"
-            semver = "none"
+        if diff.docs_only and kind not in {"breaking", "security"}:
+            kind, audience, semver = "documentation", "internal", "none"
+            area = "docs"
+        elif diff.tests_only and kind not in {"breaking", "security"}:
+            kind, audience, semver = "tests", "internal", "none"
             area = "docs" if diff.docs_only else "tests"
 
         if any(lbl in self.INTERNAL_LABELS for lbl in labels):
             audience = "internal"
             confidence = max(confidence, 0.78)
-            commit_signals.append("label:internal")
+            if (
+                "label:internal" not in commit_signals
+                and not any(signal.startswith("label:") for signal in commit_signals)
+            ):
+                commit_signals.append("label:internal")
 
         if not parsed:
-            confidence = 0.62
+            confidence = max(confidence, 0.62)
             commit_signals.append("diff-fallback")
 
         title = (pr.title if pr else group.commits[0].message.splitlines()[0]).strip()
@@ -320,6 +376,9 @@ class Classifier:
             "pr_body": group.pr.body if group.pr else "",
             "commits": [commit.message for commit in group.commits],
             "commit_subjects": [commit.message.splitlines()[0] for commit in group.commits],
+            "inferred_commit_intents": [
+                payload for commit in group.commits if (payload := commit_intent_payload(commit.inferred_intent))
+            ],
             "diff_summary": diff.summary,
             "files_by_area": diff.files_by_area,
             "file_statuses": diff.file_statuses,
@@ -443,7 +502,7 @@ class Classifier:
         prompt_profile: str = "summary",
     ) -> SummaryPrompt:
         profile = _prompt_budget_profile(prompt_profile)
-        commit_subjects = [commit.message.splitlines()[0] for commit in commits[:profile.commits]]
+        commit_subjects = [_commit_prompt_line(commit) for commit in commits[:profile.commits]]
         commit_lines = "; ".join(commit_subjects) or "none"
         if len(commits) > profile.commits:
             commit_lines += f"; ... and {len(commits) - profile.commits} more"
@@ -550,10 +609,12 @@ class Classifier:
         )
 
     def _build_classification_prompt(self, *, title: str, labels: list[str], diff_summary: str, commits: list) -> str:
-        commit_lines = "; ".join(commit.message.splitlines()[0] for commit in commits)
+        commit_lines = "; ".join(_commit_prompt_line(commit) for commit in commits)
         label_text = ", ".join(labels) if labels else "none"
+        valid_kinds = ", ".join(sorted(self.VALID_KINDS))
         return (
             f"Classify this change as kind/area/audience/semver.\n"
+            f"Valid changelog kinds: {valid_kinds}.\n"
             f"Title: {title}\n"
             f"Labels: {label_text}\n"
             f"Commits: {commit_lines}\n"
@@ -564,11 +625,16 @@ class Classifier:
         match = self.PROVIDER_CLASSIFICATION.search((content or "").lower())
         if not match:
             return None
-        kind = match.group("kind")
+        kind = normalize_change_kind(match.group("kind"))
         area = match.group("area")
         audience = match.group("audience")
         semver = match.group("semver")
-        if kind not in self.VALID_KINDS or audience not in self.VALID_AUDIENCES or semver not in self.VALID_SEMVER:
+        if (
+            kind is None
+            or kind not in self.VALID_KINDS
+            or audience not in self.VALID_AUDIENCES
+            or semver not in self.VALID_SEMVER
+        ):
             return None
         return kind, area, audience, semver
 
@@ -630,6 +696,44 @@ class Classifier:
         ordered = sorted(files_by_area.items(), key=lambda item: (-len(item[1]), item[0]))
         return ordered[0][0]
 
+    def _classify_kind_from_labels(self, labels: list[str]) -> str | None:
+        for label in labels:
+            kind = normalize_change_kind(label)
+            if kind:
+                return kind
+        return None
+
+    def _classify_kind_from_statuses(self, file_statuses: dict[str, str]) -> str | None:
+        statuses = {status.lower() for status in file_statuses.values() if status}
+        if not statuses:
+            return None
+        if statuses <= {"added"}:
+            return "added"
+        if statuses <= {"removed"}:
+            return "removed"
+        return None
+
+    def _has_breaking_signal(self, group: ChangeGroup, labels: list[str]) -> bool:
+        if any(normalize_change_kind(label) == "breaking" for label in labels):
+            return True
+        haystack = "\n".join(
+            [
+                group.pr.title if group.pr else "",
+                group.pr.body if group.pr else "",
+                "\n".join(commit.message for commit in group.commits),
+            ]
+        )
+        return re.search(r"\bbreaking[- ]change\b", haystack, flags=re.IGNORECASE) is not None
+
+    def _semver_for_kind(self, kind: str) -> str:
+        if kind == "breaking":
+            return "major"
+        if kind in {"added", "deprecated"}:
+            return "minor"
+        if kind in {"documentation", "tests", "build", "internal", "other"}:
+            return "none"
+        return "patch"
+
     def _trace_model_call(self, task: str, title: str, model: str, confidence: float) -> None:
         if os.getenv("VERLATO_TRACE_MODEL_CALLS") != "1":
             return
@@ -655,6 +759,16 @@ def _truncate_prompt_text(value: str, limit: int) -> str:
     if len(normalized) <= limit:
         return normalized
     return f"{normalized[:limit].rstrip()}..."
+
+
+def _commit_prompt_line(commit) -> str:
+    subject = commit.message.splitlines()[0]
+    intent = getattr(commit, "inferred_intent", None)
+    if not intent:
+        return subject
+    scope = f"({intent.scope})" if intent.scope else ""
+    breaking = "!" if intent.breaking else ""
+    return f"{subject} [inferred {intent.type}{scope}{breaking}: {intent.description}]"
 
 
 def _summary_style_lines(*, guidance: str, project_vocabulary: list[str], banned_phrases: list[str]) -> str:

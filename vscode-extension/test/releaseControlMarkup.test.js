@@ -15,6 +15,7 @@ const modelSettings = {
   suggestionParallelism: 2,
   suggestionBatchSize: 2,
   suggestionStrategy: "auto",
+  commitIntentInference: false,
   suggestionAutoWarmCache: false,
   suggestionPromptProfile: "conservative",
   suggestionAdaptiveRecommendations: false,
@@ -261,6 +262,43 @@ test("renders prompt payload telemetry toggle in the model panel", () => {
   assert.match(disabledHtml, /Payload redaction/);
   assert.match(disabledHtml, /<small>Off<\/small>/);
   assert.match(enabledHtml, /<small>On<\/small>/);
+});
+
+test("renders MCP server status and start control", () => {
+  const notRunningHtml = buildReleaseControlHtml({
+    modelSettings,
+    range,
+    busy: false,
+    mcpServerStatus: {
+      state: "not-running",
+      label: "Not running",
+      detail: "No Verlato MCP server has been started.",
+      command: "verlato serve",
+      configPath: ".vscode/mcp.json",
+    },
+  });
+  const runningHtml = buildReleaseControlHtml({
+    modelSettings,
+    range,
+    busy: false,
+    mcpServerStatus: {
+      state: "running",
+      label: "Running",
+      detail: "Started from the Verlato UI.",
+      command: "verlato serve",
+      configPath: ".vscode/mcp.json",
+      startedAt: "2026-05-03T12:00:00.000Z",
+    },
+  });
+
+  assert.match(notRunningHtml, /class="mcp-status not-running"/);
+  assert.match(notRunningHtml, /MCP server/);
+  assert.match(notRunningHtml, /Not running/);
+  assert.match(notRunningHtml, /data-action="startMcpServer"/);
+  assert.match(notRunningHtml, /<small>Start<\/small>/);
+  assert.match(runningHtml, /class="mcp-status running"/);
+  assert.match(runningHtml, /Running/);
+  assert.match(runningHtml, /<small>Show<\/small>/);
 });
 
 test("renders current model as a clickable hover badge", () => {
@@ -1184,6 +1222,8 @@ test("contributes focused Verlato views and optional walkthrough", () => {
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionBatchSize"].default, 5);
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionBatchSize"].maximum, 5);
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionStrategy"].default, "auto");
+  assert.ok(manifest.contributes.configuration.properties["verlato.suggestionStrategy"].enum.includes("tool-retrieval"));
+  assert.equal(manifest.contributes.configuration.properties["verlato.commitIntentInference"].default, false);
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionAutoWarmCache"].default, false);
   assert.equal(manifest.contributes.configuration.properties["verlato.suggestionInstantProvisional"], undefined);
   assert.equal(manifest.contributes.configuration.properties["verlato.ollamaSuggestionModel"].default, "");

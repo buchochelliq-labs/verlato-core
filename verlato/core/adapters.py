@@ -77,7 +77,7 @@ class StandardGitAdapter(PullRequestAdapter):
         return None
 
     def _git_changed_files(self, commit_sha: str) -> list[ChangedFile]:
-        raw = self._git(["show", "--first-parent", "--format=", "--find-renames", "--name-status", "--patch", commit_sha])
+        raw = self._git(["show", "--first-parent", "--format=", "--find-renames", "--patch-with-raw", commit_sha])
         return parse_git_show_changed_files(raw)
 
     def _git(self, args: list[str]) -> str:
@@ -105,7 +105,7 @@ def parse_git_show_changed_files(raw: str) -> list[ChangedFile]:
                 patch_by_path.setdefault(current_path, []).append(line)
             continue
 
-        parsed_status = _parse_name_status_line(line)
+        parsed_status = _parse_name_status_line(line) or _parse_raw_diff_line(line)
         if parsed_status:
             status, path = parsed_status
             changed_file = ChangedFile(path=path, status=status)
@@ -141,6 +141,27 @@ def _parse_name_status_line(line: str) -> tuple[str, str] | None:
     if normalized is None:
         return None
     return normalized, path
+
+
+def _parse_raw_diff_line(line: str) -> tuple[str, str] | None:
+    if not line.startswith(":") or "\t" not in line:
+        return None
+    metadata, *paths = line.split("\t")
+    if not paths:
+        return None
+    status_code = metadata.rsplit(" ", 1)[-1]
+    if not status_code:
+        return None
+    normalized = {
+        "A": "added",
+        "M": "modified",
+        "D": "removed",
+        "R": "renamed",
+        "C": "copied",
+    }.get(status_code[:1])
+    if normalized is None:
+        return None
+    return normalized, paths[-1]
 
 
 def _path_from_diff_header(line: str) -> str | None:

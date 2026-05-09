@@ -1,6 +1,8 @@
 import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import * as vscode from "vscode";
 
+import { resolveSpawnCommand } from "./cliResolution";
+
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -86,7 +88,8 @@ export class VerlatoServiceClient {
       return;
     }
     this.stopping = false;
-    const child = spawn(this.command, this.args, {
+    const spawnSpec = resolveSpawnCommand(this.command, this.args);
+    const child = spawn(spawnSpec.command, spawnSpec.args, {
       cwd: this.cwd,
       env: this.env,
       windowsHide: true,

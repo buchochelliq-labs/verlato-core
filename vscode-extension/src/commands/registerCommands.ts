@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 
 import { VerlatoClient } from "../client/verlatoClient";
 import { DraftDocument, DraftItem, DraftRangeRequest, ModelSettings, RepositoryOverview } from "../client/types";
+import { McpServerController, revealMcpConfig } from "../mcpServer";
 import { handleNotificationAction, showErrorNotification, showSuccessNotification } from "../notifications";
 import { PreviewPanel } from "../webview/previewPanel";
 
@@ -46,6 +47,7 @@ export function registerCommands(
   client: VerlatoClient,
   treeProvider: ReleaseViewState,
   previewPanel: PreviewPanel,
+  mcpServer?: McpServerController,
 ): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("verlato.scanRepository", async () => {
@@ -149,10 +151,26 @@ export function registerCommands(
         { modal: true },
       );
     }),
+    vscode.commands.registerCommand("verlato.startMcpServer", async () => {
+      await startMcpServer(mcpServer);
+    }),
     vscode.commands.registerCommand("verlato.changeModel", async () => {
       await changeModelSettings(client, treeProvider);
     }),
   );
+}
+
+async function startMcpServer(mcpServer: McpServerController | undefined): Promise<void> {
+  const status = await mcpServer?.start();
+  const action = await vscode.window.showInformationMessage(
+    status?.state === "running"
+      ? "Verlato MCP is running in a terminal. For VS Code/Copilot MCP, keep .vscode/mcp.json enabled so the MCP host can launch its own attached server."
+      : "Verlato MCP can be launched from the control view when the MCP controller is available.",
+    "Open mcp.json",
+  );
+  if (action === "Open mcp.json") {
+    await revealMcpConfig(vscode.workspace.workspaceFolders?.[0]);
+  }
 }
 
 async function openCommit(sha: string | undefined): Promise<void> {
@@ -466,7 +484,7 @@ async function changeModelSettings(
     return;
   }
   const suggestionStrategy = await vscode.window.showQuickPick(
-    ["auto", "single", "paired", "full-diff-json"],
+    ["auto", "single", "paired", "full-diff-json", "tool-retrieval"],
     {
       title: "Suggestion strategy",
       placeHolder: "Choose how Verlato sends suggestion evidence to the model",
@@ -483,6 +501,16 @@ async function changeModelSettings(
     },
   );
   if (!suggestionPromptProfile) {
+    return;
+  }
+  const commitIntentChoice = await vscode.window.showQuickPick(
+    ["disabled", "enabled"],
+    {
+      title: "Commit intent inference",
+      placeHolder: "Optionally infer conventional metadata for low-signal commits before grouping",
+    },
+  );
+  if (!commitIntentChoice) {
     return;
   }
   const adaptiveChoice = await vscode.window.showQuickPick(
@@ -517,6 +545,7 @@ async function changeModelSettings(
     suggestionParallelism: Number(suggestionParallelismRaw),
     suggestionBatchSize: Number(suggestionBatchSizeRaw),
     suggestionStrategy,
+    commitIntentInference: commitIntentChoice === "enabled",
     suggestionPromptProfile,
     suggestionAdaptiveRecommendations: adaptiveChoice === "enabled",
     suggestionTone,

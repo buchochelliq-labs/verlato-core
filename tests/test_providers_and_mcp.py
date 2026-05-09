@@ -39,7 +39,10 @@ def test_stub_provider_contracts():
 
 
 def test_mcp_service_read_only_endpoints(monkeypatch):
-    monkeypatch.setattr("verlato.mcp.service.run_scan", lambda base, head, persist: [{"id": f"{base}->{head}"}])
+    monkeypatch.setattr(
+        "verlato.mcp.service.run_scan",
+        lambda base, head, persist, **_kwargs: [{"id": f"{base}->{head}"}],
+    )
     monkeypatch.setattr(
         "verlato.mcp.service.build_draft_document",
         lambda **kwargs: type(
@@ -135,11 +138,11 @@ def test_mcp_service_can_update_review_state(monkeypatch, tmp_path):
     monkeypatch.setenv("VERLATO_MODEL_PROVIDER", "stub")
     monkeypatch.setattr(
         "verlato.cli.main._detect_review_candidates",
-        lambda base, head, model_provider: [_item("ci_review", "Review me", base_ref=base, head_ref=head)],
+        lambda base, head, model_provider, **_kwargs: [_item("ci_review", "Review me", base_ref=base, head_ref=head)],
     )
     monkeypatch.setattr(
         "verlato.cli.main.detect_change_items",
-        lambda base, head: [_item("ci_review", "Review me", base_ref=base, head_ref=head)],
+        lambda base, head, **_kwargs: [_item("ci_review", "Review me", base_ref=base, head_ref=head)],
     )
 
     item = MCPService().update_review_state(

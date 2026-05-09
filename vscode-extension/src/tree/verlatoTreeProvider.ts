@@ -194,6 +194,7 @@ class ModelNode extends vscode.TreeItem {
       `Timeout: ${settings.ollamaTimeoutSeconds}s`,
       `Fanout guard: ${settings.maxModelItems}`,
       `Suggestion strategy: ${settings.suggestionStrategy}`,
+      `Commit intent inference: ${settings.commitIntentInference ? "enabled" : "disabled"}`,
       `Suggestion cache warm: ${settings.suggestionAutoWarmCache ? "enabled" : "disabled"}`,
       `Suggestion prompt profile: ${settings.suggestionPromptProfile}`,
       `Adaptive suggestions: ${settings.suggestionAdaptiveRecommendations ? "enabled" : "disabled"}`,

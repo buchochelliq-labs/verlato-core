@@ -1,5 +1,5 @@
 from verlato.core.grouper import Grouper
-from verlato.core.models import ChangedFile, Commit
+from verlato.core.models import ChangedFile, Commit, CommitIntent
 
 
 def test_group_non_pr_conventional_commits_by_type_and_scope():
@@ -29,6 +29,67 @@ def test_do_not_group_unscoped_conventional_commits_by_author():
     assert [c.sha for c in groups[0].commits] == ["f1"]
     assert [c.sha for c in groups[1].commits] == ["f2"]
     assert groups[0].grouping_reason == "Kept separate because no PR or explicit conventional scope was found."
+
+
+def test_group_low_signal_non_pr_commits_by_inferred_scope():
+    commits = [
+        Commit(
+            sha="i1",
+            message="wire token endpoint",
+            author="dev1",
+            inferred_intent=CommitIntent(
+                type="feat",
+                scope="api",
+                description="add token endpoint",
+                confidence=0.82,
+                model="mock",
+            ),
+        ),
+        Commit(
+            sha="i2",
+            message="add token handler",
+            author="dev2",
+            inferred_intent=CommitIntent(
+                type="feat",
+                scope="api",
+                description="add token handler",
+                confidence=0.84,
+                model="mock",
+            ),
+        ),
+    ]
+
+    groups = Grouper().group(commits, prs_by_commit={})
+
+    assert len(groups) == 1
+    assert [c.sha for c in groups[0].commits] == ["i1", "i2"]
+    assert groups[0].grouping_reason == (
+        "Grouped because these non-PR commits share inferred conventional type `feat` and scope `api`."
+    )
+
+
+def test_authored_scoped_conventional_commit_wins_over_inferred_scope():
+    commits = [
+        Commit(
+            sha="s1",
+            message="feat(ui): add toolbar",
+            author="dev1",
+            inferred_intent=CommitIntent(
+                type="feat",
+                scope="api",
+                description="add toolbar",
+                confidence=0.9,
+                model="mock",
+            ),
+        ),
+        Commit(sha="s2", message="feat(ui): add keyboard shortcut", author="dev2"),
+    ]
+
+    groups = Grouper().group(commits, prs_by_commit={})
+
+    assert len(groups) == 1
+    assert [c.sha for c in groups[0].commits] == ["s1", "s2"]
+    assert groups[0].grouping_reason == "Grouped because these non-PR commits share conventional type `feat` and scope `ui`."
 
 
 def test_do_not_group_unscoped_conventional_commits_by_changed_area():

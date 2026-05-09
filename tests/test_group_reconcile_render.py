@@ -1,7 +1,7 @@
 from verlato.core.classifier import Classifier
 from verlato.core.generator import MarkdownGenerator
 from verlato.core.grouper import Grouper
-from verlato.core.models import ChangedFile, ChangeGroup, Commit, PullRequest
+from verlato.core.models import ChangedFile, ChangeGroup, Commit, PullRequest, changed_files_for_group
 from verlato.core.reconciler import Reconciler
 
 
@@ -95,6 +95,28 @@ def test_pr_group_without_pr_files_keeps_commit_file_evidence():
     assert groups[0].files[0].path == "src/release_control.py"
     assert "src/release_control.py" in items[0].content.summary
     assert items[0].evidence.files == ["src/release_control.py"]
+
+
+def test_pr_group_with_patchless_pr_files_keeps_commit_patch_evidence():
+    patch = "@@ -1 +1 @@\n-old release text\n+render actual diff evidence"
+    commits = [
+        Commit(
+            sha="a1",
+            message="Merge pull request #12 from feature/release-control",
+            files=[ChangedFile(path="src/release_control.py", patch=patch)],
+        )
+    ]
+    pr = PullRequest(
+        number=12,
+        title="Improve release control",
+        files=[ChangedFile(path="src/release_control.py", patch="")],
+    )
+
+    groups = Grouper().group(commits, {"a1": pr})
+    items = Classifier().classify(groups[0], base_ref="v1.0.0", head_ref="main")
+
+    assert changed_files_for_group(groups[0])[0].patch == patch
+    assert "src/release_control.py" in items[0].evidence.diff_summary["representative_hunks"]
 
 
 def test_render_with_confidence_and_provenance():

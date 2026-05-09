@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from random import Random
 
 from verlato.providers.base import ProviderRequest, ProviderResponse, VerlatoProvider
@@ -12,6 +13,12 @@ class MockProvider(VerlatoProvider):
     """
 
     def summarize(self, request: ProviderRequest) -> ProviderResponse:
+        if request.task == "infer-conventional":
+            return ProviderResponse(
+                content=json.dumps(_infer_conventional_from_evidence(request.evidence), sort_keys=True),
+                confidence=0.82,
+                model="mock-local",
+            )
         seed = self._seed(request)
         rng = Random(seed)
         confidence = round(0.6 + (rng.random() * 0.35), 2)
@@ -60,3 +67,41 @@ def _summarize_from_evidence(evidence: dict | None) -> str:
         return f"Updates release scope from commit evidence: {subject}."
 
     return "No changed-file evidence was available from PR or commit metadata."
+
+
+def _infer_conventional_from_evidence(evidence: dict | None) -> dict[str, object]:
+    evidence = evidence or {}
+    subject = str(evidence.get("subject") or "").lower()
+    files = evidence.get("files")
+    file_paths = [str(file.get("path") or "") for file in files if isinstance(file, dict)] if isinstance(files, list) else []
+    joined_paths = " ".join(file_paths).lower()
+    if "remove" in subject or "delete" in subject:
+        commit_type = "remove"
+    elif "fix" in subject or "bug" in subject:
+        commit_type = "fix"
+    elif "doc" in subject or "readme" in joined_paths:
+        commit_type = "docs"
+    elif "test" in subject or "/test" in joined_paths:
+        commit_type = "test"
+    else:
+        commit_type = "feat" if ("add" in subject or "new" in subject) else "chore"
+    if "api" in joined_paths:
+        scope = "api"
+    elif "vscode" in joined_paths or "extension" in joined_paths:
+        scope = "vscode"
+    elif "mcp" in joined_paths:
+        scope = "mcp"
+    elif "doc" in joined_paths or "readme" in joined_paths:
+        scope = "docs"
+    elif "test" in joined_paths:
+        scope = "tests"
+    else:
+        scope = "general"
+    return {
+        "type": commit_type,
+        "scope": scope,
+        "description": subject or "update commit intent",
+        "breaking": "breaking" in subject,
+        "confidence": 0.82,
+        "rationale": "Deterministic mock intent derived from commit subject and changed paths.",
+    }

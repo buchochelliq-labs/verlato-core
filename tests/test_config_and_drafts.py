@@ -10,6 +10,7 @@ from verlato.cli.main import (
     _normalized_provider_timings,
     _ollama_api_ps_url,
     _provider_cache_model_id,
+    _resolve_commit_intent_inference,
     _resolve_suggestion_batch_size,
     _resolve_suggestion_cache_backend,
     _resolve_suggestion_cache_ttl_days,
@@ -23,6 +24,7 @@ from verlato.cli.main import (
 from verlato.config import load_config
 from verlato.core.classifier import Classifier
 from verlato.core.drafts import DraftService, normalize_remote_url
+from verlato.core.grouper import Grouper
 from verlato.core.models import (
     ChangedFile,
     ChangeGroup,
@@ -251,6 +253,27 @@ def test_load_config_reads_suggestion_strategy(monkeypatch, tmp_path: Path):
     config = load_config()
 
     assert config.suggestion_strategy == "single"
+
+
+def test_load_config_reads_commit_intent_inference(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "verlato.json"
+    config_path.write_text(json.dumps({"commit_intent_inference": "low-signal"}))
+    monkeypatch.chdir(tmp_path)
+
+    config = load_config()
+
+    assert config.commit_intent_inference == "low-signal"
+
+
+def test_resolve_commit_intent_inference_cli_env_and_config(monkeypatch):
+    monkeypatch.setenv("VERLATO_COMMIT_INTENT_INFERENCE", "low-signal")
+
+    assert _resolve_commit_intent_inference("off") == "low-signal"
+    assert _resolve_commit_intent_inference("low-signal", requested="off") == "off"
+    assert _resolve_commit_intent_inference("off", requested="low-signal") == "low-signal"
+
+    monkeypatch.setenv("VERLATO_COMMIT_INTENT_INFERENCE", "invalid")
+    assert _resolve_commit_intent_inference("low-signal") == "low-signal"
 
 
 def test_load_config_reads_suggestion_prompt_profile_and_adaptive_flag(monkeypatch, tmp_path: Path):
@@ -1209,7 +1232,7 @@ def test_draft_json_command_outputs_sections_and_targets(monkeypatch, tmp_path: 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         "verlato.cli.main._detect_change_items_with_provider",
-        lambda base, head, model_provider: [_mk_item("ci_1", base_ref=base, head_ref=head, kind="added")],
+        lambda base, head, model_provider, **_kwargs: [_mk_item("ci_1", base_ref=base, head_ref=head, kind="added")],
     )
 
     rc = main(["draft", "json", "--base", "v1.0.0", "--head", "HEAD", "--version", "v1.1.0"])
@@ -1228,11 +1251,48 @@ def test_draft_json_command_outputs_sections_and_targets(monkeypatch, tmp_path: 
     assert item["evidence_summary"] == "Changed files: src/auth.py"
 
 
+def test_draft_document_groups_extended_changelog_sections(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+    document = DraftService().build_document(
+        items=[
+            _mk_item("ci_docs", kind="documentation", title="Document API"),
+            _mk_item("ci_breaking", kind="breaking", title="Replace API"),
+            _mk_item("ci_perf", kind="perf", title="Speed up API"),
+        ],
+        base_ref="v1.0.0",
+        head_ref="HEAD",
+        version="v1.1.0",
+    )
+
+    assert [(section.kind, section.title) for section in document.sections] == [
+        ("breaking", "Breaking Changes"),
+        ("documentation", "Documentation"),
+        ("performance", "Performance"),
+    ]
+
+
+def test_draft_document_distinguishes_inferred_classification_source(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+    item = _mk_item("ci_inferred", kind="added", title="Add API tokens")
+    item.evidence.commit_signals = ["inferred-conventional:feat(api)"]
+
+    document = DraftService().build_document(
+        items=[item],
+        base_ref="v1.0.0",
+        head_ref="HEAD",
+        version="v1.1.0",
+    )
+
+    assert document.sections[0].items[0].classification_source == (
+        "Deterministic classification from inferred conventional commit evidence"
+    )
+
+
 def test_progress_telemetry_is_silent_by_default(monkeypatch, tmp_path: Path, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         "verlato.cli.main._detect_change_items_with_provider",
-        lambda base, head, model_provider: [_mk_item("ci_1", base_ref=base, head_ref=head)],
+        lambda base, head, model_provider, **_kwargs: [_mk_item("ci_1", base_ref=base, head_ref=head)],
     )
 
     rc = main(["draft", "json", "--base", "v1.0.0"])
@@ -1248,7 +1308,7 @@ def test_progress_telemetry_emits_when_enabled(monkeypatch, tmp_path: Path, caps
     monkeypatch.setenv("VERLATO_TRACE_PROGRESS", "1")
     monkeypatch.setattr(
         "verlato.cli.main._detect_change_items_with_provider",
-        lambda base, head, model_provider: [_mk_item("ci_1", base_ref=base, head_ref=head)],
+        lambda base, head, model_provider, **_kwargs: [_mk_item("ci_1", base_ref=base, head_ref=head)],
     )
 
     rc = main(["draft", "json", "--base", "v1.0.0"])
@@ -1274,7 +1334,7 @@ def test_draft_preview_command_renders_github_release(monkeypatch, tmp_path: Pat
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         "verlato.cli.main._detect_change_items_with_provider",
-        lambda base, head, model_provider: [_mk_item("ci_1", base_ref=base, head_ref=head, kind="fixed")],
+        lambda base, head, model_provider, **_kwargs: [_mk_item("ci_1", base_ref=base, head_ref=head, kind="fixed")],
     )
 
     rc = main(["draft", "preview", "--base", "v1.0.0", "--version", "v1.0.1"])
@@ -1290,7 +1350,7 @@ def test_draft_json_ignores_configured_provider_without_explicit_override(monkey
     monkeypatch.setenv("VERLATO_STATE_PATH", str(tmp_path / "state.json"))
     monkeypatch.setenv("VERLATO_MODEL_PROVIDER", "mock")
     group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
 
     def fail_build_provider(*args, **kwargs):
         raise AssertionError("draft json should stay deterministic unless --model-provider is explicit")
@@ -1310,7 +1370,7 @@ def test_draft_apply_updates_changelog_target(monkeypatch, tmp_path: Path, capsy
     (tmp_path / "CHANGELOG.md").write_text("# Changelog\n\nExisting notes\n")
     monkeypatch.setattr(
         "verlato.cli.main._detect_change_items_with_provider",
-        lambda base, head, model_provider: [_mk_item("ci_1", base_ref=base, head_ref=head)],
+        lambda base, head, model_provider, **_kwargs: [_mk_item("ci_1", base_ref=base, head_ref=head)],
     )
 
     rc = main(["draft", "apply", "--base", "v1.0.0", "--version", "v1.1.0", "--target", "changelog"])
@@ -1328,7 +1388,7 @@ def test_draft_apply_uses_custom_file_for_github_release(monkeypatch, tmp_path: 
     custom_file = tmp_path / "notes" / "release.md"
     monkeypatch.setattr(
         "verlato.cli.main._detect_change_items_with_provider",
-        lambda base, head, model_provider: [_mk_item("ci_1", base_ref=base, head_ref=head)],
+        lambda base, head, model_provider, **_kwargs: [_mk_item("ci_1", base_ref=base, head_ref=head)],
     )
 
     rc = main(
@@ -1358,7 +1418,7 @@ def test_draft_review_persists_and_overlays_review_state(monkeypatch, tmp_path: 
     monkeypatch.setenv("VERLATO_STATE_PATH", str(state_path))
     group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
     target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
 
     rc = main(
         [
@@ -1403,7 +1463,7 @@ def test_draft_json_excludes_items_already_published_in_another_release(monkeypa
     StateStore(str(state_path)).save(StateData(items=[published]))
     monkeypatch.setattr(
         "verlato.cli.main._detect_change_items_with_provider",
-        lambda base, head, model_provider: [_mk_item("ci_1", base_ref=base, head_ref=head)],
+        lambda base, head, model_provider, **_kwargs: [_mk_item("ci_1", base_ref=base, head_ref=head)],
     )
 
     rc = main(["draft", "json", "--base", "v0.9.0", "--head", "HEAD", "--version", "v1.1.0"])
@@ -1428,7 +1488,7 @@ def test_draft_suggest_persists_model_summary(monkeypatch, tmp_path: Path, capsy
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="[mock-classification] changed/general/external/patch", confidence=0.8, model="mock-local")
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
 
     def fake_build_provider(config, mode=None):
         if mode == "mock":
@@ -1478,7 +1538,7 @@ def test_draft_review_persists_model_suggestion_provenance(monkeypatch, tmp_path
         "suggestion_index": 0,
         "response_metadata": {"total_duration": 12},
     }
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
 
     rc = main(
         [
@@ -1611,7 +1671,7 @@ def test_draft_suggest_preview_returns_variants_without_persisting(monkeypatch, 
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
 
     rc = main(
@@ -1682,7 +1742,7 @@ def test_draft_suggest_prompt_profile_and_adaptive_recommendations_are_opt_in(mo
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: AdaptiveProvider())
 
     rc = main(
@@ -1740,7 +1800,7 @@ def test_draft_suggest_preview_uses_cli_suggest_model_context(monkeypatch, tmp_p
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="ollama:base-model")
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
 
     def fake_build_provider(config, mode=None, suggest_model=None):
         build_calls.append({"mode": mode, "suggest_model": suggest_model})
@@ -1810,7 +1870,7 @@ def test_draft_suggest_applies_style_controls_to_prompt_and_rejections(monkeypat
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: StyledProvider())
 
     rc = main(
@@ -1859,7 +1919,7 @@ def test_draft_suggest_preview_defaults_to_one_suggestion(monkeypatch, tmp_path:
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
 
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"])
@@ -1898,7 +1958,7 @@ def test_draft_suggest_cache_hit_skips_provider_call(monkeypatch, tmp_path: Path
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: CacheWritingProvider())
 
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"])
@@ -1974,7 +2034,7 @@ def test_draft_suggest_can_use_registered_cache_backend(monkeypatch, tmp_path: P
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
     register_suggestion_cache_backend("unit-test-hit", lambda path, ttl_days: AlwaysHitBackend(path, ttl_days))
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: FailingProvider())
 
     rc = main(
@@ -2021,7 +2081,7 @@ def test_draft_suggest_refresh_cache_bypasses_read_and_overwrites(monkeypatch, t
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: RefreshProvider())
 
     assert main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"]) == 0
@@ -2080,7 +2140,7 @@ def test_draft_suggest_no_cache_neither_reads_nor_writes(monkeypatch, tmp_path: 
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: NoCacheProvider())
 
     for _ in range(2):
@@ -2128,7 +2188,7 @@ def test_draft_suggest_cache_key_changes_with_count(monkeypatch, tmp_path: Path,
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: CountingProvider())
 
     assert main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--count", "1", "--model-provider", "mock"]) == 0
@@ -2162,7 +2222,7 @@ def test_draft_suggest_expired_cache_entry_is_ignored_and_compacted(monkeypatch,
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
     cache_path = tmp_path / ".verlato_suggestion_cache.json"
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: ExpiringProvider())
 
     assert main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"]) == 0
@@ -2251,7 +2311,7 @@ def test_draft_suggest_streams_suggestion_events_when_traced(monkeypatch, tmp_pa
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
 
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"])
@@ -2295,7 +2355,7 @@ def test_draft_suggest_preview_rejects_too_similar_candidates(monkeypatch, tmp_p
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
 
     rc = main(
@@ -2343,7 +2403,7 @@ def test_draft_suggest_batch_preview_excludes_hidden_items(monkeypatch, tmp_path
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: groups)
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
 
     rc = main(["draft", "review", "--base", "v1.0.0", "--id", second.id, "--status", "hidden"])
@@ -2389,7 +2449,7 @@ def test_draft_suggest_trace_logs_filter_reasons(monkeypatch, tmp_path: Path, ca
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
 
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"])
@@ -2427,7 +2487,7 @@ def test_draft_suggest_trace_suggestions_alias_enables_trace(monkeypatch, tmp_pa
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
 
     rc = main(
@@ -2470,7 +2530,7 @@ def test_draft_suggest_can_include_provider_reasoning_payload(monkeypatch, tmp_p
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
 
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"])
@@ -2505,7 +2565,7 @@ def test_draft_suggest_trace_can_emit_prompt_payloads_and_debug_jsonl(monkeypatc
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
 
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"])
@@ -2548,7 +2608,7 @@ def test_draft_suggest_redacts_payload_secrets_by_default(monkeypatch, tmp_path:
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="", confidence=0.0, model="mock-local")
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: VariantProvider())
 
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--model-provider", "mock"])
@@ -2584,7 +2644,7 @@ def test_draft_suggest_defaults_to_ollama_when_no_provider_configured(monkeypatc
         assert mode == "ollama"
         return LocalSummaryProvider()
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", fake_build_provider)
 
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id])
@@ -2611,7 +2671,7 @@ def test_draft_suggest_surfaces_provider_errors(monkeypatch, tmp_path: Path):
         def classify(self, request: ProviderRequest) -> ProviderResponse:
             return ProviderResponse(content="[github-copilot-error] classify should not run", confidence=0.0, model="github-copilot:gpt-4o-mini")
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: ErrorProvider())
 
     try:
@@ -2660,7 +2720,7 @@ def test_draft_suggest_only_requests_summary_for_selected_item(monkeypatch, tmp_
     ]
     target_item = Classifier().classify(groups[0], "v1.0.0", "HEAD")[0]
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: groups)
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
 
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id])
@@ -2691,7 +2751,7 @@ def test_scan_disables_provider_when_change_fanout_exceeds_limit(monkeypatch, tm
     ]
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("VERLATO_MODEL_MAX_ITEMS", "1")
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: groups)
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
 
     from verlato.cli.main import detect_change_items
@@ -2733,7 +2793,7 @@ def test_draft_suggest_all_visible_batches_large_model_fanout(monkeypatch, tmp_p
     ]
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("VERLATO_MODEL_MAX_ITEMS", "1")
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: groups)
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
 
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preview", "--model-provider", "mock"])
@@ -2790,7 +2850,7 @@ def test_draft_suggest_ollama_batches_two_uncached_items(monkeypatch, tmp_path: 
     ]
     expected_ids = [Classifier().classify(group, "v1.0.0", "HEAD")[0].id for group in groups]
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: groups)
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
 
     rc = main([
@@ -2802,6 +2862,8 @@ def test_draft_suggest_ollama_batches_two_uncached_items(monkeypatch, tmp_path: 
         "--preview",
         "--model-provider",
         "ollama",
+        "--strategy",
+        "full-diff-json",
         "--batch-size",
         "2",
     ])
@@ -2880,7 +2942,7 @@ def test_draft_suggest_full_diff_json_sends_uncapped_patch_body_and_files(monkey
     )
     provider = CapturingProvider()
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
 
     rc = main([
@@ -2892,6 +2954,8 @@ def test_draft_suggest_full_diff_json_sends_uncapped_patch_body_and_files(monkey
         "--preview",
         "--model-provider",
         "ollama",
+        "--strategy",
+        "full-diff-json",
     ])
     preview = json.loads(capsys.readouterr().out)
 
@@ -2908,6 +2972,135 @@ def test_draft_suggest_full_diff_json_sends_uncapped_patch_body_and_files(monkey
     assert "representative_hunks" not in prompt
     assert preview["items"][0]["timings"]["patch_chars"] == len(long_patch) + len("+ docs")
     assert preview["items"][0]["timings"]["missing_patch_count"] == 1
+
+
+def test_draft_suggest_full_diff_json_uses_commit_patch_when_pr_patch_missing(
+    monkeypatch, tmp_path: Path, capsys
+):
+    class CapturingProvider:
+        def __init__(self):
+            self.calls: list[ProviderRequest] = []
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            self.calls.append(request)
+            item_id = request.evidence["item_ids"][0]
+            return ProviderResponse(
+                content=json.dumps(
+                    {
+                        "items": [
+                            {
+                                "item_id": item_id,
+                                "suggestions": [
+                                    "Uses local commit diff evidence when pull request file patches are unavailable."
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                confidence=0.9,
+                model="ollama:test-model",
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:test-model")
+
+    patch = "@@ -1 +1 @@\n-old fallback\n+LOCAL_PATCH_SENTINEL"
+    commit = Commit(
+        sha="a1",
+        message="Merge pull request #7 from feature/release-control",
+        files=[ChangedFile(path="src/auth.py", status="modified", patch=patch)],
+    )
+    pr = PullRequest(
+        number=7,
+        title="Patchless PR metadata",
+        files=[ChangedFile(path="src/auth.py", status="modified", patch="")],
+    )
+    groups = Grouper().group([commit], {"a1": pr})
+    provider = CapturingProvider()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: groups)
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
+
+    rc = main([
+        "draft",
+        "suggest",
+        "--base",
+        "v1.0.0",
+        "--all-visible",
+        "--preview",
+        "--model-provider",
+        "ollama",
+        "--strategy",
+        "full-diff-json",
+    ])
+    preview = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert "LOCAL_PATCH_SENTINEL" in provider.calls[0].prompt
+    assert preview["items"][0]["timings"]["patch_chars"] == len(patch)
+    assert preview["items"][0]["timings"]["missing_patch_count"] == 0
+
+
+def test_draft_suggest_auto_uses_ollama_tool_retrieval(monkeypatch, tmp_path: Path, capsys):
+    class ToolCapturingProvider:
+        def __init__(self):
+            self.calls: list[ProviderRequest] = []
+            self.patch_result: dict[str, object] | None = None
+
+        def summarize(self, request: ProviderRequest) -> ProviderResponse:
+            self.calls.append(request)
+            assert request.tools
+            assert request.tool_executor is not None
+            self.patch_result = request.tool_executor(
+                "verlato_get_file_patch",
+                {"item_id": request.evidence["item_id"], "path": "src/auth.py"},
+            )
+            return ProviderResponse(
+                content="Explains the authentication diff using tool-retrieved patch evidence.",
+                confidence=0.9,
+                model="ollama:test-model",
+                metadata={"tool_call_count": 1, "tool_names": ["verlato_get_file_patch"]},
+            )
+
+        def classify(self, request: ProviderRequest) -> ProviderResponse:
+            return ProviderResponse(content="", confidence=0.0, model="ollama:test-model")
+
+    patch = "@@ -1 +1 @@\n-old auth\n+TOOL_PATCH_SENTINEL"
+    group = _mk_group(
+        number=7,
+        title="Tool-backed diff",
+        commit_sha="a1",
+        commit_message="feat: improve auth",
+        path="src/auth.py",
+        patch=patch,
+    )
+    provider = ToolCapturingProvider()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
+    monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None, suggest_model=None: provider)
+
+    rc = main([
+        "draft",
+        "suggest",
+        "--base",
+        "v1.0.0",
+        "--all-visible",
+        "--preview",
+        "--model-provider",
+        "ollama",
+    ])
+    preview = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert preview["performance"]["strategy"] == "tool-retrieval"
+    assert preview["performance"]["batch_size"] == 1
+    assert provider.calls[0].evidence["strategy"] == "tool-retrieval"
+    assert provider.calls[0].max_tool_rounds > 0
+    assert "TOOL_PATCH_SENTINEL" not in provider.calls[0].prompt
+    assert provider.patch_result is not None
+    assert "TOOL_PATCH_SENTINEL" in str(provider.patch_result["patch"])
+    assert preview["items"][0]["prompt_budget"]["tool_count"] >= 3
+    assert preview["items"][0]["provider_metadata"]["tool_call_count"] == 1
 
 
 def test_draft_suggest_batch_size_one_preserves_single_item_calls(monkeypatch, tmp_path: Path, capsys):
@@ -2932,7 +3125,7 @@ def test_draft_suggest_batch_size_one_preserves_single_item_calls(monkeypatch, t
         _mk_group(number=2, title="Second change", commit_sha="b2", commit_message="second"),
     ]
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: groups)
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
 
     rc = main([
@@ -2983,7 +3176,7 @@ def test_draft_suggest_batch_falls_back_to_single_item_calls(monkeypatch, tmp_pa
         _mk_group(number=2, title="Second change", commit_sha="b2", commit_message="second"),
     ]
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: groups)
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
 
     rc = main([
@@ -2995,6 +3188,8 @@ def test_draft_suggest_batch_falls_back_to_single_item_calls(monkeypatch, tmp_pa
         "--preview",
         "--model-provider",
         "ollama",
+        "--strategy",
+        "paired",
         "--batch-size",
         "2",
     ])
@@ -3074,7 +3269,7 @@ def test_draft_suggest_batch_retries_missing_unusable_and_error_items(monkeypatc
         case_dir = tmp_path / case
         case_dir.mkdir()
         monkeypatch.chdir(case_dir)
-        monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+        monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: groups)
         monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None, provider=provider: provider)
 
         rc = main([
@@ -3086,6 +3281,8 @@ def test_draft_suggest_batch_retries_missing_unusable_and_error_items(monkeypatc
             "--preview",
             "--model-provider",
             "ollama",
+            "--strategy",
+            "paired",
             "--batch-size",
             "2",
         ])
@@ -3140,7 +3337,7 @@ def test_draft_suggest_cache_hit_is_not_included_in_ollama_batch(monkeypatch, tm
     first_id = Classifier().classify(groups[0], "v1.0.0", "HEAD")[0].id
     expected_ids = [Classifier().classify(group, "v1.0.0", "HEAD")[0].id for group in groups]
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: groups)
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
 
     assert main([
@@ -3153,6 +3350,8 @@ def test_draft_suggest_cache_hit_is_not_included_in_ollama_batch(monkeypatch, tm
         "--preview",
         "--model-provider",
         "ollama",
+        "--strategy",
+        "paired",
     ]) == 0
     capsys.readouterr()
     provider.calls.clear()
@@ -3166,6 +3365,8 @@ def test_draft_suggest_cache_hit_is_not_included_in_ollama_batch(monkeypatch, tm
         "--preview",
         "--model-provider",
         "ollama",
+        "--strategy",
+        "paired",
         "--batch-size",
         "2",
     ])
@@ -3173,8 +3374,8 @@ def test_draft_suggest_cache_hit_is_not_included_in_ollama_batch(monkeypatch, tm
 
     assert rc == 0
     assert len(provider.calls) == 1
-    assert provider.calls[0].evidence.get("batch") is True
-    assert provider.calls[0].evidence["item_ids"] == [expected_ids[1]]
+    assert provider.calls[0].evidence.get("batch") is not True
+    assert provider.calls[0].evidence["item_id"] == expected_ids[1]
     assert [item["item_id"] for item in preview["items"]] == expected_ids
     assert preview["items"][0]["cache"]["hit"] is True
     assert preview["items"][1]["cache"]["hit"] is False
@@ -3213,7 +3414,7 @@ def test_draft_suggest_parallelism_overlaps_model_calls(monkeypatch, tmp_path: P
         _mk_group(number=2, title="Second change", commit_sha="b2", commit_message="second"),
     ]
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: groups)
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: provider)
 
     rc = main([
@@ -3256,7 +3457,7 @@ def test_draft_suggest_parallelism_preserves_target_order(monkeypatch, tmp_path:
     expected_ids = [Classifier().classify(group, "v1.0.0", "HEAD")[0].id for group in groups]
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("VERLATO_TRACE_PROGRESS", "1")
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: groups)
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: StaggeredProvider())
 
     rc = main([
@@ -3305,7 +3506,7 @@ def test_draft_suggest_failure_event_keeps_prior_success_event(monkeypatch, tmp_
     expected_ids = [Classifier().classify(group, "v1.0.0", "HEAD")[0].id for group in groups]
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("VERLATO_TRACE_PROGRESS", "1")
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: groups)
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: PartiallyFailingProvider())
 
     try:
@@ -3366,7 +3567,7 @@ def test_draft_suggest_progress_reports_item_and_batch_counts(monkeypatch, tmp_p
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("VERLATO_TRACE_PROGRESS", "1")
     monkeypatch.setenv("VERLATO_MODEL_MAX_ITEMS", "1")
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: groups)
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: CountingProvider())
 
     rc = main(["draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preview", "--model-provider", "mock"])
@@ -3424,7 +3625,7 @@ def test_draft_suggest_all_visible_zero_fanout_returns_no_suggestions(monkeypatc
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("VERLATO_MODEL_MAX_ITEMS", "0")
     monkeypatch.setenv("VERLATO_TRACE_PROGRESS", "1")
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: groups)
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: groups)
     monkeypatch.setattr(
         "verlato.cli.main.build_provider",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("zero fanout should not build provider")),
@@ -3453,7 +3654,7 @@ def test_draft_prompt_outputs_prompt_without_calling_provider(monkeypatch, tmp_p
     group = _mk_group(number=1, title="Improve login", commit_sha="a1", commit_message="update login flow")
     target_item = Classifier().classify(group, "v1.0.0", "HEAD")[0]
 
-    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head: [group])
+    monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr(
         "verlato.cli.main.build_provider",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("draft prompt should not build a provider")),

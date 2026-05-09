@@ -5,7 +5,7 @@ import os
 from http import client
 from urllib import error, request
 
-from verlato.providers.base import ProviderRequest, ProviderResponse, VerlatoProvider
+from verlato.providers.base import ProviderRequest, ProviderResponse, VerlatoProvider, default_system_prompt
 from verlato.providers.model_logging import (
     ModelLogSink,
     default_model_log_sink,
@@ -61,7 +61,7 @@ class OllamaProvider(VerlatoProvider):
         self.log_sink = log_sink or default_model_log_sink()
 
     def summarize(self, request_data: ProviderRequest) -> ProviderResponse:
-        task = "suggest" if request_data.task == "suggest" else "summarize"
+        task = request_data.task if request_data.task in {"suggest", "infer-conventional"} else "summarize"
         return self._invoke(task=task, request_data=request_data)
 
     def classify(self, request_data: ProviderRequest) -> ProviderResponse:
@@ -69,12 +69,7 @@ class OllamaProvider(VerlatoProvider):
 
     def _invoke(self, *, task: str, request_data: ProviderRequest) -> ProviderResponse:
         model = self.model_for_task(task)
-        system_prompt = (
-            "You are Verlato. Write a useful release note with enough context for downstream consumers. "
-            "Use paragraphs or bullet points when they make the change clearer, but stay focused and avoid padding."
-            if task in {"summarize", "suggest"}
-            else "You are Verlato. Return one line: kind/area/audience/semver."
-        )
+        system_prompt = default_system_prompt(task)
         model_detail = f"model={model}"
         if model != self.model:
             model_detail = f"model={model} base_model={self.model}"
@@ -92,6 +87,8 @@ class OllamaProvider(VerlatoProvider):
                 {"role": "user", "content": request_data.prompt},
             ],
         }
+        if request_data.tools:
+            body["tools"] = request_data.tools
         if request_data.response_format is not None:
             body["format"] = request_data.response_format
         if task == "suggest" and self.suggest_think is not None:
@@ -101,7 +98,10 @@ class OllamaProvider(VerlatoProvider):
 
         try:
             self._trace(f"post provider=ollama task={task} endpoint={self.endpoint} mode=chat")
-            data = self._post_streaming_json(self.endpoint, body, task=task) if self.stream else self._post_json(self.endpoint, body)
+            if request_data.tools and request_data.tool_executor and request_data.max_tool_rounds > 0:
+                data = self._post_json_with_tools(body, request_data=request_data, task=task)
+            else:
+                data = self._post_streaming_json(self.endpoint, body, task=task) if self.stream else self._post_json(self.endpoint, body)
         except client.RemoteDisconnected:
             self._trace(
                 f"fallback provider=ollama task={task} from=chat to=generate reason=remote-disconnected"
@@ -160,6 +160,50 @@ class OllamaProvider(VerlatoProvider):
             metadata=metadata,
             reasoning=reasoning,
         )
+
+    def _post_json_with_tools(
+        self,
+        body: dict[str, object],
+        *,
+        request_data: ProviderRequest,
+        task: str,
+    ) -> dict[str, object]:
+        messages = list(body.get("messages") if isinstance(body.get("messages"), list) else [])
+        tool_names: list[str] = []
+        rounds = 0
+        data: dict[str, object] = {}
+        while True:
+            body["messages"] = messages
+            body["stream"] = False
+            data = self._post_json(self.endpoint, body)
+            tool_calls = _tool_calls_from_response(data)
+            if not tool_calls or rounds >= request_data.max_tool_rounds:
+                break
+            rounds += 1
+            message = data.get("message")
+            messages.append(message if isinstance(message, dict) else {"role": "assistant", "content": ""})
+            for tool_call in tool_calls:
+                name = tool_call["name"]
+                arguments = tool_call["arguments"]
+                tool_names.append(name)
+                try:
+                    result = request_data.tool_executor(name, arguments) if request_data.tool_executor else None
+                    content = json.dumps(result, sort_keys=True, default=str)
+                    is_error = False
+                except Exception as exc:  # pragma: no cover - defensive boundary for model-controlled tool calls
+                    content = json.dumps({"error": str(exc), "tool": name}, sort_keys=True)
+                    is_error = True
+                self._trace(
+                    f"tool-call provider=ollama task={task} tool={name} args={len(arguments)} "
+                    f"result_chars={len(content)} error={is_error}"
+                )
+                messages.append({"role": "tool", "tool_name": name, "content": content})
+        metadata = data.setdefault("_verlato_tool_metadata", {})
+        if isinstance(metadata, dict):
+            metadata["tool_rounds"] = rounds
+            metadata["tool_call_count"] = len(tool_names)
+            metadata["tool_names"] = sorted(set(tool_names))
+        return data
 
     def _invoke_generate(
         self,
@@ -291,7 +335,11 @@ class OllamaProvider(VerlatoProvider):
             "eval_duration",
             "done_reason",
         ]
-        return {key: data[key] for key in keys if key in data}
+        metadata = {key: data[key] for key in keys if key in data}
+        tool_metadata = data.get("_verlato_tool_metadata")
+        if isinstance(tool_metadata, dict):
+            metadata.update(tool_metadata)
+        return metadata
 
     @staticmethod
     def _response_reasoning(data: dict[str, object]) -> str:
@@ -411,6 +459,40 @@ def _resolve_bool_env(name: str, configured: bool | None) -> bool | None:
     if raw is None or not raw.strip():
         return configured
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _tool_calls_from_response(data: dict[str, object]) -> list[dict[str, object]]:
+    message = data.get("message")
+    if not isinstance(message, dict):
+        return []
+    raw_calls = message.get("tool_calls")
+    if not isinstance(raw_calls, list):
+        return []
+    calls: list[dict[str, object]] = []
+    for raw_call in raw_calls:
+        if not isinstance(raw_call, dict):
+            continue
+        function = raw_call.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        arguments = function.get("arguments")
+        if isinstance(arguments, str):
+            try:
+                parsed_arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                parsed_arguments = {}
+        else:
+            parsed_arguments = arguments
+        calls.append(
+            {
+                "name": name,
+                "arguments": parsed_arguments if isinstance(parsed_arguments, dict) else {},
+            }
+        )
+    return calls
 
 
 def _adaptive_suggest_num_predict(request_data: ProviderRequest | None) -> int:
