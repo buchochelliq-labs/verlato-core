@@ -23,4 +23,5 @@ pub mod pyjson;
 pub mod semantic;
 pub mod service;
 pub mod store;
+pub mod suggest;
 pub mod vocab;

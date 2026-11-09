@@ -20,6 +20,7 @@ const NATIVE: &[&[&str]] = &[
     &["draft", "preview"],
     &["draft", "apply"],
     &["draft", "review"],
+    &["draft", "prompt"],
     &["state", "show"],
     &["state", "mark-published"],
     &["state", "clear-working"],
@@ -153,6 +154,17 @@ enum DraftCommand {
         summary_provenance_json: Option<String>,
         #[arg(long)]
         reviewer: Option<String>,
+        #[command(flatten)]
+        model: ModelArgs,
+    },
+    /// The exact prompt, evidence and audit record a suggestion for one item would send.
+    Prompt {
+        #[command(flatten)]
+        range: RangeArgs,
+        #[arg(long)]
+        id: String,
+        #[arg(long, value_parser = ["release-note", "concise", "technical", "customer-facing"])]
+        tone: Option<String>,
         #[command(flatten)]
         model: ModelArgs,
     },
@@ -345,6 +357,31 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
             } => {
                 let document = draft(&ctx, &args)?;
                 json_out(&ctx.apply_draft(&document, &target, file.as_deref())?)?;
+            }
+            DraftCommand::Prompt {
+                range,
+                id,
+                tone,
+                model,
+            } => {
+                if let Some(code) = delegate_if(python_reason(&ctx, Some(&model))) {
+                    return code;
+                }
+                let (base, head) = ctx.resolve_range(
+                    range.base.as_deref(),
+                    &range.head,
+                    range.from_latest_tag,
+                    range.from_latest_published,
+                )?;
+                let options = verlato::suggest::SuggestOptions {
+                    model_provider: model.model_provider.clone(),
+                    tone,
+                    privacy: model.privacy.clone(),
+                    allow_remote_patches: model.allow_remote_patches,
+                };
+                json_out(&verlato::suggest::draft_prompt(
+                    &ctx, &base, &head, &id, &options,
+                )?)?;
             }
             DraftCommand::Review {
                 range,

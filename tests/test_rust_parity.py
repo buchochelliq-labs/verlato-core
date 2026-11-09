@@ -207,15 +207,28 @@ def test_service_protocol_matches(tmp_path: Path):
         assert _normalize(rust_response) == _normalize(python_response), python_response["id"]
 
 
-def test_model_backed_commands_are_delegated_to_python(tmp_path: Path):
+@pytest.mark.parametrize("engine", ["git", "intentumdiff"])
+@pytest.mark.parametrize("privacy", ["metadata-only", "local-summary-then-ai", "trusted-provider-patch"])
+def test_draft_prompt_matches(tmp_path: Path, engine: str, privacy: str):
+    py_repo, rs_repo, env = _pair(tmp_path, engine)
+    env = {**env, "VERLATO_SUGGESTION_TONE": "technical"}
+    compare = (lambda value: value) if engine == "git" else _strip_engine_identity
+    items = json.loads(_run(_python("scan", "--base", "v1.0.0"), py_repo, env))
+    for item in items:
+        args = ("draft", "prompt", "--base", "v1.0.0", "--id", item["id"], "--privacy", privacy)
+        python_out = json.loads(_run(_python(*args), py_repo, env))
+        rust_out = json.loads(_run(_rust(*args), rs_repo, _native_only(env)))
+        assert compare(rust_out) == compare(python_out), item["title"]
+    assert python_out["provider"] == "ollama"
+
+
+def test_unported_commands_are_delegated_to_python(tmp_path: Path):
     py_repo, rs_repo, env = _pair(tmp_path, "git")
     env = {**env, "VERLATO_PYTHON_CLI": f"{sys.executable} -m verlato.cli"}
-    prompt = ("draft", "prompt", "--base", "v1.0.0", "--id")
-    item_id = json.loads(_run(_python("scan", "--base", "v1.0.0"), py_repo, env))[0]["id"]
-    assert _run(_rust(*prompt, item_id), rs_repo, env) == _run(_python(*prompt, item_id), py_repo, env)
+    args = ("state", "clear-suggestion-cache")
+    assert json.loads(_run(_rust(*args), rs_repo, env)) == json.loads(_run(_python(*args), py_repo, env))
 
-    without_python = {**env, "VERLATO_PYTHON_CLI": "", "PATH": "/usr/bin:/bin"}
-    result = subprocess.run(_rust(*prompt, item_id), cwd=rs_repo, env=without_python, capture_output=True, text=True)
+    result = subprocess.run(_rust(*args), cwd=rs_repo, env=_native_only(env), capture_output=True, text=True)
     assert result.returncode != 0
     assert "served by the Python implementation" in result.stderr
 

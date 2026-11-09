@@ -52,6 +52,7 @@ The native binary handles these command paths itself:
 ```
 scan | generate | reconcile          (with any model provider; see below)
 draft json | preview | apply | review (including --model-provider)
+draft prompt
 render
 state show | mark-published | clear-working
 feedback record
@@ -60,7 +61,7 @@ service                              (health, info, draft.* incl. model provider
 ```
 
 Everything else is delegated to the Python implementation with the original arguments:
-`draft suggest`, `draft prompt`, `commit conventional`, `doctor ollama|model`, `serve` (MCP),
+`draft suggest`, `commit conventional`, `doctor ollama|model`, `serve` (MCP),
 `model-logs`, `feedback export|recommend`, `state clear-suggestion-cache`, and the
 `suggestion.*` / `commit.*` service methods (proxied to a lazily started Python service).
 
