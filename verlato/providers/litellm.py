@@ -16,6 +16,11 @@ from verlato.providers.base import (
 DEFAULT_LITELLM_ENDPOINT = "http://127.0.0.1:4000/v1/chat/completions"
 DEFAULT_LITELLM_MODEL = "ollama/gemma4:latest"
 DEFAULT_LITELLM_TIMEOUT_SECONDS = 30.0
+# Output cap (OpenAI ``max_tokens``). A guard against runaway generation rather than a style
+# limit: local OpenAI-compatible servers (llama.cpp, vLLM) otherwise generate until the context
+# fills, and hosted reasoning models count reasoning tokens against it. 0 disables the cap.
+DEFAULT_LITELLM_MAX_TOKENS = 1024
+MAX_LITELLM_SUGGEST_MAX_TOKENS = 4096
 
 
 class LiteLLMProvider(VerlatoProvider):
@@ -31,12 +36,14 @@ class LiteLLMProvider(VerlatoProvider):
         suggest_model: str | None = None,
         api_key_env: str | None = None,
         timeout_seconds: float | None = DEFAULT_LITELLM_TIMEOUT_SECONDS,
+        max_tokens: int | None = None,
     ) -> None:
         self.endpoint = endpoint or os.getenv("VERLATO_LITELLM_ENDPOINT") or DEFAULT_LITELLM_ENDPOINT
         self.model = model or os.getenv("VERLATO_LITELLM_MODEL") or DEFAULT_LITELLM_MODEL
         self.suggest_model = _normalize_optional(suggest_model or os.getenv("VERLATO_LITELLM_SUGGEST_MODEL"))
         self.api_key_env = api_key_env or os.getenv("VERLATO_LITELLM_API_KEY_ENV") or "LITELLM_API_KEY"
         self.timeout_seconds = timeout_seconds or DEFAULT_LITELLM_TIMEOUT_SECONDS
+        self.max_tokens = _resolve_max_tokens(max_tokens)
 
     def summarize(self, request_data: ProviderRequest) -> ProviderResponse:
         task = (
@@ -51,6 +58,18 @@ class LiteLLMProvider(VerlatoProvider):
 
     def model_for_task(self, task: str) -> str:
         return self.suggest_model if task == "suggest" and self.suggest_model else self.model
+
+    def max_tokens_for_task(self, task: str, request_data: ProviderRequest | None = None) -> int:
+        """The output cap for ``task``; several suggestion variants get proportionally more."""
+
+        if self.max_tokens <= 0 or task != "suggest" or request_data is None:
+            return self.max_tokens
+        raw_count = request_data.evidence.get("suggestion_count")
+        try:
+            count = max(1, int(raw_count)) if raw_count is not None else 1
+        except (TypeError, ValueError):
+            count = 1
+        return min(MAX_LITELLM_SUGGEST_MAX_TOKENS, self.max_tokens * count)
 
     def _invoke(self, *, task: str, request_data: ProviderRequest) -> ProviderResponse:
         model = self.model_for_task(task)
@@ -68,6 +87,9 @@ class LiteLLMProvider(VerlatoProvider):
                 "verlato_schema_hash": audit["schema_hash"],
             },
         }
+        max_tokens = self.max_tokens_for_task(task, request_data)
+        if max_tokens:
+            body["max_tokens"] = max_tokens
         if request_data.response_format is not None:
             body["response_format"] = _openai_response_format(request_data.response_format, task=task)
         headers = {
@@ -167,3 +189,13 @@ def _normalize_optional(value: str | None) -> str | None:
         return None
     normalized = str(value).strip()
     return normalized or None
+
+
+def _resolve_max_tokens(configured: int | None) -> int:
+    raw = os.getenv("VERLATO_LITELLM_MAX_TOKENS")
+    if raw is not None and raw.strip():
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    return DEFAULT_LITELLM_MAX_TOKENS if configured is None else max(0, configured)

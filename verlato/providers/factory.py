@@ -75,6 +75,7 @@ def _build_single_provider(
             endpoint=os.getenv("VERLATO_LITELLM_ENDPOINT", config.endpoint or ""),
             api_key_env=os.getenv("VERLATO_LITELLM_API_KEY_ENV", config.api_key_env or ""),
             timeout_seconds=_resolve_float_env("VERLATO_LITELLM_TIMEOUT_SECONDS", config.timeout_seconds),
+            max_tokens=config.num_predict,
         )
     if selected_mode in {"plugin", "external-plugin", "model-plugin"}:
         return ExternalModelPluginProvider(
