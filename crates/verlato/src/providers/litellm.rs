@@ -143,7 +143,7 @@ impl LiteLlmProvider {
                     metadata,
                 );
             }
-            Err(HttpError::Transport(error)) => {
+            Err(error @ (HttpError::Transport(_) | HttpError::Disconnected(_))) => {
                 return ProviderResponse::error(
                     format!("[litellm-error] request failed: {error}"),
                     label,

@@ -4,6 +4,8 @@
 
 mod http;
 pub mod litellm;
+pub mod model_log;
+pub mod ollama;
 pub mod plugin;
 
 use serde_json::{json, Map, Value};
@@ -12,6 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::pyjson;
 
 pub use litellm::LiteLlmProvider;
+pub use ollama::{OllamaProvider, OllamaSettings};
 pub use plugin::PluginProvider;
 
 #[derive(Debug, Clone, Default)]
@@ -224,7 +227,13 @@ pub struct ProviderConfig {
     pub endpoint: Option<String>,
     pub api_key_env: Option<String>,
     pub timeout_seconds: Option<f64>,
+    pub keep_alive: Option<String>,
+    pub num_ctx: Option<i64>,
     pub num_predict: Option<i64>,
+    pub summary_num_predict: Option<i64>,
+    pub classify_num_predict: Option<i64>,
+    pub suggest_num_predict: Option<i64>,
+    pub suggest_think: Option<bool>,
     pub plugin_manifest: Map<String, Value>,
     pub plugin_command: Vec<String>,
     pub plugin_config: Map<String, Value>,
@@ -268,6 +277,8 @@ impl ProviderConfig {
         let mut config = ProviderConfig {
             name: "ollama".into(),
             model: Some("gemma4:latest".into()),
+            keep_alive: Some("10m".into()),
+            suggest_think: Some(false),
             ..Default::default()
         };
         if provider.is_empty() {
@@ -279,7 +290,26 @@ impl ProviderConfig {
         config.endpoint = optional_text(provider.get("endpoint"));
         config.api_key_env = optional_text(provider.get("api_key_env"));
         config.timeout_seconds = provider.get("timeout_seconds").and_then(Value::as_f64);
-        config.num_predict = provider.get("num_predict").and_then(Value::as_i64);
+        if let Some(keep_alive) = provider.get("keep_alive") {
+            config.keep_alive = match keep_alive {
+                Value::Null => None,
+                Value::String(s) => Some(s.trim().to_owned()),
+                other => Some(other.to_string()),
+            };
+        }
+        let int = |key: &str| provider.get(key).and_then(Value::as_i64);
+        config.num_ctx = int("num_ctx");
+        config.num_predict = int("num_predict");
+        config.summary_num_predict = int("summary_num_predict");
+        config.classify_num_predict = int("classify_num_predict");
+        config.suggest_num_predict = int("suggest_num_predict");
+        if let Some(think) = provider.get("suggest_think") {
+            config.suggest_think = match think {
+                Value::Null => None,
+                Value::Bool(b) => Some(*b),
+                other => Some(truthy(other)),
+            };
+        }
         config.plugin_manifest = provider
             .get("plugin_manifest")
             .and_then(Value::as_object)
@@ -338,7 +368,13 @@ impl ProviderConfig {
                 .get("timeout_seconds")
                 .and_then(Value::as_f64)
                 .or(self.timeout_seconds),
+            keep_alive: self.keep_alive.clone(),
+            num_ctx: self.num_ctx,
             num_predict: self.num_predict,
+            summary_num_predict: self.summary_num_predict,
+            classify_num_predict: self.classify_num_predict,
+            suggest_num_predict: self.suggest_num_predict,
+            suggest_think: self.suggest_think,
             plugin_manifest: raw
                 .get("plugin_manifest")
                 .and_then(Value::as_object)
@@ -372,6 +408,17 @@ impl ProviderConfig {
     }
 }
 
+fn truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64() != Some(0.0),
+        Value::String(s) => !s.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(o) => !o.is_empty(),
+    }
+}
+
 fn env_text(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
@@ -401,8 +448,6 @@ fn selected_mode(config: &ProviderConfig, mode: Option<&str>) -> String {
 pub fn native_provider(config: &ProviderConfig, mode: Option<&str>) -> Result<(), String> {
     let known_python = [
         "mock",
-        "ollama",
-        "local",
         "github-copilot",
         "github",
         "copilot",
@@ -496,6 +541,60 @@ fn build_single(config: &ProviderConfig, mode: Option<&str>) -> Box<dyn Provider
                 config.num_predict,
             ))
         }
+        "ollama" | "local" => {
+            let env_flag = |name: &str| {
+                matches!(
+                    env_text(name)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_lowercase()
+                        .as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            };
+            let env_int = |name: &str, fallback: Option<i64>| match env_text(name) {
+                Some(raw) if !raw.trim().is_empty() => raw.trim().parse().ok().or(fallback),
+                _ => fallback,
+            };
+            let suggest_model = match env_text("VERLATO_OLLAMA_SUGGEST_MODEL") {
+                Some(raw) => normalize_optional(Some(raw)),
+                None => normalize_optional(config.suggest_model.clone()),
+            };
+            Box::new(OllamaProvider::new(OllamaSettings {
+                endpoint: env_text("VERLATO_OLLAMA_ENDPOINT").or_else(|| config.endpoint.clone()),
+                model: env_text("VERLATO_OLLAMA_MODEL").or_else(|| config.model.clone()),
+                suggest_model,
+                timeout_seconds: env_float(
+                    "VERLATO_OLLAMA_TIMEOUT_SECONDS",
+                    config.timeout_seconds,
+                )
+                .or(Some(15.0)),
+                stream: env_flag("VERLATO_OLLAMA_STREAM"),
+                keep_alive: env_text("VERLATO_OLLAMA_KEEP_ALIVE")
+                    .or_else(|| config.keep_alive.clone()),
+                num_ctx: env_int("VERLATO_OLLAMA_NUM_CTX", config.num_ctx),
+                num_predict: env_int("VERLATO_OLLAMA_NUM_PREDICT", config.num_predict),
+                summary_num_predict: env_int(
+                    "VERLATO_OLLAMA_SUMMARY_NUM_PREDICT",
+                    config.summary_num_predict,
+                ),
+                classify_num_predict: env_int(
+                    "VERLATO_OLLAMA_CLASSIFY_NUM_PREDICT",
+                    config.classify_num_predict,
+                ),
+                suggest_num_predict: env_int(
+                    "VERLATO_OLLAMA_SUGGEST_NUM_PREDICT",
+                    config.suggest_num_predict,
+                ),
+                suggest_think: match env_text("VERLATO_OLLAMA_SUGGEST_THINK") {
+                    Some(raw) if !raw.trim().is_empty() => Some(matches!(
+                        raw.trim().to_lowercase().as_str(),
+                        "1" | "true" | "yes" | "on"
+                    )),
+                    _ => config.suggest_think,
+                },
+            }))
+        }
         _ => Box::new(StubProvider),
     }
 }
@@ -526,9 +625,10 @@ mod tests {
     fn python_only_providers_are_detected_in_fallback_chains() {
         let mut config = ProviderConfig::from_raw(&json!({"provider": {"name": "plugin"}}));
         assert!(native_provider(&config, None).is_ok());
+        assert!(native_provider(&config, Some("ollama")).is_ok());
         assert_eq!(
-            native_provider(&config, Some("ollama")),
-            Err("ollama".into())
+            native_provider(&config, Some("codex-cli")),
+            Err("codex-cli".into())
         );
         config
             .fallbacks

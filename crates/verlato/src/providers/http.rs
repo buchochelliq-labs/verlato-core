@@ -1,6 +1,7 @@
 //! Minimal blocking HTTP for model providers. Follows Python urllib's proxy behaviour:
 //! `HTTPS_PROXY`/`HTTP_PROXY` (either case) unless the host matches `NO_PROXY`.
 
+use std::io::BufRead;
 use std::time::Duration;
 
 pub enum HttpError {
@@ -8,6 +9,19 @@ pub enum HttpError {
     Status(u16, String),
     /// Connection, TLS, timeout or protocol failure.
     Transport(String),
+    /// The server closed the connection without answering (Python's `RemoteDisconnected`).
+    Disconnected(String),
+}
+
+impl std::fmt::Display for HttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HttpError::Status(code, reason) => write!(f, "HTTP Error {code}: {reason}"),
+            HttpError::Transport(message) | HttpError::Disconnected(message) => {
+                f.write_str(message)
+            }
+        }
+    }
 }
 
 fn env_any(names: &[&str]) -> Option<String> {
@@ -80,12 +94,12 @@ fn proxy_for(url: &str) -> Option<String> {
     }
 }
 
-pub fn post_json(
+fn send(
     url: &str,
     headers: &[(&str, String)],
     body: &str,
     timeout: Duration,
-) -> Result<String, HttpError> {
+) -> Result<ureq::Response, HttpError> {
     let mut builder = ureq::AgentBuilder::new().timeout(timeout);
     if let Some(proxy) = proxy_for(url) {
         match ureq::Proxy::new(&proxy) {
@@ -102,14 +116,56 @@ pub fn post_json(
         request = request.set(name, value);
     }
     match request.send_string(body) {
-        Ok(response) => response
-            .into_string()
-            .map_err(|error| HttpError::Transport(error.to_string())),
+        Ok(response) => Ok(response),
         Err(ureq::Error::Status(code, response)) => {
             Err(HttpError::Status(code, response.status_text().to_owned()))
         }
-        Err(ureq::Error::Transport(error)) => Err(HttpError::Transport(error.to_string())),
+        Err(ureq::Error::Transport(error)) => {
+            let message = error.to_string();
+            let lowered = message.to_lowercase();
+            let disconnected = error.kind() == ureq::ErrorKind::Io
+                && ["closed", "end of file", "reset", "eof"]
+                    .iter()
+                    .any(|m| lowered.contains(m));
+            Err(if disconnected {
+                HttpError::Disconnected(message)
+            } else {
+                HttpError::Transport(message)
+            })
+        }
     }
+}
+
+pub fn post_json(
+    url: &str,
+    headers: &[(&str, String)],
+    body: &str,
+    timeout: Duration,
+) -> Result<String, HttpError> {
+    send(url, headers, body, timeout)?
+        .into_string()
+        .map_err(|error| HttpError::Transport(error.to_string()))
+}
+
+/// POST and hand each non-empty response line to `on_line` (newline-delimited JSON streams).
+pub fn post_lines(
+    url: &str,
+    headers: &[(&str, String)],
+    body: &str,
+    timeout: Duration,
+    mut on_line: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), HttpError> {
+    let response = send(url, headers, body, timeout)?;
+    let reader = std::io::BufReader::new(response.into_reader());
+    for line in reader.lines() {
+        let line = line.map_err(|error| HttpError::Transport(error.to_string()))?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        on_line(line).map_err(HttpError::Transport)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

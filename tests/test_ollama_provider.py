@@ -679,3 +679,17 @@ def test_ollama_provider_preserves_model_reasoning(monkeypatch):
 
     assert response.content == "Model summary"
     assert response.reasoning == "Used auth hunk as primary evidence."
+
+
+def test_factory_built_ollama_keeps_default_output_caps(monkeypatch):
+    from verlato.config import ProviderConfig
+    from verlato.providers.factory import build_provider
+
+    for name in ("VERLATO_OLLAMA_SUMMARY_NUM_PREDICT", "VERLATO_OLLAMA_CLASSIFY_NUM_PREDICT", "VERLATO_OLLAMA_NUM_PREDICT"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("VERLATO_MODEL_PROVIDER", raising=False)
+    provider = build_provider(ProviderConfig(name="ollama"))
+    assert provider._options_for_task("summarize")["num_predict"] == 180
+    assert provider._options_for_task("classify")["num_predict"] == 24
+    configured = build_provider(ProviderConfig(name="ollama", summary_num_predict=64))
+    assert configured._options_for_task("summarize")["num_predict"] == 64

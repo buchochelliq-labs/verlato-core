@@ -347,6 +347,103 @@ def test_litellm_provider_scan_matches(tmp_path: Path):
     assert all(body["max_tokens"] == 1024 for body in bodies)
 
 
+def _serve(handler_factory):
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler_factory)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def _model_lines(stderr: str) -> list[str]:
+    return [line for line in stderr.splitlines() if line.startswith("[verlato:model]")]
+
+
+def _otel_records(path: Path) -> list[dict]:
+    records = _read_log(path)
+    for record in records:
+        record.pop("Timestamp")
+        record.pop("ObservedTimestamp")
+    return records
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_ollama_provider_scan_matches(tmp_path: Path, stream: bool):
+    """The default Ollama provider runs natively: same requests, items, traces and telemetry."""
+    from http.server import BaseHTTPRequestHandler
+
+    bodies: list[dict] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 - http.server API
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            bodies.append(body)
+            prompt = body["messages"][-1]["content"]
+            content = (
+                "fixed/backend/external/patch"
+                if prompt.startswith("Classify")
+                else f"Clarifies {len(prompt)} characters of change evidence for the release (token=abc123)."
+            )
+            stats = {"done": True, "done_reason": "stop", "eval_count": 9, "prompt_eval_count": 40}
+            if body["stream"]:
+                half = len(content) // 2
+                chunks = [
+                    {"message": {"role": "assistant", "content": content[:half]}, "done": False},
+                    {"message": {"role": "assistant", "content": content[half:]}, "done": False},
+                    {"message": {"role": "assistant", "content": ""}, **stats},
+                ]
+                payload = "".join(json.dumps(chunk) + "\n" for chunk in chunks).encode()
+                content_type = "application/x-ndjson"
+            else:
+                payload = json.dumps({"message": {"role": "assistant", "content": content}, **stats}).encode()
+                content_type = "application/json"
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    server = _serve(Handler)
+    try:
+        py_repo, rs_repo, env = _pair(tmp_path, "git")
+        env = {
+            **env,
+            "VERLATO_MODEL_PROVIDER": "ollama",
+            "VERLATO_OLLAMA_ENDPOINT": f"http://127.0.0.1:{server.server_address[1]}/api/chat",
+            "VERLATO_OLLAMA_MODEL": "parity-model",
+            "VERLATO_OLLAMA_STREAM": "1" if stream else "0",
+            "VERLATO_TRACE_MODEL_CALLS": "1",
+        }
+        results = {}
+        for name, command, repo in (("py", _python, py_repo), ("rs", _rust, rs_repo)):
+            log = tmp_path / f"{name}-model.jsonl"
+            run_env = {**env, "VERLATO_MODEL_LOG_PATH": str(log)}
+            if name == "rs":
+                run_env = _native_only(run_env)
+            bodies.clear()
+            result = subprocess.run(
+                command("scan", "--base", "v1.0.0"), cwd=repo, env=run_env, capture_output=True, text=True, timeout=600
+            )
+            assert result.returncode == 0, result.stderr[-2000:]
+            results[name] = (json.loads(result.stdout), list(bodies), _model_lines(result.stderr), _otel_records(log))
+    finally:
+        server.shutdown()
+    (py_items, py_bodies, py_lines, py_otel), (rs_items, rs_bodies, rs_lines, rs_otel) = results["py"], results["rs"]
+    assert rs_items == py_items
+    assert any("provider-summary:ollama:parity-model" in item["evidence"]["commit_signals"] for item in rs_items)
+    assert rs_bodies == py_bodies
+    assert rs_bodies[0]["options"] == {"temperature": 0.1, "num_predict": 180}
+    assert rs_lines == py_lines
+    assert rs_otel == py_otel
+    if stream:
+        chunk = next(line for line in rs_lines if '"stream_chunk"' in line)
+        assert '"redacted": true' in chunk or '"redacted": false' in chunk
+
+
 def test_scan_with_unported_provider_is_delegated(tmp_path: Path):
     _, rs_repo, env = _pair(tmp_path, "git")
     result = subprocess.run(

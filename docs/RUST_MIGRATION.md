@@ -2,7 +2,7 @@
 
 Verlato is moving to Rust. The native `verlato` binary (crate `crates/verlato`) now owns the
 release-note pipeline and links the IntentumDiff engine in-process. Scans call the stub,
-external-command plugin and LiteLLM/OpenAI-compatible providers natively; the remaining
+Ollama (the default), external-command plugin and LiteLLM/OpenAI-compatible providers natively; the remaining
 model-backed features still run in the Python implementation, which the binary delegates to
 transparently. This document
 records the assessment, the current state, and the remaining phases.
@@ -32,9 +32,9 @@ About 16k lines of Python (plus ~7k lines of tests):
 | IntentumDiff semantic evidence (digest, verdicts, summary, cache) | `core/semantic.py` | ~1k | **Ported** (engine linked natively) |
 | Drafts, rendering, changelog apply, state store, review/feedback/state commands | `core/{drafts,generator,changelog}`, `state/store.py`, parts of `cli/main.py` | ~1.5k | **Ported** |
 | Editor stdio service (deterministic methods) | `service_stdio.py`, parts of `mcp/service.py` | ~0.5k | **Ported**; other methods proxied |
-| Model providers: stub, plugin, LiteLLM, fallback chains; request audits and privacy records | `providers/{base,stub,plugin,litellm,fallback,factory}`, `core/model_privacy.py` | ~0.9k | **Ported** |
+| Model providers: stub, Ollama (incl. streaming), plugin, LiteLLM, fallback chains; request audits, privacy records, OTEL-style model logs | `providers/{base,stub,ollama,plugin,litellm,fallback,factory,model_logging}`, `core/model_privacy.py` | ~1.6k | **Ported** (Ollama tool calling stays in Python with the suggestion strategies) |
 | Classifier model assists (summary rewrite, diff-fallback classification, change-summary payload) | parts of `core/classifier.py`, `core/change_summary.py` | ~0.6k | **Ported** |
-| Model providers: Ollama, GitHub Models, Codex/Claude CLI, mock, telemetry | `providers/{ollama,github_copilot,cli_agents,mock,model_logging}` | ~1.5k | Delegated |
+| Model providers: GitHub Models, Codex/Claude CLI, mock | `providers/{github_copilot,cli_agents,mock}` | ~0.8k | Delegated |
 | Suggestions (prompts, batching, cache, retrieval tools, adaptive recommendations) | `cli/main.py` (most of it), `core/suggestion_tools.py`, `state/suggestion_cache.py`, `core/change_summary.py` | ~4.5k | Delegated |
 | Commit intent inference and Conventional Commit drafting | `core/commit_intent.py` | ~1.1k | Delegated |
 | MCP server (FastMCP) | `mcp/server.py` | ~0.7k | Delegated |
@@ -49,7 +49,7 @@ so the Rust binary replaces the Python one command by command without extension 
 The native binary handles these command paths itself:
 
 ```
-scan | generate | reconcile          (with the stub, plugin or litellm provider; see below)
+scan | generate | reconcile          (with the stub, ollama, plugin or litellm provider; see below)
 draft json | preview | apply | review
 render
 state show | mark-published | clear-working
@@ -64,11 +64,12 @@ Everything else is delegated to the Python implementation with the original argu
 `suggestion.*` / `commit.*` service methods (proxied to a lazily started Python service).
 
 `scan`/`generate`/`reconcile` ask the configured provider to enrich summaries (and, on the
-diff-fallback path, classifications). With `stub`, `plugin` or `litellm` (including fallback
-chains made only of those) this runs natively: the same prompts, evidence payloads, request
-audits and hashes as Python, checked by the parity suite with a recording plugin and a local
-OpenAI-compatible server. A scan is delegated when its provider chain includes a provider that
-is not ported yet (`ollama`, the default, `github-copilot`, `codex-cli`, `claude-code`, `mock`).
+diff-fallback path, classifications). With `stub`, `ollama`, `plugin` or `litellm` (including
+fallback chains made only of those) this runs natively: the same prompts, evidence payloads,
+request audits and hashes, `[verlato:model]` trace lines and `VERLATO_MODEL_LOG_PATH` records as
+Python, checked by the parity suite with a recording plugin, a fake Ollama server (plain and
+streaming) and a local OpenAI-compatible server. A scan is delegated when its provider chain
+includes a provider that is not ported yet (`github-copilot`, `codex-cli`, `claude-code`, `mock`).
 Draft commands with an explicit `--model-provider`, commit intent inference and the `github` PR
 adapter are delegated too. The extension runs non-model commands with the `stub` provider, so its
 draft/review flows are fully native.
@@ -147,10 +148,10 @@ evidence without depending on patch text.
 ## Remaining phases
 
 1. **Providers** (in progress): done: the `Provider` trait, request/prompt/evidence hashes
-   (byte-identical canonical JSON), privacy records, the plugin protocol, LiteLLM, fallback
-   chains and the classifier's model assists. Next: Ollama (with streaming and the OTEL-style
-   model telemetry), GitHub Models, the Codex/Claude CLI agents and the mock provider, after
-   which `scan`/`generate` never delegate.
+   (byte-identical canonical JSON), privacy records, Ollama (streaming, `/api/generate`
+   fallback, model telemetry), the plugin protocol, LiteLLM, fallback chains and the
+   classifier's model assists. Next: GitHub Models, the Codex/Claude CLI agents and the mock
+   provider, after which `scan`/`generate` never delegate.
 2. **Suggestions**: prompt construction and budgets, batching strategies, the suggestion cache,
    retrieval tools, telemetry events (`[verlato:suggestion]`), `draft suggest|prompt`.
 3. **Commit intents**: inference and Conventional Commit drafting (`commit conventional`).
