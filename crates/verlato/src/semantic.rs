@@ -712,7 +712,6 @@ pub fn build_semantic_evidence<'a>(
                 continue;
             }
             reviewed.insert(file.path.clone(), file);
-            unreviewed_files.shift_remove(&file.path);
             for (kind, count) in &file.group_counts {
                 *group_counts.entry(kind.clone()).or_default() += count;
             }
@@ -756,7 +755,9 @@ pub fn build_semantic_evidence<'a>(
             }
         }
         for item in &digest.unreviewed {
-            if owned(&item.path, "") && !reviewed.contains_key(&item.path) {
+            // Every revision counts: a path reviewed in one commit but not another is still
+            // partially unreviewed, so the group must not be reported as complete.
+            if owned(&item.path, "") {
                 unreviewed_files.insert(item.path.clone(), item);
             }
         }
@@ -1244,5 +1245,22 @@ mod tests {
         );
         let scoped = build_semantic_evidence([&digest], Some(&["x.bin".to_owned()])).unwrap();
         assert_eq!(scoped.verdict, "unreviewed");
+    }
+
+    #[test]
+    fn unreviewed_revision_is_not_hidden_by_another_reviewed_revision() {
+        let mut style = CommitSemantics::new("s1", Some("p0"), "x");
+        style
+            .files
+            .push(file("src/app.py", &[("IGNORED_STYLE", 1)], true));
+        let mut failed = CommitSemantics::new("f1", Some("s1"), "x");
+        failed.unreviewed.push(UnreviewedFile {
+            path: "src/app.py".into(),
+            reason: "boom".into(),
+            kind: "pipeline_error".into(),
+        });
+        let evidence = build_semantic_evidence([&style, &failed], None).unwrap();
+        assert!(!evidence.complete);
+        assert_eq!(evidence.files_unreviewed, 1);
     }
 }

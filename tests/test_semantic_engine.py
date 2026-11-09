@@ -520,3 +520,46 @@ def test_scan_is_powered_by_real_intentumdiff(monkeypatch, tmp_path: Path, capsy
     legacy = json.loads(capsys.readouterr().out)
     assert legacy[0]["evidence"]["diff_summary"]["engine"] == "git"
     assert legacy[0]["evidence"]["diff_summary"]["semantic"] is None
+
+
+def test_unreviewed_revision_is_not_hidden_by_another_reviewed_revision():
+    style = Commit(sha="s1", message="tidy", parent_sha="p0", files=[ChangedFile(path="src/app.py")])
+    style.semantics = digest("s1", fs("src/app.py", group_counts={"IGNORED_STYLE": 1}, style_only=True))
+    failed = Commit(sha="f1", message="edit", parent_sha="s1", files=[ChangedFile(path="src/app.py")])
+    failed.semantics = digest(
+        "f1", parent="s1", unreviewed=[UnreviewedFile(path="src/app.py", kind="pipeline_error", reason="boom")]
+    )
+    evidence = build_semantic_evidence([style, failed])
+    assert evidence.complete is False
+    assert evidence.files_unreviewed == 1
+    item = classify(style, failed)
+    assert item.classification.kind != "internal"
+    assert "semantic-classified" not in item.evidence.commit_signals
+    assert "semantic:partial" in item.evidence.commit_signals
+
+
+def test_confident_model_summary_cannot_lift_the_review_cap():
+    from verlato.providers.base import ProviderResponse
+
+    class ConfidentProvider:
+        def summarize(self, request):
+            return ProviderResponse(
+                content="Removes the legacy user creation endpoint in favour of the new onboarding flow.",
+                confidence=0.95,
+                model="test-model",
+            )
+
+        def classify(self, request):
+            return ProviderResponse(content="", confidence=0.0, model="test-model")
+
+    commit = semantic_commit(
+        "b1",
+        "fix: tidy api",
+        fs("src/api.py", group_counts={"MEANINGFUL_CHANGE": 1}, meaningful_change_types={"DELETION": 1},
+           symbols=[SymbolChange(name="create_user", change="removed", file="src/api.py")]),
+    )
+    group_ = ChangeGroup(pr=None, commits=[commit], files=list(commit.files))
+    item = Classifier(provider=ConfidentProvider()).classify(group_, "base", "head")[0]
+    assert any(signal.startswith("provider-summary:") for signal in item.evidence.commit_signals)
+    assert item.confidence <= 0.79
+    assert item.status == "needs-review"

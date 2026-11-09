@@ -407,7 +407,6 @@ def build_semantic_evidence(
             if not owned(file.path, file.old_path):
                 continue
             reviewed[file.path] = file
-            unreviewed.pop(file.path, None)
             for kind, count in file.group_counts.items():
                 group_counts[kind] = group_counts.get(kind, 0) + count
             for change_type, count in file.meaningful_change_types.items():
@@ -436,7 +435,9 @@ def build_semantic_evidence(
             for violation in file.guardrails:
                 guardrails.append({**violation, "file": violation.get("file") or file.path})
         for item in digest.unreviewed:
-            if owned(item.path) and item.path not in reviewed:
+            # Every revision counts: a path reviewed in one commit but not another is still
+            # partially unreviewed, so the group must not be reported as complete.
+            if owned(item.path):
                 unreviewed[item.path] = item
         for change in digest.cross_file:
             if owned(str(change.get("old_file", ""))) or owned(str(change.get("new_file", ""))):

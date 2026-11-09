@@ -137,7 +137,7 @@ fn handle_line(cwd: &Path, line: &str, python: &mut Option<PythonService>) -> (S
     if method == "shutdown" {
         return (ok_response(&id, json!({"shutdown": true})), true);
     }
-    if !NATIVE_METHODS.contains(&method) || needs_python(&params) {
+    if !NATIVE_METHODS.contains(&method) || needs_python(cwd, method, &params) {
         if python.is_none() {
             match PythonService::start(cwd) {
                 Ok(service) => *python = Some(service),
@@ -176,8 +176,13 @@ fn handle_line(cwd: &Path, line: &str, python: &mut Option<PythonService>) -> (S
     }
 }
 
-/// A request that names a real model provider keeps Python semantics (model-assisted detection).
-fn needs_python(params: &Map<String, Value>) -> bool {
+/// Whether a native method must still run in Python. Draft methods detect changes, so they
+/// keep Python semantics for the same prerequisites as the CLI (`python_reason` in main.rs):
+/// a real model provider on the request, commit intent inference, or the GitHub PR adapter.
+fn needs_python(cwd: &Path, method: &str, params: &Map<String, Value>) -> bool {
+    if !method.starts_with("draft.") {
+        return false;
+    }
     let request = params
         .get("request")
         .and_then(Value::as_object)
@@ -187,7 +192,14 @@ fn needs_python(params: &Map<String, Value>) -> bool {
         .or_else(|| request.get("modelProvider"))
         .and_then(Value::as_str)
         .map(|p| p.trim().to_lowercase());
-    matches!(provider, Some(p) if !p.is_empty() && p != "stub")
+    if matches!(provider, Some(p) if !p.is_empty() && p != "stub") {
+        return true;
+    }
+    match Context::load(cwd) {
+        Ok(ctx) => ctx.pr_adapter().is_err() || ctx.config.commit_intent_inference(None) != "off",
+        // Let the native handler report the configuration error.
+        Err(_) => false,
+    }
 }
 
 enum Dispatch {
@@ -349,4 +361,30 @@ fn ok_response(id: &Value, result: Value) -> String {
 
 fn error_response(id: &Value, code: &str, message: &str) -> String {
     json!({"id": id, "ok": false, "error": {"code": code, "message": message}}).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn draft_methods_route_to_python_for_github_adapter_and_model_providers() {
+        let dir = std::env::temp_dir();
+        let empty = Map::new();
+        let mut with_provider = Map::new();
+        with_provider.insert(
+            "request".into(),
+            json!({"base": "v1", "model_provider": "ollama"}),
+        );
+        assert!(needs_python(&dir, "draft.get", &with_provider));
+        assert!(!needs_python(&dir, "state.show", &with_provider));
+
+        std::env::set_var("VERLATO_PR_ADAPTER", "github");
+        let github = needs_python(&dir, "draft.get", &empty);
+        let state = needs_python(&dir, "state.show", &empty);
+        std::env::remove_var("VERLATO_PR_ADAPTER");
+        assert!(github);
+        assert!(!state);
+        assert!(!needs_python(&dir, "draft.get", &empty));
+    }
 }

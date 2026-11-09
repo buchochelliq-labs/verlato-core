@@ -313,10 +313,7 @@ class Classifier:
         if not parsed:
             confidence = max(confidence, 0.62)
             commit_signals.append("diff-fallback")
-        if semantic is not None and (semantic.api_break_candidates or semantic.guardrails) and kind != "breaking":
-            # Removed/renamed/re-signatured public symbols or protected-config edits always
-            # deserve a human look before publishing, whatever the commit message claims.
-            confidence = min(confidence, 0.79)
+        confidence = self._cap_for_semantic_review(semantic, kind, confidence)
 
         title = (pr.title if pr else group.commits[0].message.splitlines()[0]).strip()
         summary = diff.summary
@@ -342,6 +339,8 @@ class Classifier:
                     and not (diff.docs_only or diff.tests_only)
                 ),
             )
+            # A confident model summary or classification must not lift the review cap.
+            confidence = self._cap_for_semantic_review(semantic, kind, confidence)
 
         source = SourceRef(
             pr_number=pr.number if pr else None,
@@ -387,6 +386,15 @@ class Classifier:
             status=default_review_status(confidence),
         )
         return [item]
+
+    @staticmethod
+    def _cap_for_semantic_review(semantic: SemanticEvidence | None, kind: str, confidence: float) -> float:
+        """Removed/renamed/re-signatured public symbols or protected-config edits always deserve a
+        human look before publishing, whatever the commit message or a model claims."""
+
+        if semantic is not None and (semantic.api_break_candidates or semantic.guardrails) and kind != "breaking":
+            return min(confidence, 0.79)
+        return confidence
 
     def _apply_semantic_evidence(
         self,
