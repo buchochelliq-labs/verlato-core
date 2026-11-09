@@ -18,7 +18,7 @@ use crate::vocab::is_test_path;
 
 pub const DIFF_ENGINE_CHOICES: &[&str] = &["intentumdiff", "git"];
 pub const DEFAULT_DIFF_ENGINE: &str = "intentumdiff";
-pub const SEMANTIC_DIGEST_VERSION: &str = "v3";
+pub const SEMANTIC_DIGEST_VERSION: &str = "v4";
 pub const DEFAULT_SEMANTIC_CACHE_PATH: &str = ".verlato_semantic_cache.json";
 pub const GROUP_KINDS: &[&str] = &[
     "MEANINGFUL_CHANGE",
@@ -203,6 +203,23 @@ fn param_count(node: Option<&Value>) -> Option<i64> {
     node?.get("facts")?.get("param_count")?.as_i64()
 }
 
+fn facts_count(node: Option<&Value>, key: &str) -> i64 {
+    node.and_then(|n| n.get("facts"))
+        .and_then(|f| f.get(key))
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+}
+
+/// Parameter nodes that carry a default or are declared optional (ports
+/// `_is_optional_parameter`).
+fn is_optional_parameter(node: Option<&Value>) -> bool {
+    let node_type = node
+        .map(|n| str_field(n, "node_type").to_lowercase())
+        .unwrap_or_default();
+    node_type.contains("parameter")
+        && (node_type.contains("default") || node_type.contains("optional"))
+}
+
 fn change_type_group(change_type: &str) -> &'static str {
     match change_type {
         "MOVE" | "MOVE_TO_MODULE" => "MOVED_CODE",
@@ -271,6 +288,7 @@ pub fn digest_file_diff(
             continue;
         }
         let mut signature_symbol: Option<String> = None;
+        let mut compatible_signature = true;
         for index in group
             .get("raw_change_indices")
             .and_then(Value::as_array)
@@ -303,13 +321,21 @@ pub fn digest_file_diff(
                 {
                     signature_symbol = Some(first.to_owned());
                 }
+                if str_field(change, "change_type") != "ADDITION" || !is_optional_parameter(node) {
+                    compatible_signature = false;
+                }
             }
         }
         if let Some(name) = signature_symbol {
             add_symbol(
                 SymbolChange {
                     name,
-                    change: "signature".into(),
+                    change: if compatible_signature {
+                        "extended"
+                    } else {
+                        "signature"
+                    }
+                    .into(),
                     file: path.into(),
                     node_type: String::new(),
                     old_name: None,
@@ -395,8 +421,16 @@ pub fn digest_file_diff(
             if let (Some(old), Some(new)) = (param_count(old_node), param_count(new_node)) {
                 if old != new {
                     let node = new_node.unwrap();
+                    let added_params = new - old;
+                    let added_defaults = facts_count(new_node, "default_count")
+                        - facts_count(old_node, "default_count");
+                    let change = if added_params > 0 && added_defaults == added_params {
+                        "extended"
+                    } else {
+                        "signature"
+                    };
                     add_symbol(
-                        symbol(node_name(node), "signature", node, None, None),
+                        symbol(node_name(node), change, node, None, None),
                         &mut symbols,
                     );
                 }
@@ -802,6 +836,9 @@ pub struct SemanticEvidence {
     pub errors: Vec<String>,
     pub notes: Vec<String>,
     pub summary: String,
+    /// Definitions whose only signature change is added optional (defaulted) parameters.
+    #[serde(default)]
+    pub extended_signatures: Vec<String>,
 }
 
 impl SemanticEvidence {
@@ -855,6 +892,7 @@ pub fn build_semantic_evidence<'a>(
         indexmap::IndexMap::new();
     let (mut added, mut removed, mut renamed, mut signatures) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut extended: Vec<String> = Vec::new();
     let mut refactorings: Vec<String> = Vec::new();
     let mut cross_file: Vec<Value> = Vec::new();
     let mut guardrails: Vec<BTreeMap<String, String>> = Vec::new();
@@ -904,6 +942,7 @@ pub fn build_semantic_evidence<'a>(
                         ),
                     ),
                     "signature" => push_unique(&mut signatures, &label),
+                    "extended" => push_unique(&mut extended, &label),
                     _ => {}
                 }
             }
@@ -1008,6 +1047,12 @@ pub fn build_semantic_evidence<'a>(
         added_symbols: truncate(added),
         removed_symbols: truncate(removed),
         renamed_symbols: truncate(renamed),
+        extended_signatures: truncate(
+            extended
+                .into_iter()
+                .filter(|e| !signatures.contains(e))
+                .collect(),
+        ),
         signature_changes: truncate(signatures),
         refactorings,
         cross_file,
@@ -1128,6 +1173,14 @@ pub fn render_semantic_summary(evidence: &SemanticEvidence) -> String {
         ("removed", &evidence.removed_symbols),
         ("renamed", &evidence.renamed_symbols),
         ("signature changed", &evidence.signature_changes),
+        (
+            "optional parameters added (compatible)",
+            &evidence.extended_signatures,
+        ),
+        (
+            "possible API break (public symbol removed, renamed or re-signatured; callers may need updating)",
+            &evidence.api_break_candidates(),
+        ),
     ] {
         if !entries.is_empty() {
             parts.push(format!("{label}: {}", symbol_list(entries)));
@@ -1205,6 +1258,8 @@ pub fn semantic_prompt_payload(evidence: &SemanticEvidence) -> Value {
         "removed_symbols": names(&evidence.removed_symbols),
         "renamed_symbols": names(&evidence.renamed_symbols),
         "signature_changes": names(&evidence.signature_changes),
+        "extended_signatures": names(&evidence.extended_signatures),
+        "api_break_candidates": names(&evidence.api_break_candidates()),
         "refactorings": evidence.refactorings,
         "style_only_files": evidence.style_only_files,
         "guardrail_rules": rules,
@@ -1321,10 +1376,12 @@ mod tests {
                 {"change_type": "ADDITION", "new_node": node("fresh", "function_definition", Some(2), true), "old_node": null},
                 {"change_type": "REFACTORING", "refactoring_kind": "RENAME_SYMBOL", "old_node": node("bar", "function_definition", Some(2), true), "new_node": node("baz", "function_definition", Some(2), true)},
                 {"change_type": "ADDITION", "new_node": node("[5]", "pair", None, true), "old_node": null},
-                {"change_type": "ADDITION", "new_node": node("pair", "pair", None, true), "old_node": null}
+                {"change_type": "ADDITION", "new_node": node("pair", "pair", None, true), "old_node": null},
+                {"change_type": "DELETION", "old_node": node("flag", "default_parameter", None, false), "new_node": null}
             ],
             "change_groups": [
                 {"kind": "MEANINGFUL_CHANGE", "raw_change_indices": [0], "old_labels": ["greet"], "new_labels": ["greet", "punct"]},
+                {"kind": "MEANINGFUL_CHANGE", "raw_change_indices": [6], "old_labels": ["fetch"], "new_labels": ["fetch"]},
                 {"kind": "MEANINGFUL_CHANGE", "raw_change_indices": [1]},
                 {"kind": "MEANINGFUL_CHANGE", "raw_change_indices": [2]},
                 {"kind": "REFACTORING", "raw_change_indices": [3], "refactoring_kind": "RENAME_SYMBOL"},
@@ -1340,7 +1397,8 @@ mod tests {
         for expected in [
             ("added", "fresh"),
             ("removed", "gone"),
-            ("signature", "greet"),
+            ("extended", "greet"),
+            ("signature", "fetch"),
             ("renamed", "baz"),
         ] {
             assert!(
@@ -1349,7 +1407,7 @@ mod tests {
             );
         }
         assert!(!found.iter().any(|(_, n)| n == "[5]" || n == "pair"));
-        assert_eq!(digest.group_counts.get("MEANINGFUL_CHANGE"), Some(&3));
+        assert_eq!(digest.group_counts.get("MEANINGFUL_CHANGE"), Some(&4));
         assert_eq!(digest.refactorings, vec!["RENAME_SYMBOL".to_owned()]);
     }
 

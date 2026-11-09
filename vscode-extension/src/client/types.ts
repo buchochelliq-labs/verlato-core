@@ -71,6 +71,8 @@ export interface SemanticEvidence {
   removed_symbols: string[];
   renamed_symbols: string[];
   signature_changes: string[];
+  /** Definitions whose only signature change is added optional parameters. */
+  extended_signatures?: string[];
   refactorings: string[];
   cross_file: SemanticCrossFileChange[];
   guardrails: SemanticGuardrail[];

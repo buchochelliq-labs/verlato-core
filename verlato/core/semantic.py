@@ -39,7 +39,7 @@ from verlato.core.areas import is_test_path
 
 DIFF_ENGINE_CHOICES = ("intentumdiff", "git")
 DEFAULT_DIFF_ENGINE = "intentumdiff"
-SEMANTIC_DIGEST_VERSION = "v3"
+SEMANTIC_DIGEST_VERSION = "v4"
 DEFAULT_SEMANTIC_CACHE_PATH = ".verlato_semantic_cache.json"
 INTENTUMDIFF_INSTALL_HINT = "pip install --pre intentumdiff-python"
 
@@ -95,7 +95,9 @@ def resolve_diff_engine(configured: object = None, *, requested: object = None) 
 @dataclass
 class SymbolChange:
     name: str
-    change: str  # added | removed | renamed | signature
+    # added | removed | renamed | signature | extended (only optional parameters were added:
+    # existing callers keep working)
+    change: str
     file: str
     node_type: str = ""
     old_name: str | None = None
@@ -187,6 +189,8 @@ class SemanticEvidence:
     errors: list[str]
     notes: list[str]
     summary: str
+    # Definitions whose only signature change is added optional (defaulted) parameters.
+    extended_signatures: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -225,6 +229,8 @@ def semantic_prompt_payload(evidence: SemanticEvidence | None) -> dict[str, Any]
         "removed_symbols": [entry.split(" in ")[0] for entry in evidence.removed_symbols],
         "renamed_symbols": [entry.split(" in ")[0] for entry in evidence.renamed_symbols],
         "signature_changes": [entry.split(" in ")[0] for entry in evidence.signature_changes],
+        "extended_signatures": [entry.split(" in ")[0] for entry in evidence.extended_signatures],
+        "api_break_candidates": [entry.split(" in ")[0] for entry in evidence.api_break_candidates],
         "refactorings": list(evidence.refactorings),
         "style_only_files": list(evidence.style_only_files),
         "guardrail_rules": sorted({str(item.get("rule_id")) for item in evidence.guardrails}),
@@ -399,6 +405,7 @@ def build_semantic_evidence(
     removed: list[str] = []
     renamed: list[str] = []
     signatures: list[str] = []
+    extended: list[str] = []
     refactorings: list[str] = []
     cross_file: list[dict[str, Any]] = []
     guardrails: list[dict[str, str]] = []
@@ -440,6 +447,8 @@ def build_semantic_evidence(
                     _append_unique(renamed, f"{symbol.old_name or '?'} -> {symbol.name} in {symbol.file}")
                 elif symbol.change == "signature":
                     _append_unique(signatures, label)
+                elif symbol.change == "extended":
+                    _append_unique(extended, label)
             for kind in file.refactorings:
                 _append_unique(refactorings, kind)
             for violation in file.guardrails:
@@ -458,6 +467,8 @@ def build_semantic_evidence(
     churn = set(added) & set(removed)
     added = [entry for entry in added if entry not in churn]
     removed = [entry for entry in removed if entry not in churn]
+    # A definition with an incompatible signature change anywhere in the group is not "extended".
+    extended = [entry for entry in extended if entry not in signatures]
 
     meaningful_files = sorted(path for path, count in file_meaningful.items() if count > 0)
     refactor_only_files = sorted(
@@ -493,6 +504,7 @@ def build_semantic_evidence(
         removed_symbols=removed[:MAX_EVIDENCE_SYMBOLS],
         renamed_symbols=renamed[:MAX_EVIDENCE_SYMBOLS],
         signature_changes=signatures[:MAX_EVIDENCE_SYMBOLS],
+        extended_signatures=extended[:MAX_EVIDENCE_SYMBOLS],
         refactorings=refactorings,
         cross_file=cross_file,
         guardrails=guardrails,
@@ -558,6 +570,13 @@ def render_semantic_summary(evidence: SemanticEvidence) -> str:
         parts.append(f"renamed: {_symbol_list(evidence.renamed_symbols)}")
     if evidence.signature_changes:
         parts.append(f"signature changed: {_symbol_list(evidence.signature_changes)}")
+    if evidence.extended_signatures:
+        parts.append(f"optional parameters added (compatible): {_symbol_list(evidence.extended_signatures)}")
+    if evidence.api_break_candidates:
+        parts.append(
+            "possible API break (public symbol removed, renamed or re-signatured; callers may need updating): "
+            + _symbol_list(evidence.api_break_candidates)
+        )
     if evidence.cross_file:
         moved = [
             f"{change.get('symbol_name')} ({change.get('change_type', '').lower().replace('_', ' ')})"
@@ -624,6 +643,19 @@ def _is_definition(node: Any) -> bool:
 def _looks_like_parameter(node: Any) -> bool:
     node_type = str(getattr(node, "node_type", "") or "").lower()
     return "parameter" in node_type
+
+
+def _is_optional_parameter(node: Any) -> bool:
+    """Parameter nodes that carry a default or are declared optional (Python
+    ``default_parameter`` / ``typed_default_parameter``, TypeScript ``optional_parameter``)."""
+
+    node_type = str(getattr(node, "node_type", "") or "").lower()
+    return "parameter" in node_type and ("default" in node_type or "optional" in node_type)
+
+
+def _facts_count(node: Any, key: str) -> int:
+    value = getattr(getattr(node, "facts", None), key, None)
+    return value if isinstance(value, int) else 0
 
 
 _CHANGE_TYPE_GROUP = {
@@ -871,6 +903,7 @@ def digest_file_diff(
         if kind != "MEANINGFUL_CHANGE":
             continue
         signature_symbol: str | None = None
+        compatible_signature = True
         for index in getattr(group, "raw_change_indices", []) or []:
             if not isinstance(index, int) or not 0 <= index < len(changes):
                 continue
@@ -882,8 +915,11 @@ def digest_file_diff(
                 labels = list(getattr(group, "new_labels", []) or getattr(group, "old_labels", []) or [])
                 if labels and labels[0]:
                     signature_symbol = str(labels[0])
+                if change_type != "ADDITION" or not _is_optional_parameter(node):
+                    compatible_signature = False
         if signature_symbol:
-            add_symbol(SymbolChange(name=signature_symbol, change="signature", file=path))
+            add_symbol(SymbolChange(name=signature_symbol, change="extended" if compatible_signature else "signature",
+                                    file=path))
 
     if not groups and changes:
         # Whole-file additions/deletions (and some fallback diffs) carry raw changes without
@@ -927,8 +963,11 @@ def digest_file_diff(
             and new_node.facts.param_count is not None
             and old_node.facts.param_count != new_node.facts.param_count
         ):
-            add_symbol(SymbolChange(name=_node_name(new_node), change="signature", file=path,
-                                    node_type=str(new_node.node_type)))
+            added_params = new_node.facts.param_count - old_node.facts.param_count
+            added_defaults = _facts_count(new_node, "default_count") - _facts_count(old_node, "default_count")
+            compatible = added_params > 0 and added_defaults == added_params
+            add_symbol(SymbolChange(name=_node_name(new_node), change="extended" if compatible else "signature",
+                                    file=path, node_type=str(new_node.node_type)))
 
     guardrails = [
         {

@@ -1745,6 +1745,7 @@ export function renderSemanticEvidence(item: DraftItem): string {
     ${renderSemanticSymbolRow("Removed", semantic.removed_symbols)}
     ${renderSemanticSymbolRow("Renamed", semantic.renamed_symbols)}
     ${renderSemanticSymbolRow("Signature", semantic.signature_changes)}
+    ${renderSemanticSymbolRow("Optional params", semantic.extended_signatures)}
     ${renderSemanticSymbolRow("Cross-file", crossFile)}
     ${semantic.style_only_files?.length ? `<div class="semantic-files">Style-only: ${escapeHtml(semantic.style_only_files.slice(0, 5).join(", "))}</div>` : ""}
     <small class="semantic-engine">IntentumDiff ${escapeHtml(semantic.engine_version || "")}${semantic.complete ? "" : " | partial review"}</small>
