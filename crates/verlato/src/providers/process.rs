@@ -3,8 +3,36 @@
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+/// How long to wait for output readers once the child has been killed or has exited; a
+/// descendant that inherited the pipes must not keep the call open.
+const READER_GRACE: Duration = Duration::from_millis(500);
+
+fn spawn_reader(mut source: impl Read + Send + 'static) -> mpsc::Receiver<String> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = source.read_to_string(&mut text);
+        let _ = sender.send(text);
+    });
+    receiver
+}
+
+fn kill_tree(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        // The child leads its own process group: signal the whole group so descendants that
+        // inherited stdout/stderr die with it.
+        unsafe {
+            libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
 
 pub struct Output {
     pub code: i32,
@@ -44,6 +72,11 @@ pub fn run_command(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        process.process_group(0);
+    }
     if let Env::Minimal(names) = env {
         process.env_clear();
         for name in [
@@ -74,18 +107,8 @@ pub fn run_command(
             let _ = stdin.write_all(input.as_bytes());
         })
     });
-    let mut stdout = child.stdout.take().expect("piped stdout");
-    let mut stderr = child.stderr.take().expect("piped stderr");
-    let out_reader = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = stdout.read_to_string(&mut text);
-        text
-    });
-    let err_reader = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = stderr.read_to_string(&mut text);
-        text
-    });
+    let out_reader = spawn_reader(child.stdout.take().expect("piped stdout"));
+    let err_reader = spawn_reader(child.stderr.take().expect("piped stderr"));
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
@@ -95,23 +118,25 @@ pub fn run_command(
             Err(_) => break None,
         }
     };
-    let join_writer = |writer: Option<std::thread::JoinHandle<()>>| {
-        if let Some(writer) = writer {
-            let _ = writer.join();
-        }
-    };
+    // The stdin writer finishes once the child exits or is killed (the pipe closes); it is
+    // not joined so a descendant holding stdin can't block either.
+    drop(writer);
     let Some(status) = status else {
-        let _ = child.kill();
-        let _ = child.wait();
-        join_writer(writer);
-        let _ = out_reader.join();
-        return Err(RunError::Timeout(err_reader.join().unwrap_or_default()));
+        kill_tree(&mut child);
+        let stderr = err_reader.recv_timeout(READER_GRACE).unwrap_or_default();
+        return Err(RunError::Timeout(stderr));
     };
-    join_writer(writer);
+    // Output is complete once the pipes close; give the readers until the deadline (or a short
+    // grace) so a background descendant still holding a pipe can't hang the caller.
+    let wait = deadline
+        .saturating_duration_since(Instant::now())
+        .max(READER_GRACE);
+    let stdout = out_reader.recv_timeout(wait).unwrap_or_default();
+    let stderr = err_reader.recv_timeout(READER_GRACE).unwrap_or_default();
     Ok(Output {
         code: status.code().unwrap_or(-1),
-        stdout: out_reader.join().unwrap_or_default(),
-        stderr: err_reader.join().unwrap_or_default(),
+        stdout,
+        stderr,
     })
 }
 
@@ -155,4 +180,28 @@ pub fn which(command: &str) -> Option<PathBuf> {
             is_executable(&full).then_some(full)
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_kills_descendants_holding_the_pipes() {
+        let start = Instant::now();
+        let result = run_command(
+            &["sh".into(), "-c".into(), "sleep 3".into()],
+            None,
+            &std::env::temp_dir(),
+            Env::Inherit,
+            Duration::from_millis(100),
+        );
+        assert!(matches!(result, Err(RunError::Timeout(_))));
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            start.elapsed()
+        );
+    }
 }

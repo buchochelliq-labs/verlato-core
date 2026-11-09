@@ -33,3 +33,6 @@ ureq = { version = "2", default-features = false, features = ["tls", "native-cer
 
 [dev-dependencies]
 tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

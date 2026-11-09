@@ -2402,6 +2402,7 @@ dependencies = [
  "hex",
  "indexmap",
  "intentumdiff-rust-core",
+ "libc",
  "rayon",
  "regex",
  "serde",

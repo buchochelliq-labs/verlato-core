@@ -161,7 +161,8 @@ def test_digest_extracts_definition_symbols_signatures_and_renames():
         change("DELETION", old=node("flag", "default_parameter", definition=False)),
     ]
     groups = [
-        # An added defaulted parameter keeps existing callers working: "extended".
+        # An added defaulted parameter: without the source to show where it was added, it stays
+        # a signature change (see the real-engine test for appended parameters).
         group("MEANINGFUL_CHANGE", [0], old_labels=["greet"], new_labels=["greet", "punct"]),
         # Removing a parameter (even a defaulted one) is an incompatible signature change.
         group("MEANINGFUL_CHANGE", [7], old_labels=["fetch"], new_labels=["fetch"]),
@@ -174,13 +175,32 @@ def test_digest_extracts_definition_symbols_signatures_and_renames():
     by_change = {(symbol.change, symbol.name) for symbol in digest_.symbols}
     assert ("added", "fresh") in by_change
     assert ("removed", "gone") in by_change
-    assert ("extended", "greet") in by_change
+    assert ("signature", "greet") in by_change
     assert ("signature", "fetch") in by_change
     assert ("renamed", "baz") in by_change
     assert not any(symbol.name in {"[5]", "pair"} for symbol in digest_.symbols)
     assert digest_.group_counts == {"MEANINGFUL_CHANGE": 4, "REFACTORING": 1, "IGNORED_STYLE": 1}
     assert digest_.refactorings == ["RENAME_SYMBOL"]
     assert digest_.meaningful_change_types == {"ADDITION": 2, "DELETION": 2}
+
+
+@pytest.mark.skipif(not HAS_INTENTUMDIFF, reason="intentumdiff-python is not installed")
+@pytest.mark.parametrize(
+    ("old", "new", "expected"),
+    [
+        ("def fetch(limit=10):\n    return limit\n", "def fetch(limit=10, offset=0):\n    return limit\n", "extended"),
+        # Inserted before an existing positional parameter: fetch(5) now binds offset.
+        ("def fetch(limit=10):\n    return limit\n", "def fetch(offset=0, limit=10):\n    return limit\n", "signature"),
+        ("def fetch(a, **kw):\n    return a\n", "def fetch(a, b=1, **kw):\n    return a\n", "extended"),
+        ("def fetch(a):\n    return a\n", "def fetch(a, sep=\", \"):\n    return a\n", "extended"),
+    ],
+)
+def test_only_appended_optional_parameters_are_compatible(old: str, new: str, expected: str):
+    from intentumdiff import SemanticDiffer
+
+    file_diff_ = SemanticDiffer().diff_strings(old, new, filename="m.py")
+    digest_ = digest_file_diff(file_diff_, path="m.py", old_path="m.py", old_content=old, new_content=new)
+    assert [(symbol.change, symbol.name) for symbol in digest_.symbols] == [(expected, "fetch")]
 
 
 def test_literals_reach_prompts_only_at_the_detailed_level():

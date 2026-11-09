@@ -203,13 +203,6 @@ fn param_count(node: Option<&Value>) -> Option<i64> {
     node?.get("facts")?.get("param_count")?.as_i64()
 }
 
-fn facts_count(node: Option<&Value>, key: &str) -> i64 {
-    node.and_then(|n| n.get("facts"))
-        .and_then(|f| f.get(key))
-        .and_then(Value::as_i64)
-        .unwrap_or(0)
-}
-
 /// Parameter nodes that carry a default or are declared optional (ports
 /// `_is_optional_parameter`).
 fn is_optional_parameter(node: Option<&Value>) -> bool {
@@ -253,6 +246,7 @@ pub fn digest_file_diff(
         .get("change_groups")
         .and_then(Value::as_array)
         .unwrap_or(&empty);
+    let new_lines = sources.map(|(_, new)| source_lines(new));
     let mut group_counts: BTreeMap<String, u64> = BTreeMap::new();
     let mut meaningful_types: BTreeMap<String, u64> = BTreeMap::new();
     let mut refactorings: Vec<String> = Vec::new();
@@ -289,6 +283,7 @@ pub fn digest_file_diff(
         }
         let mut signature_symbol: Option<String> = None;
         let mut compatible_signature = true;
+        let mut added_optional: Vec<&Value> = Vec::new();
         for index in group
             .get("raw_change_indices")
             .and_then(Value::as_array)
@@ -323,8 +318,16 @@ pub fn digest_file_diff(
                 }
                 if str_field(change, "change_type") != "ADDITION" || !is_optional_parameter(node) {
                     compatible_signature = false;
+                } else if let Some(node) = node {
+                    added_optional.push(node);
                 }
             }
+        }
+        if signature_symbol.is_some() && compatible_signature {
+            // A defaulted parameter inserted before an existing positional one rebinds
+            // positional calls: only appended optional parameters are compatible.
+            compatible_signature =
+                appends_optional_parameters(&added_optional, new_lines.as_deref());
         }
         if let Some(name) = signature_symbol {
             add_symbol(
@@ -420,17 +423,11 @@ pub fn digest_file_diff(
         {
             if let (Some(old), Some(new)) = (param_count(old_node), param_count(new_node)) {
                 if old != new {
+                    // Counts alone can't show where parameters were added, so this stays a
+                    // signature change (the parameter-group path detects appended ones).
                     let node = new_node.unwrap();
-                    let added_params = new - old;
-                    let added_defaults = facts_count(new_node, "default_count")
-                        - facts_count(old_node, "default_count");
-                    let change = if added_params > 0 && added_defaults == added_params {
-                        "extended"
-                    } else {
-                        "signature"
-                    };
                     add_symbol(
-                        symbol(node_name(node), change, node, None, None),
+                        symbol(node_name(node), "signature", node, None, None),
                         &mut symbols,
                     );
                 }
@@ -553,6 +550,10 @@ fn source_lines(content: &str) -> Vec<&[u8]> {
 /// Whitespace-collapsed source text of `node` (engine positions are 0-based lines and UTF-8
 /// byte columns), bounded to `MAX_SEMANTIC_SNIPPET_CHARS`. Ports `_node_source`.
 fn node_source(node: Option<&Value>, lines: &[&[u8]]) -> Option<String> {
+    node_text(node, lines, Some(MAX_SEMANTIC_SNIPPET_CHARS))
+}
+
+fn node_text(node: Option<&Value>, lines: &[&[u8]], limit: Option<usize>) -> Option<String> {
     let position = node?.get("position")?;
     let field = |key: &str| {
         position
@@ -584,11 +585,87 @@ fn node_source(node: Option<&Value>, lines: &[&[u8]]) -> Option<String> {
     if text.is_empty() {
         return None;
     }
-    if text.chars().count() > MAX_SEMANTIC_SNIPPET_CHARS {
-        let cut: String = text.chars().take(MAX_SEMANTIC_SNIPPET_CHARS - 3).collect();
-        return Some(format!("{}...", cut.trim_end()));
+    if let Some(limit) = limit {
+        if text.chars().count() > limit {
+            let cut: String = text.chars().take(limit - 3).collect();
+            return Some(format!("{}...", cut.trim_end()));
+        }
     }
     Some(text)
+}
+
+const MAX_PARAMETER_SCAN_CHARS: usize = 4000;
+
+/// The whitespace-collapsed parameters that follow `node` in its parameter list, read from
+/// the new source up to the closing bracket (ports `_parameters_after`).
+fn parameters_after(node: Option<&Value>, lines: &[&[u8]]) -> Option<Vec<String>> {
+    let (_, (end_line, end_col)) = node_span(node)?;
+    let (end_line, end_col) = (end_line as usize, end_col as usize);
+    if end_line >= lines.len() {
+        return None;
+    }
+    let first = lines[end_line]
+        .get(end_col.min(lines[end_line].len())..)
+        .unwrap_or_default();
+    let mut parts: Vec<&[u8]> = vec![first];
+    parts.extend(lines[end_line + 1..].iter().copied());
+    let rest = String::from_utf8_lossy(&parts.join(&b'\n')).into_owned();
+    let mut pieces: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let collapse = |piece: &str| piece.split_whitespace().collect::<Vec<_>>().join(" ");
+    for ch in rest.chars().take(MAX_PARAMETER_SCAN_CHARS) {
+        if let Some(q) = quote {
+            current.push(ch);
+            if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' if depth == 0 => {
+                pieces.push(current);
+                return Some(
+                    pieces
+                        .iter()
+                        .filter(|p| !p.trim().is_empty())
+                        .map(|p| collapse(p))
+                        .collect(),
+                );
+            }
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                pieces.push(std::mem::take(&mut current));
+                continue;
+            }
+            _ => {}
+        }
+        current.push(ch);
+    }
+    None
+}
+
+/// Whether the added optional parameters all follow every existing positional parameter, so
+/// positional calls keep binding the same arguments (ports `_appends_optional_parameters`).
+fn appends_optional_parameters(added: &[&Value], lines: Option<&[&[u8]]>) -> bool {
+    let Some(lines) = lines else {
+        return false;
+    };
+    let added_texts: Vec<String> = added
+        .iter()
+        .filter_map(|node| node_text(Some(node), lines, None))
+        .collect();
+    added
+        .iter()
+        .all(|node| match parameters_after(Some(node), lines) {
+            None => false,
+            Some(following) => following.iter().all(|piece| {
+                added_texts.contains(piece) || piece.starts_with('*') || piece.starts_with("...")
+            }),
+        })
 }
 
 fn semantic_group(kind: &str) -> Option<&'static str> {
@@ -1678,7 +1755,8 @@ mod tests {
         for expected in [
             ("added", "fresh"),
             ("removed", "gone"),
-            ("extended", "greet"),
+            // Without the source, an added default can't be shown to be appended.
+            ("signature", "greet"),
             ("signature", "fetch"),
             ("renamed", "baz"),
         ] {
@@ -1810,5 +1888,41 @@ mod tests {
         .unwrap();
         assert_eq!(snippet.chars().count(), MAX_SEMANTIC_SNIPPET_CHARS);
         assert!(snippet.ends_with("..."));
+    }
+
+    #[test]
+    fn only_appended_optional_parameters_are_compatible() {
+        let digest_for = |new: &str, start: u64, end: u64| {
+            let mut param = node("offset", "default_parameter", None, false);
+            param["position"] =
+                json!({"start_line": 0, "start_col": start, "end_line": 0, "end_col": end});
+            let review = json!({
+                "changes": [{"change_type": "ADDITION", "new_node": param, "old_node": null}],
+                "change_groups": [{"kind": "MEANINGFUL_CHANGE", "raw_change_indices": [0], "new_labels": ["fetch", "offset"]}],
+            });
+            let old = "def fetch(limit=10):\n    return limit\n";
+            digest_file_diff(&review, "m.py", "m.py", None, Some((old, new))).symbols[0]
+                .change
+                .clone()
+        };
+        // def fetch(limit=10, offset=0):  -> `offset=0` at bytes 20..28
+        assert_eq!(
+            digest_for("def fetch(limit=10, offset=0):\n    return limit\n", 20, 28),
+            "extended"
+        );
+        // def fetch(offset=0, limit=10):  -> inserted before `limit`
+        assert_eq!(
+            digest_for("def fetch(offset=0, limit=10):\n    return limit\n", 10, 18),
+            "signature"
+        );
+        // def fetch(limit=10, offset=0, **kw):
+        assert_eq!(
+            digest_for(
+                "def fetch(limit=10, offset=0, **kw):\n    return limit\n",
+                20,
+                28
+            ),
+            "extended"
+        );
     }
 }

@@ -30,17 +30,22 @@ fn env_any(names: &[&str]) -> Option<String> {
         .find_map(|name| std::env::var(name).ok().filter(|v| !v.trim().is_empty()))
 }
 
-fn host_of(url: &str) -> String {
+/// The URL's `host[:port]` authority (without user info), lowercased.
+fn authority_of(url: &str) -> String {
     let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let authority = authority
+    authority
         .rsplit_once('@')
         .map(|(_, h)| h)
-        .unwrap_or(authority);
+        .unwrap_or(authority)
+        .to_lowercase()
+}
+
+fn host_of(authority: &str) -> String {
     if let Some(stripped) = authority.strip_prefix('[') {
-        return stripped.split(']').next().unwrap_or("").to_lowercase();
+        return stripped.split(']').next().unwrap_or("").to_owned();
     }
-    authority.split(':').next().unwrap_or("").to_lowercase()
+    authority.split(':').next().unwrap_or("").to_owned()
 }
 
 fn ipv4(text: &str) -> Option<u32> {
@@ -51,8 +56,12 @@ fn ipv4(text: &str) -> Option<u32> {
     (octets.len() == 4).then(|| octets.iter().fold(0, |acc, o| (acc << 8) | o))
 }
 
-/// Whether `NO_PROXY` exempts `host` (exact names, domain suffixes, `*`, IPv4 CIDRs).
-pub fn bypasses_proxy(host: &str, no_proxy: &str) -> bool {
+/// Whether `NO_PROXY` exempts the `host[:port]` authority. Like urllib, entries match the host
+/// or the host with its port (`localhost:11434`), exactly or as a domain suffix; `*` and IPv4
+/// CIDRs are supported too.
+pub fn bypasses_proxy(authority: &str, no_proxy: &str) -> bool {
+    let host = host_of(authority);
+    let host = host.as_str();
     no_proxy
         .split(',')
         .map(str::trim)
@@ -76,14 +85,16 @@ pub fn bypasses_proxy(host: &str, no_proxy: &str) -> bool {
                 };
             }
             let suffix = entry.trim_start_matches('.');
-            host == suffix || host.ends_with(&format!(".{suffix}"))
+            [host, authority]
+                .iter()
+                .any(|name| *name == suffix || name.ends_with(&format!(".{suffix}")))
         })
 }
 
 fn proxy_for(url: &str) -> Option<String> {
-    let host = host_of(url);
+    let authority = authority_of(url);
     if let Some(no_proxy) = env_any(&["NO_PROXY", "no_proxy"]) {
-        if bypasses_proxy(&host, &no_proxy) {
+        if bypasses_proxy(&authority, &no_proxy) {
             return None;
         }
     }
@@ -183,7 +194,14 @@ mod tests {
         assert!(bypasses_proxy("api.example.com", no_proxy));
         assert!(!bypasses_proxy("example.com", no_proxy));
         assert!(!bypasses_proxy("10.0.0.1", no_proxy));
-        assert_eq!(host_of("http://user@127.0.0.1:8088/v1/chat"), "127.0.0.1");
-        assert_eq!(host_of("https://[::1]:443/x"), "::1");
+        assert_eq!(
+            authority_of("http://user@127.0.0.1:8088/v1/chat"),
+            "127.0.0.1:8088"
+        );
+        assert_eq!(host_of(&authority_of("https://[::1]:443/x")), "::1");
+        // Port-qualified entries match the host with that port only (as urllib does).
+        assert!(bypasses_proxy("localhost:11434", "localhost:11434"));
+        assert!(!bypasses_proxy("localhost:8080", "localhost:11434"));
+        assert!(bypasses_proxy("api.example.com:443", "example.com:443"));
     }
 }

@@ -655,11 +655,6 @@ def _is_optional_parameter(node: Any) -> bool:
     return "parameter" in node_type and ("default" in node_type or "optional" in node_type)
 
 
-def _facts_count(node: Any, key: str) -> int:
-    value = getattr(getattr(node, "facts", None), key, None)
-    return value if isinstance(value, int) else 0
-
-
 _CHANGE_TYPE_GROUP = {
     "MOVE": "MOVED_CODE",
     "MOVE_TO_MODULE": "MOVED_CODE",
@@ -696,10 +691,10 @@ def _source_lines(content: Any) -> list[bytes] | None:
     return None
 
 
-def _node_source(node: Any, lines: list[bytes] | None) -> str | None:
+def _node_source(node: Any, lines: list[bytes] | None, *, limit: int | None = MAX_SEMANTIC_SNIPPET_CHARS) -> str | None:
     """Whitespace-collapsed source text of ``node`` (engine positions are 0-based lines and
-    byte columns), bounded to ``MAX_SEMANTIC_SNIPPET_CHARS``. The engine's own change
-    descriptions don't carry the changed text (intentumdiff-core#300)."""
+    byte columns), bounded to ``limit`` characters. The engine's own change descriptions don't
+    carry the changed text (intentumdiff-core#300)."""
 
     position = getattr(node, "position", None) if node is not None else None
     if position is None or lines is None:
@@ -718,9 +713,65 @@ def _node_source(node: Any, lines: list[bytes] | None) -> str | None:
     text = " ".join(raw.decode("utf-8", errors="replace").split())
     if not text:
         return None
-    if len(text) > MAX_SEMANTIC_SNIPPET_CHARS:
-        text = text[: MAX_SEMANTIC_SNIPPET_CHARS - 3].rstrip() + "..."
+    if limit is not None and len(text) > limit:
+        text = text[: limit - 3].rstrip() + "..."
     return text
+
+
+MAX_PARAMETER_SCAN_CHARS = 4000
+
+
+def _parameters_after(node: Any, lines: list[bytes] | None) -> list[str] | None:
+    """The whitespace-collapsed parameters that follow ``node`` in its parameter list, read
+    from the new source up to the closing bracket; ``None`` when that can't be determined."""
+
+    span = _node_span(node)
+    if span is None or lines is None or not 0 <= span[1][0] < len(lines):
+        return None
+    (end_line, end_col) = span[1]
+    rest = b"\n".join([lines[end_line][end_col:], *lines[end_line + 1:]]).decode("utf-8", errors="replace")
+    pieces: list[str] = []
+    current: list[str] = []
+    depth = 0
+    quote: str | None = None
+    for char in rest[:MAX_PARAMETER_SCAN_CHARS]:
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = None
+            continue
+        if char in "\"'":
+            quote = char
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            if depth == 0:
+                pieces.append("".join(current))
+                return [" ".join(piece.split()) for piece in pieces if piece.strip()]
+            depth -= 1
+        elif char == "," and depth == 0:
+            pieces.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    return None
+
+
+def _appends_optional_parameters(added: list[Any], lines: list[bytes] | None) -> bool:
+    """Whether the added optional parameters all come after every existing positional
+    parameter, so existing positional calls keep binding the same arguments. Only other added
+    parameters and variadic or keyword-only markers (``*``, ``**``, ``...``) may follow them."""
+
+    added_texts = {text for node in added if (text := _node_source(node, lines, limit=None))}
+    for node in added:
+        following = _parameters_after(node, lines)
+        if following is None:
+            return False
+        for piece in following:
+            if piece in added_texts or piece.startswith(("*", "...")):
+                continue
+            return False
+    return True
 
 
 _Span = tuple[tuple[int, int], tuple[int, int]]
@@ -885,6 +936,7 @@ def digest_file_diff(
 
     changes = list(getattr(file_diff, "changes", []) or [])
     groups = list(getattr(file_diff, "change_groups", []) or [])
+    new_lines = _source_lines(new_content)
     group_counts: dict[str, int] = {}
     meaningful_types: dict[str, int] = {}
     refactorings: list[str] = []
@@ -908,6 +960,7 @@ def digest_file_diff(
             continue
         signature_symbol: str | None = None
         compatible_signature = True
+        added_optional: list[Any] = []
         for index in getattr(group, "raw_change_indices", []) or []:
             if not isinstance(index, int) or not 0 <= index < len(changes):
                 continue
@@ -921,6 +974,12 @@ def digest_file_diff(
                     signature_symbol = str(labels[0])
                 if change_type != "ADDITION" or not _is_optional_parameter(node):
                     compatible_signature = False
+                else:
+                    added_optional.append(node)
+        if signature_symbol and compatible_signature:
+            # A defaulted parameter inserted before an existing positional one rebinds
+            # positional calls: only appended optional parameters are compatible.
+            compatible_signature = _appends_optional_parameters(added_optional, new_lines)
         if signature_symbol:
             add_symbol(SymbolChange(name=signature_symbol, change="extended" if compatible_signature else "signature",
                                     file=path))
@@ -967,11 +1026,10 @@ def digest_file_diff(
             and new_node.facts.param_count is not None
             and old_node.facts.param_count != new_node.facts.param_count
         ):
-            added_params = new_node.facts.param_count - old_node.facts.param_count
-            added_defaults = _facts_count(new_node, "default_count") - _facts_count(old_node, "default_count")
-            compatible = added_params > 0 and added_defaults == added_params
-            add_symbol(SymbolChange(name=_node_name(new_node), change="extended" if compatible else "signature",
-                                    file=path, node_type=str(new_node.node_type)))
+            # Counts alone can't show where parameters were added, so this stays a signature
+            # change (see the parameter-group path above for appended optional parameters).
+            add_symbol(SymbolChange(name=_node_name(new_node), change="signature", file=path,
+                                    node_type=str(new_node.node_type)))
 
     guardrails = [
         {
