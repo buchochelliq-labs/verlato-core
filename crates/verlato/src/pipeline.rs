@@ -7,6 +7,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
+use crate::assist::{resolve_model_privacy, ModelAssist, Style};
 use crate::classifier::classify;
 use crate::config::{self, Config};
 use crate::drafts::{self, today, ApplyResult, DraftDocument};
@@ -14,6 +15,7 @@ use crate::engine::Engine;
 use crate::git::{map_commits_to_prs, Git, PrAdapter};
 use crate::grouper;
 use crate::models::{ChangeGroup, ChangeItem};
+use crate::providers::{build_provider, ProviderConfig};
 use crate::semantic::resolve_diff_engine;
 use crate::store::{StateData, StateStore};
 
@@ -35,6 +37,14 @@ pub fn trace_progress(stage: &str, label: &str, extra: Value) {
 pub struct Context {
     pub cwd: PathBuf,
     pub config: Config,
+}
+
+/// Model options of a scan (`--model-provider`, `--privacy`, `--allow-remote-patches`).
+#[derive(Debug, Clone, Default)]
+pub struct ModelRequest {
+    pub provider: Option<String>,
+    pub privacy: Option<String>,
+    pub allow_remote_patches: bool,
 }
 
 impl Context {
@@ -127,15 +137,43 @@ impl Context {
         Ok(groups)
     }
 
+    /// The classifier's model assists for a scan of `groups` changesets (ports the provider
+    /// set-up in `detect_change_items`): none when the fan-out guard is exceeded.
+    fn model_assist(&self, request: &ModelRequest, groups: usize) -> Option<ModelAssist> {
+        let max_items = self.config.max_model_items();
+        if max_items >= 0 && groups as i64 > max_items {
+            return None;
+        }
+        let raw = &self.config.raw;
+        let provider_config = ProviderConfig::from_raw(raw);
+        let provider_mode = request
+            .provider
+            .clone()
+            .filter(|p| !p.is_empty())
+            .or_else(|| Some(provider_config.name.clone()));
+        Some(ModelAssist {
+            provider: build_provider(&provider_config, request.provider.as_deref()),
+            provider_mode,
+            privacy: resolve_model_privacy(
+                raw.get("model_privacy").and_then(Value::as_str),
+                request.privacy.as_deref(),
+                request.allow_remote_patches,
+            ),
+            style: Style::from_config(raw),
+        })
+    }
+
     pub fn detect_items(
         &self,
         base: &str,
         head: &str,
         stage: &str,
         label: &str,
+        model: Option<&ModelRequest>,
     ) -> Result<Vec<ChangeItem>> {
         let groups = self.collect_groups(base, head)?;
         let total = groups.len();
+        let assist = model.and_then(|request| self.model_assist(request, total));
         if total == 0 {
             trace_progress(
                 stage,
@@ -150,7 +188,7 @@ impl Context {
                 label,
                 json!({"detail": group_detail(group), "current": index, "total": total, "unit": "changeset"}),
             );
-            let item = classify(group, base, head);
+            let item = classify(group, base, head, assist.as_ref());
             trace_progress(
                 stage,
                 "Classified changeset",
@@ -161,10 +199,47 @@ impl Context {
         Ok(items)
     }
 
+    /// Draft and review candidates (ports `_detect_review_candidates`): with a requested model
+    /// provider they are classified with model assists, as a scan would.
+    fn review_candidates(
+        &self,
+        base: &str,
+        head: &str,
+        model: Option<&ModelRequest>,
+    ) -> Result<Vec<ChangeItem>> {
+        match model.filter(|m| m.provider.as_deref().is_some_and(|p| !p.trim().is_empty())) {
+            Some(model) => self.detect_items(
+                base,
+                head,
+                "classifying_changes",
+                "Classifying changesets",
+                Some(model),
+            ),
+            None => self.detect_items(
+                base,
+                head,
+                "detecting_review_candidates",
+                "Detecting review candidates",
+                None,
+            ),
+        }
+    }
+
     /// Unreconciled items for a range; `persist` appends them to state (`generate`).
-    pub fn scan(&self, base: &str, head: &str, persist: bool) -> Result<Vec<ChangeItem>> {
-        let detected =
-            self.detect_items(base, head, "classifying_changes", "Classifying changesets")?;
+    pub fn scan(
+        &self,
+        base: &str,
+        head: &str,
+        persist: bool,
+        model: &ModelRequest,
+    ) -> Result<Vec<ChangeItem>> {
+        let detected = self.detect_items(
+            base,
+            head,
+            "classifying_changes",
+            "Classifying changesets",
+            Some(model),
+        )?;
         let total = detected.len();
         trace_progress(
             "reconciling_unpublished",
@@ -259,18 +334,14 @@ impl Context {
         version: &str,
         include_confidence: bool,
         include_provenance: bool,
+        model: Option<&ModelRequest>,
     ) -> Result<DraftDocument> {
         trace_progress(
             "draft_detecting_changes",
             "Detecting draft changes",
             json!({"detail": format!("{base}..{head}")}),
         );
-        let detected = self.detect_items(
-            base,
-            head,
-            "detecting_review_candidates",
-            "Detecting review candidates",
-        )?;
+        let detected = self.review_candidates(base, head, model)?;
         let items = self.merge_review_state(detected)?;
         trace_progress(
             "draft_rendering",
@@ -327,6 +398,7 @@ impl Context {
         summary: Option<&str>,
         reviewer: Option<&str>,
         summary_provenance: Option<Map<String, Value>>,
+        model: Option<&ModelRequest>,
     ) -> Result<ChangeItem> {
         if status.is_none() && summary.is_none() && reviewer.is_none() {
             bail!("Provide at least one review update: --status, --summary, or --reviewer");
@@ -336,12 +408,7 @@ impl Context {
                 bail!("Unsupported review status: {status}");
             }
         }
-        let candidates = self.detect_items(
-            base,
-            head,
-            "detecting_review_candidates",
-            "Detecting review candidates",
-        )?;
+        let candidates = self.review_candidates(base, head, model)?;
         let candidate = candidates
             .into_iter()
             .find(|item| item.id == item_id)

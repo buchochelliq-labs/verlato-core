@@ -55,3 +55,28 @@ def test_litellm_provider_sends_schema_and_records_audit(monkeypatch):
     assert response.content.startswith('{"items"')
     assert response.metadata["prompt_tokens"] == 12
     assert response.metadata["eval_tokens"] == 8
+
+
+def test_litellm_provider_caps_output_tokens(monkeypatch):
+    bodies: list[dict[str, object]] = []
+
+    def fake_urlopen(req, timeout):
+        bodies.append(json.loads(req.data.decode("utf-8")))
+        return _Response({"choices": [{"message": {"content": "Fixes pagination."}}]})
+
+    monkeypatch.setattr("verlato.providers.litellm.request.urlopen", fake_urlopen)
+    monkeypatch.delenv("VERLATO_LITELLM_MAX_TOKENS", raising=False)
+    provider = LiteLLMProvider(endpoint="http://litellm.test/v1/chat/completions", model="m")
+    provider.summarize(ProviderRequest(task="summarize", prompt="p", evidence={}))
+    provider.summarize(ProviderRequest(task="suggest", prompt="p", evidence={"suggestion_count": 3}))
+    provider.summarize(ProviderRequest(task="suggest", prompt="p", evidence={"suggestion_count": 9}))
+    assert [body["max_tokens"] for body in bodies] == [1024, 3072, 4096]
+
+    monkeypatch.setenv("VERLATO_LITELLM_MAX_TOKENS", "0")
+    LiteLLMProvider(endpoint="http://litellm.test/v1/chat/completions", model="m").summarize(
+        ProviderRequest(task="summarize", prompt="p", evidence={})
+    )
+    assert "max_tokens" not in bodies[-1]
+    assert LiteLLMProvider(max_tokens=200).max_tokens == 0  # the environment wins over config
+    monkeypatch.delenv("VERLATO_LITELLM_MAX_TOKENS")
+    assert LiteLLMProvider(max_tokens=200).max_tokens == 200

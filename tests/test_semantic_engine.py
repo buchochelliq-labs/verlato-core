@@ -157,9 +157,15 @@ def test_digest_extracts_definition_symbols_signatures_and_renames():
         ),
         change("ADDITION", new=node("[5]", "pair")),  # data-format node, not a named symbol
         change("ADDITION", new=node("pair", "pair")),  # label equals node type, not a named symbol
+        change("ADDITION", new=node("limit", "identifier", definition=False)),
+        change("DELETION", old=node("flag", "default_parameter", definition=False)),
     ]
     groups = [
+        # An added defaulted parameter: without the source to show where it was added, it stays
+        # a signature change (see the real-engine test for appended parameters).
         group("MEANINGFUL_CHANGE", [0], old_labels=["greet"], new_labels=["greet", "punct"]),
+        # Removing a parameter (even a defaulted one) is an incompatible signature change.
+        group("MEANINGFUL_CHANGE", [7], old_labels=["fetch"], new_labels=["fetch"]),
         group("MEANINGFUL_CHANGE", [1]),
         group("MEANINGFUL_CHANGE", [2]),
         group("REFACTORING", [3], refactoring_kind=NS(value="RENAME_SYMBOL")),
@@ -170,11 +176,31 @@ def test_digest_extracts_definition_symbols_signatures_and_renames():
     assert ("added", "fresh") in by_change
     assert ("removed", "gone") in by_change
     assert ("signature", "greet") in by_change
+    assert ("signature", "fetch") in by_change
     assert ("renamed", "baz") in by_change
     assert not any(symbol.name in {"[5]", "pair"} for symbol in digest_.symbols)
-    assert digest_.group_counts == {"MEANINGFUL_CHANGE": 3, "REFACTORING": 1, "IGNORED_STYLE": 1}
+    assert digest_.group_counts == {"MEANINGFUL_CHANGE": 4, "REFACTORING": 1, "IGNORED_STYLE": 1}
     assert digest_.refactorings == ["RENAME_SYMBOL"]
-    assert digest_.meaningful_change_types == {"ADDITION": 2, "DELETION": 1}
+    assert digest_.meaningful_change_types == {"ADDITION": 2, "DELETION": 2}
+
+
+@pytest.mark.skipif(not HAS_INTENTUMDIFF, reason="intentumdiff-python is not installed")
+@pytest.mark.parametrize(
+    ("old", "new", "expected"),
+    [
+        ("def fetch(limit=10):\n    return limit\n", "def fetch(limit=10, offset=0):\n    return limit\n", "extended"),
+        # Inserted before an existing positional parameter: fetch(5) now binds offset.
+        ("def fetch(limit=10):\n    return limit\n", "def fetch(offset=0, limit=10):\n    return limit\n", "signature"),
+        ("def fetch(a, **kw):\n    return a\n", "def fetch(a, b=1, **kw):\n    return a\n", "extended"),
+        ("def fetch(a):\n    return a\n", "def fetch(a, sep=\", \"):\n    return a\n", "extended"),
+    ],
+)
+def test_only_appended_optional_parameters_are_compatible(old: str, new: str, expected: str):
+    from intentumdiff import SemanticDiffer
+
+    file_diff_ = SemanticDiffer().diff_strings(old, new, filename="m.py")
+    digest_ = digest_file_diff(file_diff_, path="m.py", old_path="m.py", old_content=old, new_content=new)
+    assert [(symbol.change, symbol.name) for symbol in digest_.symbols] == [(expected, "fetch")]
 
 
 def test_literals_reach_prompts_only_at_the_detailed_level():
@@ -555,8 +581,12 @@ def test_scan_is_powered_by_real_intentumdiff(monkeypatch, tmp_path: Path, capsy
     assert semantic["verdict"] == "behavioral"
     assert "fresh in app.py" in semantic["added_symbols"]
     assert "gone in app.py" in semantic["removed_symbols"]
-    assert "greet in app.py" in semantic["signature_changes"]
+    # `punct="!"` is a defaulted parameter: existing callers keep working.
+    assert "greet in app.py" in semantic["extended_signatures"]
+    assert semantic["signature_changes"] == []
+    # Removing the public `gone` is still a possible API break, and the summary says so.
     assert "semantic:api-break-candidate" in items[0]["evidence"]["commit_signals"]
+    assert "possible API break" in semantic["summary"] and "gone" in semantic["summary"]
     assert items[0]["status"] == "needs-review"
 
     assert main(["--diff-engine", "git", "scan", "--base", "v1", "--head", "HEAD"]) == 0

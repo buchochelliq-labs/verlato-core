@@ -22,6 +22,7 @@ function semantic(overrides = {}) {
     removed_symbols: ["gone in src/app.py"],
     renamed_symbols: [],
     signature_changes: ["greet in src/app.py"],
+    extended_signatures: ["main in src/cli.py"],
     refactorings: [],
     cross_file: [],
     guardrails: [],
@@ -69,6 +70,7 @@ test("renders IntentumDiff semantic evidence with counts and symbol changes", ()
   assert.match(html, /<span>Added<\/span><code title="fresh">fresh<\/code>/);
   assert.match(html, /<span>Removed<\/span><code title="gone">gone<\/code>/);
   assert.match(html, /<span>Signature<\/span><code title="greet">greet<\/code>/);
+  assert.match(html, /<span>Optional params<\/span><code title="main">main<\/code>/);
   assert.match(html, /IntentumDiff 0\.0\.2b2/);
   assert.doesNotMatch(html, /src\/app\.py<\/code>/, "symbol chips show names, not file suffixes");
 });

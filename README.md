@@ -244,6 +244,7 @@ Environment variables:
 - `VERLATO_GITHUB_MODEL`: model name when using `github-copilot` (default `openai/gpt-4o-mini`; legacy values such as `gpt-4o-mini` are normalized).
 - `VERLATO_GITHUB_MODELS_ENDPOINT`: override chat-completions endpoint for GitHub-hosted models.
 - `VERLATO_LITELLM_ENDPOINT`, `VERLATO_LITELLM_MODEL`, `VERLATO_LITELLM_SUGGEST_MODEL`, `VERLATO_LITELLM_API_KEY`, `VERLATO_LITELLM_API_KEY_ENV`, `VERLATO_LITELLM_TIMEOUT_SECONDS`: configure the recommended LiteLLM BYOM proxy path.
+- `VERLATO_LITELLM_MAX_TOKENS` (or `num_predict` in the provider config): output cap sent as `max_tokens`, default 1024 (scaled by the suggestion count, at most 4096); `0` disables it. It stops local OpenAI-compatible servers from generating until the context fills.
 - `VERLATO_PLUGIN_COMMAND`, `VERLATO_PLUGIN_MODEL`, `VERLATO_PLUGIN_SUGGEST_MODEL`, `VERLATO_PLUGIN_ENV`, `VERLATO_PLUGIN_TIMEOUT_SECONDS`: configure an audited external-command BYOM plugin for runtimes LiteLLM cannot cover.
 - `VERLATO_CODEX_COMMAND`, `VERLATO_CODEX_MODEL`, `VERLATO_CODEX_TIMEOUT_SECONDS`: optional command, model, and timeout overrides for `codex-cli`.
 - `VERLATO_CLAUDE_COMMAND`, `VERLATO_CLAUDE_MODEL`, `VERLATO_CLAUDE_TIMEOUT_SECONDS`: optional command, model, and timeout overrides for `claude-code`.

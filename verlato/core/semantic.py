@@ -39,7 +39,7 @@ from verlato.core.areas import is_test_path
 
 DIFF_ENGINE_CHOICES = ("intentumdiff", "git")
 DEFAULT_DIFF_ENGINE = "intentumdiff"
-SEMANTIC_DIGEST_VERSION = "v3"
+SEMANTIC_DIGEST_VERSION = "v4"
 DEFAULT_SEMANTIC_CACHE_PATH = ".verlato_semantic_cache.json"
 INTENTUMDIFF_INSTALL_HINT = "pip install --pre intentumdiff-python"
 
@@ -95,7 +95,9 @@ def resolve_diff_engine(configured: object = None, *, requested: object = None) 
 @dataclass
 class SymbolChange:
     name: str
-    change: str  # added | removed | renamed | signature
+    # added | removed | renamed | signature | extended (only optional parameters were added:
+    # existing callers keep working)
+    change: str
     file: str
     node_type: str = ""
     old_name: str | None = None
@@ -187,6 +189,8 @@ class SemanticEvidence:
     errors: list[str]
     notes: list[str]
     summary: str
+    # Definitions whose only signature change is added optional (defaulted) parameters.
+    extended_signatures: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -225,6 +229,8 @@ def semantic_prompt_payload(evidence: SemanticEvidence | None) -> dict[str, Any]
         "removed_symbols": [entry.split(" in ")[0] for entry in evidence.removed_symbols],
         "renamed_symbols": [entry.split(" in ")[0] for entry in evidence.renamed_symbols],
         "signature_changes": [entry.split(" in ")[0] for entry in evidence.signature_changes],
+        "extended_signatures": [entry.split(" in ")[0] for entry in evidence.extended_signatures],
+        "api_break_candidates": [entry.split(" in ")[0] for entry in evidence.api_break_candidates],
         "refactorings": list(evidence.refactorings),
         "style_only_files": list(evidence.style_only_files),
         "guardrail_rules": sorted({str(item.get("rule_id")) for item in evidence.guardrails}),
@@ -399,6 +405,7 @@ def build_semantic_evidence(
     removed: list[str] = []
     renamed: list[str] = []
     signatures: list[str] = []
+    extended: list[str] = []
     refactorings: list[str] = []
     cross_file: list[dict[str, Any]] = []
     guardrails: list[dict[str, str]] = []
@@ -440,6 +447,8 @@ def build_semantic_evidence(
                     _append_unique(renamed, f"{symbol.old_name or '?'} -> {symbol.name} in {symbol.file}")
                 elif symbol.change == "signature":
                     _append_unique(signatures, label)
+                elif symbol.change == "extended":
+                    _append_unique(extended, label)
             for kind in file.refactorings:
                 _append_unique(refactorings, kind)
             for violation in file.guardrails:
@@ -458,6 +467,8 @@ def build_semantic_evidence(
     churn = set(added) & set(removed)
     added = [entry for entry in added if entry not in churn]
     removed = [entry for entry in removed if entry not in churn]
+    # A definition with an incompatible signature change anywhere in the group is not "extended".
+    extended = [entry for entry in extended if entry not in signatures]
 
     meaningful_files = sorted(path for path, count in file_meaningful.items() if count > 0)
     refactor_only_files = sorted(
@@ -493,6 +504,7 @@ def build_semantic_evidence(
         removed_symbols=removed[:MAX_EVIDENCE_SYMBOLS],
         renamed_symbols=renamed[:MAX_EVIDENCE_SYMBOLS],
         signature_changes=signatures[:MAX_EVIDENCE_SYMBOLS],
+        extended_signatures=extended[:MAX_EVIDENCE_SYMBOLS],
         refactorings=refactorings,
         cross_file=cross_file,
         guardrails=guardrails,
@@ -558,6 +570,13 @@ def render_semantic_summary(evidence: SemanticEvidence) -> str:
         parts.append(f"renamed: {_symbol_list(evidence.renamed_symbols)}")
     if evidence.signature_changes:
         parts.append(f"signature changed: {_symbol_list(evidence.signature_changes)}")
+    if evidence.extended_signatures:
+        parts.append(f"optional parameters added (compatible): {_symbol_list(evidence.extended_signatures)}")
+    if evidence.api_break_candidates:
+        parts.append(
+            "possible API break (public symbol removed, renamed or re-signatured; callers may need updating): "
+            + _symbol_list(evidence.api_break_candidates)
+        )
     if evidence.cross_file:
         moved = [
             f"{change.get('symbol_name')} ({change.get('change_type', '').lower().replace('_', ' ')})"
@@ -626,6 +645,16 @@ def _looks_like_parameter(node: Any) -> bool:
     return "parameter" in node_type
 
 
+def _is_optional_parameter(node: Any) -> bool:
+    """Parameter nodes that carry a default or are declared optional (Python
+    ``default_parameter`` / ``typed_default_parameter``, TypeScript ``optional_parameter``).
+    Grammar-specific until the engine reports definition-level signature facts
+    (intentumdiff-core#297)."""
+
+    node_type = str(getattr(node, "node_type", "") or "").lower()
+    return "parameter" in node_type and ("default" in node_type or "optional" in node_type)
+
+
 _CHANGE_TYPE_GROUP = {
     "MOVE": "MOVED_CODE",
     "MOVE_TO_MODULE": "MOVED_CODE",
@@ -662,9 +691,10 @@ def _source_lines(content: Any) -> list[bytes] | None:
     return None
 
 
-def _node_source(node: Any, lines: list[bytes] | None) -> str | None:
+def _node_source(node: Any, lines: list[bytes] | None, *, limit: int | None = MAX_SEMANTIC_SNIPPET_CHARS) -> str | None:
     """Whitespace-collapsed source text of ``node`` (engine positions are 0-based lines and
-    byte columns), bounded to ``MAX_SEMANTIC_SNIPPET_CHARS``."""
+    byte columns), bounded to ``limit`` characters. The engine's own change descriptions don't
+    carry the changed text (intentumdiff-core#300)."""
 
     position = getattr(node, "position", None) if node is not None else None
     if position is None or lines is None:
@@ -683,9 +713,65 @@ def _node_source(node: Any, lines: list[bytes] | None) -> str | None:
     text = " ".join(raw.decode("utf-8", errors="replace").split())
     if not text:
         return None
-    if len(text) > MAX_SEMANTIC_SNIPPET_CHARS:
-        text = text[: MAX_SEMANTIC_SNIPPET_CHARS - 3].rstrip() + "..."
+    if limit is not None and len(text) > limit:
+        text = text[: limit - 3].rstrip() + "..."
     return text
+
+
+MAX_PARAMETER_SCAN_CHARS = 4000
+
+
+def _parameters_after(node: Any, lines: list[bytes] | None) -> list[str] | None:
+    """The whitespace-collapsed parameters that follow ``node`` in its parameter list, read
+    from the new source up to the closing bracket; ``None`` when that can't be determined."""
+
+    span = _node_span(node)
+    if span is None or lines is None or not 0 <= span[1][0] < len(lines):
+        return None
+    (end_line, end_col) = span[1]
+    rest = b"\n".join([lines[end_line][end_col:], *lines[end_line + 1:]]).decode("utf-8", errors="replace")
+    pieces: list[str] = []
+    current: list[str] = []
+    depth = 0
+    quote: str | None = None
+    for char in rest[:MAX_PARAMETER_SCAN_CHARS]:
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = None
+            continue
+        if char in "\"'":
+            quote = char
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            if depth == 0:
+                pieces.append("".join(current))
+                return [" ".join(piece.split()) for piece in pieces if piece.strip()]
+            depth -= 1
+        elif char == "," and depth == 0:
+            pieces.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    return None
+
+
+def _appends_optional_parameters(added: list[Any], lines: list[bytes] | None) -> bool:
+    """Whether the added optional parameters all come after every existing positional
+    parameter, so existing positional calls keep binding the same arguments. Only other added
+    parameters and variadic or keyword-only markers (``*``, ``**``, ``...``) may follow them."""
+
+    added_texts = {text for node in added if (text := _node_source(node, lines, limit=None))}
+    for node in added:
+        following = _parameters_after(node, lines)
+        if following is None:
+            return False
+        for piece in following:
+            if piece in added_texts or piece.startswith(("*", "...")):
+                continue
+            return False
+    return True
 
 
 _Span = tuple[tuple[int, int], tuple[int, int]]
@@ -718,7 +804,8 @@ def _group_changes(group: Any, changes: list[Any]) -> list[Any]:
 
 def _is_moved_within_meaningful(group_changes: list[Any], old_spans: list[_Span], new_spans: list[_Span]) -> bool:
     """A moved sub-expression whose old and new nodes lie inside meaningful edits (e.g. the
-    ``page * per_page`` left behind when ``+ 1`` is removed) is part of that edit, not a move."""
+    ``page * per_page`` left behind when ``+ 1`` is removed) is part of that edit, not a move.
+    Workaround for intentumdiff-core#299."""
 
     if not group_changes:
         return False
@@ -849,6 +936,7 @@ def digest_file_diff(
 
     changes = list(getattr(file_diff, "changes", []) or [])
     groups = list(getattr(file_diff, "change_groups", []) or [])
+    new_lines = _source_lines(new_content)
     group_counts: dict[str, int] = {}
     meaningful_types: dict[str, int] = {}
     refactorings: list[str] = []
@@ -871,6 +959,8 @@ def digest_file_diff(
         if kind != "MEANINGFUL_CHANGE":
             continue
         signature_symbol: str | None = None
+        compatible_signature = True
+        added_optional: list[Any] = []
         for index in getattr(group, "raw_change_indices", []) or []:
             if not isinstance(index, int) or not 0 <= index < len(changes):
                 continue
@@ -882,8 +972,17 @@ def digest_file_diff(
                 labels = list(getattr(group, "new_labels", []) or getattr(group, "old_labels", []) or [])
                 if labels and labels[0]:
                     signature_symbol = str(labels[0])
+                if change_type != "ADDITION" or not _is_optional_parameter(node):
+                    compatible_signature = False
+                else:
+                    added_optional.append(node)
+        if signature_symbol and compatible_signature:
+            # A defaulted parameter inserted before an existing positional one rebinds
+            # positional calls: only appended optional parameters are compatible.
+            compatible_signature = _appends_optional_parameters(added_optional, new_lines)
         if signature_symbol:
-            add_symbol(SymbolChange(name=signature_symbol, change="signature", file=path))
+            add_symbol(SymbolChange(name=signature_symbol, change="extended" if compatible_signature else "signature",
+                                    file=path))
 
     if not groups and changes:
         # Whole-file additions/deletions (and some fallback diffs) carry raw changes without
@@ -927,6 +1026,8 @@ def digest_file_diff(
             and new_node.facts.param_count is not None
             and old_node.facts.param_count != new_node.facts.param_count
         ):
+            # Counts alone can't show where parameters were added, so this stays a signature
+            # change (see the parameter-group path above for appended optional parameters).
             add_symbol(SymbolChange(name=_node_name(new_node), change="signature", file=path,
                                     node_type=str(new_node.node_type)))
 
@@ -1288,8 +1389,8 @@ def _attach_cross_file(differ: Any, digest: CommitSemantics, results: list[Any],
     """Best-effort cross-file analysis.
 
     IntentumDiff builds a symbol index over every result; a single file that exceeds the
-    parser fuel budget fails the whole index. Such files are dropped (and reported) so the
-    rest of the commit still gets cross-file move/rename detection.
+    parser fuel budget fails the whole index (intentumdiff-core#298). Such files are dropped
+    (and reported) so the rest of the commit still gets cross-file move/rename detection.
     """
 
     excluded: list[str] = []

@@ -137,7 +137,7 @@ fn handle_line(cwd: &Path, line: &str, python: &mut Option<PythonService>) -> (S
     if method == "shutdown" {
         return (ok_response(&id, json!({"shutdown": true})), true);
     }
-    if !NATIVE_METHODS.contains(&method) || needs_python(cwd, method, &params) {
+    if !NATIVE_METHODS.contains(&method) || needs_python(cwd, method) {
         if python.is_none() {
             match PythonService::start(cwd) {
                 Ok(service) => *python = Some(service),
@@ -178,22 +178,10 @@ fn handle_line(cwd: &Path, line: &str, python: &mut Option<PythonService>) -> (S
 
 /// Whether a native method must still run in Python. Draft methods detect changes, so they
 /// keep Python semantics for the same prerequisites as the CLI (`python_reason` in main.rs):
-/// a real model provider on the request, commit intent inference, or the GitHub PR adapter.
-fn needs_python(cwd: &Path, method: &str, params: &Map<String, Value>) -> bool {
+/// commit intent inference or the GitHub PR adapter. Model providers are all native.
+fn needs_python(cwd: &Path, method: &str) -> bool {
     if !method.starts_with("draft.") {
         return false;
-    }
-    let request = params
-        .get("request")
-        .and_then(Value::as_object)
-        .unwrap_or(params);
-    let provider = request
-        .get("model_provider")
-        .or_else(|| request.get("modelProvider"))
-        .and_then(Value::as_str)
-        .map(|p| p.trim().to_lowercase());
-    if matches!(provider, Some(p) if !p.is_empty() && p != "stub") {
-        return true;
     }
     match Context::load(cwd) {
         Ok(ctx) => ctx.pr_adapter().is_err() || ctx.config.commit_intent_inference(None) != "off",
@@ -249,6 +237,17 @@ struct ReleaseRequest {
     version: String,
     include_confidence: bool,
     include_provenance: bool,
+    model_provider: Option<String>,
+}
+
+impl ReleaseRequest {
+    /// The service forwards only the requested provider to draft detection, as Python does.
+    fn model(&self) -> crate::pipeline::ModelRequest {
+        crate::pipeline::ModelRequest {
+            provider: self.model_provider.clone(),
+            ..Default::default()
+        }
+    }
 }
 
 fn release_request(params: &Map<String, Value>) -> Result<ReleaseRequest, Dispatch> {
@@ -270,6 +269,11 @@ fn release_request(params: &Map<String, Value>) -> Result<ReleaseRequest, Dispat
         version: text_or("version", "Unreleased"),
         include_confidence: truthy(request, &["include_confidence", "includeConfidence"]),
         include_provenance: truthy(request, &["include_provenance", "includeProvenance"]),
+        model_provider: ["model_provider", "modelProvider"]
+            .iter()
+            .find_map(|k| request.get(*k).and_then(Value::as_str))
+            .map(|p| p.trim().to_owned())
+            .filter(|p| !p.is_empty()),
     })
 }
 
@@ -302,6 +306,7 @@ fn dispatch(cwd: &Path, method: &str, params: &Map<String, Value>) -> Result<Val
                 &request.version,
                 request.include_confidence,
                 request.include_provenance,
+                Some(&request.model()),
             )?;
             match method {
                 "draft.get" => to_value(serde_json::to_value(&document)),
@@ -332,6 +337,7 @@ fn dispatch(cwd: &Path, method: &str, params: &Map<String, Value>) -> Result<Val
                 optional(params, "summary").as_deref(),
                 optional(params, "reviewer").as_deref(),
                 provenance,
+                Some(&request.model()),
             )?;
             to_value(serde_json::to_value(updated))
         }
@@ -368,23 +374,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn draft_methods_route_to_python_for_github_adapter_and_model_providers() {
+    fn draft_methods_route_to_python_only_for_the_github_adapter() {
         let dir = std::env::temp_dir();
-        let empty = Map::new();
-        let mut with_provider = Map::new();
-        with_provider.insert(
-            "request".into(),
-            json!({"base": "v1", "model_provider": "ollama"}),
-        );
-        assert!(needs_python(&dir, "draft.get", &with_provider));
-        assert!(!needs_python(&dir, "state.show", &with_provider));
-
+        assert!(!needs_python(&dir, "draft.get"));
         std::env::set_var("VERLATO_PR_ADAPTER", "github");
-        let github = needs_python(&dir, "draft.get", &empty);
-        let state = needs_python(&dir, "state.show", &empty);
+        let github = needs_python(&dir, "draft.get");
+        let state = needs_python(&dir, "state.show");
         std::env::remove_var("VERLATO_PR_ADAPTER");
         assert!(github);
         assert!(!state);
-        assert!(!needs_python(&dir, "draft.get", &empty));
     }
 }

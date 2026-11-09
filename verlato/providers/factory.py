@@ -11,7 +11,11 @@ from verlato.providers.fallback import FallbackProvider
 from verlato.providers.github_copilot import GitHubCopilotProvider
 from verlato.providers.litellm import LiteLLMProvider
 from verlato.providers.mock import MockProvider
-from verlato.providers.ollama import OllamaProvider
+from verlato.providers.ollama import (
+    DEFAULT_OLLAMA_CLASSIFY_NUM_PREDICT,
+    DEFAULT_OLLAMA_SUMMARY_NUM_PREDICT,
+    OllamaProvider,
+)
 from verlato.providers.plugin import ExternalModelPluginProvider
 from verlato.providers.stub import StubProvider
 
@@ -54,8 +58,16 @@ def _build_single_provider(
             keep_alive=_resolve_string_env("VERLATO_OLLAMA_KEEP_ALIVE", config.keep_alive),
             num_ctx=_resolve_int_env("VERLATO_OLLAMA_NUM_CTX", config.num_ctx),
             num_predict=_resolve_int_env("VERLATO_OLLAMA_NUM_PREDICT", config.num_predict),
-            summary_num_predict=_resolve_int_env("VERLATO_OLLAMA_SUMMARY_NUM_PREDICT", config.summary_num_predict),
-            classify_num_predict=_resolve_int_env("VERLATO_OLLAMA_CLASSIFY_NUM_PREDICT", config.classify_num_predict),
+            # Unset per-task caps keep the provider defaults (passing None would remove the cap
+            # and let a local model generate until its context fills).
+            summary_num_predict=_default_if_none(
+                _resolve_int_env("VERLATO_OLLAMA_SUMMARY_NUM_PREDICT", config.summary_num_predict),
+                DEFAULT_OLLAMA_SUMMARY_NUM_PREDICT,
+            ),
+            classify_num_predict=_default_if_none(
+                _resolve_int_env("VERLATO_OLLAMA_CLASSIFY_NUM_PREDICT", config.classify_num_predict),
+                DEFAULT_OLLAMA_CLASSIFY_NUM_PREDICT,
+            ),
             suggest_num_predict=_resolve_int_env("VERLATO_OLLAMA_SUGGEST_NUM_PREDICT", config.suggest_num_predict),
             suggest_think=_resolve_bool_env("VERLATO_OLLAMA_SUGGEST_THINK", config.suggest_think),
         )
@@ -75,6 +87,7 @@ def _build_single_provider(
             endpoint=os.getenv("VERLATO_LITELLM_ENDPOINT", config.endpoint or ""),
             api_key_env=os.getenv("VERLATO_LITELLM_API_KEY_ENV", config.api_key_env or ""),
             timeout_seconds=_resolve_float_env("VERLATO_LITELLM_TIMEOUT_SECONDS", config.timeout_seconds),
+            max_tokens=config.num_predict,
         )
     if selected_mode in {"plugin", "external-plugin", "model-plugin"}:
         return ExternalModelPluginProvider(
@@ -192,6 +205,10 @@ def _resolve_int_env(name: str, fallback: int | None) -> int | None:
     if raw is None or not raw.strip():
         return fallback
     return int(raw)
+
+
+def _default_if_none(value: int | None, default: int) -> int:
+    return default if value is None else value
 
 
 def _resolve_bool_env(name: str, fallback: bool | None) -> bool | None:

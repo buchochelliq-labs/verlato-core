@@ -4,7 +4,7 @@
 use indexmap::IndexMap;
 
 use crate::models::{ChangedFile, Commit};
-use crate::semantic::{build_semantic_evidence, SemanticEvidence};
+use crate::semantic::{build_semantic_diff, build_semantic_evidence, SemanticEvidence};
 use crate::vocab::{infer_area, is_docs_path, is_test_path};
 
 #[derive(Debug, Clone)]
@@ -19,6 +19,8 @@ pub struct DiffEvidence {
     pub representative_hunks: IndexMap<String, Vec<String>>,
     pub summary: String,
     pub semantic: Option<SemanticEvidence>,
+    /// IntentumDiff's semantic diff records for the group (empty without semantic evidence).
+    pub semantic_diff: Vec<serde_json::Value>,
 }
 
 pub fn build(files: &[ChangedFile], commits: Option<&[Commit]>) -> DiffEvidence {
@@ -76,6 +78,15 @@ pub fn build(files: &[ChangedFile], commits: Option<&[Commit]>) -> DiffEvidence 
             Some(&paths),
         )
     });
+    let semantic_diff = match (&semantic, commits) {
+        (Some(_), Some(commits)) => build_semantic_diff(
+            commits
+                .iter()
+                .filter_map(|commit| commit.semantics.as_ref()),
+            Some(&paths),
+        ),
+        _ => Vec::new(),
+    };
     if let Some(semantic) = &semantic {
         // The semantic diff replaces raw hunk excerpts, so the summary does not point at them.
         let without_hunks = build_summary(
@@ -99,6 +110,7 @@ pub fn build(files: &[ChangedFile], commits: Option<&[Commit]>) -> DiffEvidence 
         representative_hunks,
         summary,
         semantic,
+        semantic_diff,
     }
 }
 

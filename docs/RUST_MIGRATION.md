@@ -1,9 +1,13 @@
 # Moving Verlato from Python to Rust
 
 Verlato is moving to Rust. The native `verlato` binary (crate `crates/verlato`) now owns the
-release-note pipeline and links the IntentumDiff engine in-process. Model-backed features still
-run in the Python implementation, which the binary delegates to transparently. This document
-records the assessment, the current state, and the remaining phases.
+release-note pipeline and links the IntentumDiff engine in-process, and every model provider
+is native: scans and drafts call Ollama (the default), LiteLLM/OpenAI-compatible endpoints,
+GitHub Models, the external-command plugin, the Codex CLI and Claude Code agents, the mock and
+stub providers, and fallback chains of those. The remaining model-backed features (suggestions,
+commit intents, the MCP server) still run in the Python implementation, which the binary
+delegates to transparently. This document records the assessment, the current state, and the
+remaining phases.
 
 ## Why Rust
 
@@ -30,7 +34,8 @@ About 16k lines of Python (plus ~7k lines of tests):
 | IntentumDiff semantic evidence (digest, verdicts, summary, cache) | `core/semantic.py` | ~1k | **Ported** (engine linked natively) |
 | Drafts, rendering, changelog apply, state store, review/feedback/state commands | `core/{drafts,generator,changelog}`, `state/store.py`, parts of `cli/main.py` | ~1.5k | **Ported** |
 | Editor stdio service (deterministic methods) | `service_stdio.py`, parts of `mcp/service.py` | ~0.5k | **Ported**; other methods proxied |
-| Model providers (Ollama, LiteLLM, GitHub Models, plugin, Codex/Claude CLI, fallback, mock, telemetry) | `providers/*` | ~2.2k | Delegated |
+| Model providers: stub, mock, Ollama (incl. streaming), LiteLLM, GitHub Models, plugin, Codex/Claude CLI, fallback chains; request audits, privacy records, OTEL-style model logs | `providers/*`, `core/model_privacy.py` | ~2.4k | **Ported** (Ollama tool calling stays in Python with the suggestion strategies) |
+| Classifier model assists (summary rewrite, diff-fallback classification, change-summary payload) | parts of `core/classifier.py`, `core/change_summary.py` | ~0.6k | **Ported** |
 | Suggestions (prompts, batching, cache, retrieval tools, adaptive recommendations) | `cli/main.py` (most of it), `core/suggestion_tools.py`, `state/suggestion_cache.py`, `core/change_summary.py` | ~4.5k | Delegated |
 | Commit intent inference and Conventional Commit drafting | `core/commit_intent.py` | ~1.1k | Delegated |
 | MCP server (FastMCP) | `mcp/server.py` | ~0.7k | Delegated |
@@ -45,13 +50,13 @@ so the Rust binary replaces the Python one command by command without extension 
 The native binary handles these command paths itself:
 
 ```
-scan | generate | reconcile          (when no real model provider is configured; see below)
-draft json | preview | apply | review
+scan | generate | reconcile          (with any model provider; see below)
+draft json | preview | apply | review (including --model-provider)
 render
 state show | mark-published | clear-working
 feedback record
 doctor engine
-service                              (health, info, draft.*, feedback.record, state.show, state.clear_working)
+service                              (health, info, draft.* incl. model providers, feedback.record, state.show, state.clear_working)
 ```
 
 Everything else is delegated to the Python implementation with the original arguments:
@@ -59,11 +64,14 @@ Everything else is delegated to the Python implementation with the original argu
 `model-logs`, `feedback export|recommend`, `state clear-suggestion-cache`, and the
 `suggestion.*` / `commit.*` service methods (proxied to a lazily started Python service).
 
-A native command is also delegated when it would call a model: a non-`stub` provider for
-`scan`/`generate`/`reconcile` (Python asks the configured provider, Ollama by default, to enrich
-summaries), an explicit `--model-provider` on draft commands, commit intent inference, or the
-`github` PR adapter. The extension already runs non-model commands with the `stub` provider, so
-its draft/review flows are fully native.
+`scan`/`generate`/`reconcile` (and drafts or reviews with `--model-provider`) ask the provider
+to enrich summaries and, on the diff-fallback path, classifications. This runs natively for every
+provider, with the same prompts, evidence payloads, request audits and hashes, `[verlato:model]`
+trace lines and `VERLATO_MODEL_LOG_PATH` records as Python. The parity suite checks it with a
+recording plugin, fake Ollama (plain and streaming), OpenAI-compatible and GitHub Models servers,
+fake Codex/Claude executables, and the deterministic mock provider (which reproduces Python's
+Mersenne Twister). A native command is still delegated for commit intent inference and the
+`github` PR adapter.
 
 The Python CLI is found through `VERLATO_PYTHON_CLI` (a path to `verlato-py` or a command line
 such as `python3 -m verlato.cli`), then `verlato-py` on `PATH`. The Python package installs
@@ -113,6 +121,21 @@ Known, intentional differences:
 A changelog re-apply bug found while porting (re-applying a version left that version's old
 subsections behind) was fixed in both implementations.
 
+## Upstream IntentumDiff issues
+
+Engine gaps found while building on IntentumDiff, with the workaround Verlato carries until each
+is fixed (both runtimes implement the same workaround):
+
+| Issue | Gap | Verlato workaround |
+|---|---|---|
+| [core#297](https://github.com/buchochelliq-labs/intentumdiff-core/issues/297) | No definition-level signature change; a new required parameter is only an `identifier` addition | Infers "extended" (compatible) signatures from `default_parameter`/`optional_parameter` additions; required-parameter additions go undetected |
+| [core#298](https://github.com/buchochelliq-labs/intentumdiff-core/issues/298) | One file over the fuel budget fails cross-file analysis for the whole commit | Parses the failing path from the error, excludes it and retries (`_attach_cross_file`); cross-file stays opt-in |
+| [core#299](https://github.com/buchochelliq-labs/intentumdiff-core/issues/299) | Spurious `MOVED_CODE` for the surviving sub-expression of a modified statement | Folds moves inside meaningful-edit spans (`_is_moved_within_meaningful`) |
+| [core#300](https://github.com/buchochelliq-labs/intentumdiff-core/issues/300) | Change descriptions don't say what changed (`text_diff` empty) | Slices bounded before/after snippets from the file contents (`_node_source`) |
+| [core#301](https://github.com/buchochelliq-labs/intentumdiff-core/issues/301) | Files over ~10k lines fail the fixed 16 MiB output/tree limits | Recorded as unreviewed with the engine's reason |
+| [core#250](https://github.com/buchochelliq-labs/intentumdiff-core/issues/250) (comment) | Spurious `module` pseudo-moves and a `module.` prefix on real moves | Cross-file stays opt-in |
+| [python#332](https://github.com/buchochelliq-labs/intentumdiff-python/issues/332) | `finalize_commit_diff` crashes on `FileDiffError` results | Only diffed results are passed to cross-file analysis |
+
 ## LLM evidence
 
 Model-backed features still run in Python, but they already consume the IntentumDiff semantic
@@ -123,9 +146,9 @@ evidence without depending on patch text.
 
 ## Remaining phases
 
-1. **Providers** (next): a `Provider` trait with Ollama, OpenAI-compatible/LiteLLM, GitHub
-   Models and the external-command plugin protocol (request/prompt/evidence hashes), plus the
-   model privacy rules from `core/model_privacy.py`. Then `scan`/`generate` stop delegating.
+1. **Providers** (done): the `Provider` trait, request/prompt/evidence hashes (byte-identical
+   canonical JSON), privacy records, every provider, fallback chains, model telemetry and the
+   classifier's model assists.
 2. **Suggestions**: prompt construction and budgets, batching strategies, the suggestion cache,
    retrieval tools, telemetry events (`[verlato:suggestion]`), `draft suggest|prompt`.
 3. **Commit intents**: inference and Conventional Commit drafting (`commit conventional`).

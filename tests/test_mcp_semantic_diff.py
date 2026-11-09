@@ -49,7 +49,8 @@ def test_mcp_semantic_diff_tools(monkeypatch, tmp_path: Path, privacy: str, deta
     item = service.list_suggestion_items(base="v1")["items"][0]
     manifest = service.get_suggestion_item(base="v1", item_id=item["item_id"])
     assert manifest["evidence_source"] == "intentumdiff-semantic-diff"
-    assert manifest["semantic_review"]["signature_changes"] == ["greet"]
+    assert manifest["semantic_review"]["signature_changes"] == []
+    assert manifest["semantic_review"]["extended_signatures"] == ["greet"]
 
     result = service.get_file_semantic_diff(base="v1", item_id=item["item_id"], path="app.py")
     assert result["semantic_diff_available"] is True
