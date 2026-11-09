@@ -444,14 +444,119 @@ def test_ollama_provider_scan_matches(tmp_path: Path, stream: bool):
         assert '"redacted": true' in chunk or '"redacted": false' in chunk
 
 
-def test_scan_with_unported_provider_is_delegated(tmp_path: Path):
+@pytest.mark.parametrize("engine", ["git", "intentumdiff"])
+def test_mock_provider_scan_and_draft_match(tmp_path: Path, engine: str):
+    """The deterministic mock provider (Python's Mersenne Twister) gives identical results."""
+    py_repo, rs_repo, env = _pair(tmp_path, engine)
+    env = {**env, "VERLATO_MODEL_PROVIDER": "mock"}
+    compare = (lambda value: value) if engine == "git" else _normalize
+    for args in (
+        ("scan", "--base", "v1.0.0"),
+        ("draft", "json", "--base", "v1.0.0", "--model-provider", "mock", "--include-confidence"),
+    ):
+        python_out = json.loads(_run(_python(*args), py_repo, env))
+        rust_out = json.loads(_run(_rust(*args), rs_repo, _native_only(env)))
+        assert compare(rust_out) == compare(python_out), args
+        if args[0] == "scan":
+            signals = [signal for item in rust_out for signal in item["evidence"]["commit_signals"]]
+            assert "provider-classification:mock-local" in signals
+
+
+def test_github_models_provider_scan_matches(tmp_path: Path):
+    from http.server import BaseHTTPRequestHandler
+
+    requests: list[tuple[dict, dict]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 - http.server API
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            headers = {key: self.headers[key] for key in ("Authorization", "Accept", "X-GitHub-Api-Version")}
+            requests.append((headers, body))
+            prompt = body["messages"][-1]["content"]
+            if "Title: Add more tests" in prompt and not prompt.startswith("Classify"):
+                payload = json.dumps({"error": {"code": "RateLimit"}, "message": "slow down"}).encode()
+                self.send_response(429)
+            else:
+                content = f"Documents {len(prompt)} characters of reviewed evidence for release readers."
+                payload = json.dumps({"id": "r1", "choices": [{"message": {"content": content}}],
+                                      "usage": {"total_tokens": 11}}).encode()
+                self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    server = _serve(Handler)
+    try:
+        py_repo, rs_repo, env = _pair(tmp_path, "git")
+        env = {
+            **env,
+            "VERLATO_MODEL_PROVIDER": "github-copilot",
+            "VERLATO_GITHUB_MODELS_ENDPOINT": f"http://127.0.0.1:{server.server_address[1]}/chat/completions",
+            "VERLATO_GITHUB_MODEL": "gpt-4.1-mini",
+            "GITHUB_TOKEN": "test-token",
+        }
+        python_out = json.loads(_run(_python("scan", "--base", "v1.0.0"), py_repo, env))
+        python_requests, requests[:] = list(requests), []
+        rust_out = json.loads(_run(_rust("scan", "--base", "v1.0.0"), rs_repo, _native_only(env)))
+    finally:
+        server.shutdown()
+    assert rust_out == python_out
+    assert requests == python_requests
+    assert requests[0][0]["Authorization"] == "Bearer test-token"
+    assert requests[0][1]["model"] == "openai/gpt-4.1-mini"
+    signals = [signal for item in rust_out for signal in item["evidence"]["commit_signals"]]
+    assert "provider-summary:github-copilot:openai/gpt-4.1-mini" in signals
+    assert any(signal.startswith("provider-error:github-copilot:openai/gpt-4.1-mini:[github-copilot-error] "
+                                 "GitHub Models rate limit exceeded (429 Too Many Requests): slow down")
+               for signal in signals)
+
+
+_FAKE_AGENT = r'''#!{python}
+import json, os, sys
+argv = sys.argv[1:]
+prompt = sys.stdin.read() if "-" in argv else argv[-1]
+with open(os.environ["AGENT_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps({{"argv": [a for a in argv if not a.startswith("/")], "prompt": prompt}}) + "\n")
+answer = "fixed/backend/external/patch" if "Task: classify" in prompt else f"Explains {{len(prompt)}} prompt characters for reviewers."
+if "--output-last-message" in argv:
+    with open(argv[argv.index("--output-last-message") + 1], "w", encoding="utf-8") as out:
+        out.write(answer)
+else:
+    print(json.dumps({{"result": answer}}))
+'''
+
+
+@pytest.mark.parametrize("agent", ["codex-cli", "claude-code"])
+def test_cli_agent_provider_scan_matches(tmp_path: Path, agent: str):
+    script = tmp_path / "agent"
+    script.write_text(_FAKE_AGENT.format(python=sys.executable))
+    script.chmod(0o755)
+    py_repo, rs_repo, env = _pair(tmp_path, "git")
+    command_env = "VERLATO_CODEX_COMMAND" if agent == "codex-cli" else "VERLATO_CLAUDE_COMMAND"
+    env = {**env, "VERLATO_MODEL_PROVIDER": agent, command_env: str(script), "VERLATO_CODEX_MODEL": "",
+           "VERLATO_CLAUDE_MODEL": ""}
+    logs = {name: tmp_path / f"{name}.jsonl" for name in ("py", "rs")}
+    python_out = json.loads(_run(_python("scan", "--base", "v1.0.0"), py_repo, {**env, "AGENT_LOG": str(logs["py"])}))
+    rust_out = json.loads(
+        _run(_rust("scan", "--base", "v1.0.0"), rs_repo, _native_only({**env, "AGENT_LOG": str(logs["rs"])}))
+    )
+    assert rust_out == python_out
+    assert _read_log(logs["rs"]) == _read_log(logs["py"])
+    assert any(f"provider-summary:{agent}:default" in item["evidence"]["commit_signals"] for item in rust_out)
+
+
+def test_commit_intent_inference_is_still_delegated(tmp_path: Path):
     _, rs_repo, env = _pair(tmp_path, "git")
     result = subprocess.run(
-        _rust("scan", "--base", "v1.0.0"),
+        _rust("scan", "--base", "v1.0.0", "--infer-commit-intents"),
         cwd=rs_repo,
-        env=_native_only({**env, "VERLATO_MODEL_PROVIDER": "mock"}),
+        env=_native_only(env),
         capture_output=True,
         text=True,
     )
     assert result.returncode != 0
-    assert "model provider `mock`" in result.stderr
+    assert "commit intent inference" in result.stderr

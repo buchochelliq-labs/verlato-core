@@ -5,10 +5,9 @@
 //! echoing `request_hash`.
 
 use serde_json::{json, Map, Value};
-use std::io::{Read, Write};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use super::process::{run_command, Env, RunError};
 use super::{
     messages_for_request, request_audit, summarize_task, Provider, ProviderRequest,
     ProviderResponse,
@@ -146,10 +145,12 @@ impl PluginProvider {
             }
             metadata
         };
+        let input = pyjson::dumps(&payload, pyjson::DEFAULT_SORTED);
         let run = run_command(
             &self.command,
-            &pyjson::dumps(&payload, pyjson::DEFAULT_SORTED),
-            &self.env_names,
+            Some(&input),
+            &std::env::temp_dir(),
+            Env::Minimal(&self.env_names),
             Duration::from_secs_f64(self.timeout_seconds),
         );
         let output = match run {
@@ -293,92 +294,6 @@ impl Provider for PluginProvider {
     fn classify(&self, request: &ProviderRequest) -> ProviderResponse {
         self.invoke("classify", request)
     }
-}
-
-struct Output {
-    code: i32,
-    stdout: String,
-    stderr: String,
-}
-
-enum RunError {
-    Start(std::io::Error),
-    Timeout(String),
-}
-
-fn run_command(
-    command: &[String],
-    input: &str,
-    env_names: &[String],
-    timeout: Duration,
-) -> Result<Output, RunError> {
-    let mut process = Command::new(&command[0]);
-    process
-        .args(&command[1..])
-        .current_dir(std::env::temp_dir())
-        .env_clear()
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    for name in [
-        "PATH",
-        "PATHEXT",
-        "SYSTEMROOT",
-        "WINDIR",
-        "COMSPEC",
-        "TEMP",
-        "TMP",
-    ]
-    .iter()
-    .map(|n| n.to_string())
-    .chain(env_names.iter().cloned())
-    {
-        if let Ok(value) = std::env::var(&name) {
-            if !value.is_empty() || env_names.contains(&name) {
-                process.env(&name, value);
-            }
-        }
-    }
-    let mut child = process.spawn().map_err(RunError::Start)?;
-    let mut stdin = child.stdin.take().expect("piped stdin");
-    let input = input.to_owned();
-    let writer = std::thread::spawn(move || {
-        let _ = stdin.write_all(input.as_bytes());
-    });
-    let mut stdout = child.stdout.take().expect("piped stdout");
-    let mut stderr = child.stderr.take().expect("piped stderr");
-    let out_reader = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = stdout.read_to_string(&mut text);
-        text
-    });
-    let err_reader = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = stderr.read_to_string(&mut text);
-        text
-    });
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if Instant::now() >= deadline => break None,
-            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
-            Err(_) => break None,
-        }
-    };
-    let Some(status) = status else {
-        let _ = child.kill();
-        let _ = child.wait();
-        let _ = writer.join();
-        let _ = out_reader.join();
-        return Err(RunError::Timeout(err_reader.join().unwrap_or_default()));
-    };
-    let _ = writer.join();
-    Ok(Output {
-        code: status.code().unwrap_or(-1),
-        stdout: out_reader.join().unwrap_or_default(),
-        stderr: err_reader.join().unwrap_or_default(),
-    })
 }
 
 #[cfg(test)]

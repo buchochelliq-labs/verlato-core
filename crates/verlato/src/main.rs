@@ -227,13 +227,9 @@ fn json_out(value: &impl serde::Serialize) -> Result<()> {
     Ok(())
 }
 
-/// Why a native command must still run in Python, if it must.
-fn python_reason(
-    ctx: &Context,
-    provider_arg: Option<&str>,
-    scan_family: bool,
-    model: Option<&ModelArgs>,
-) -> Option<String> {
+/// Why a native command must still run in Python, if it must: every model provider is
+/// native, but commit intent inference and the GitHub PR adapter are not ported yet.
+fn python_reason(ctx: &Context, model: Option<&ModelArgs>) -> Option<String> {
     if let Some(model) = model {
         if ctx.config.commit_intent_inference(model.inference()) != "off" {
             return Some("commit intent inference uses a model provider".into());
@@ -242,21 +238,16 @@ fn python_reason(
     if ctx.pr_adapter().is_err() {
         return Some("the github PR adapter".into());
     }
-    if scan_family {
-        // Scans call the configured provider (and its fallbacks) natively when every provider in
-        // the chain is ported; with the fan-out guard at 0 no provider is built at all.
-        if ctx.config.max_model_items() == 0 {
-            return None;
+    None
+}
+
+impl ModelArgs {
+    fn request(&self) -> verlato::pipeline::ModelRequest {
+        verlato::pipeline::ModelRequest {
+            provider: self.model_provider.clone(),
+            privacy: self.privacy.clone(),
+            allow_remote_patches: self.allow_remote_patches,
         }
-        let config = verlato::providers::ProviderConfig::from_raw(&ctx.config.raw);
-        let requested = provider_arg.map(|p| p.trim().to_lowercase());
-        return verlato::providers::native_provider(&config, requested.as_deref())
-            .err()
-            .map(|mode| format!("model provider `{mode}`"));
-    }
-    match provider_arg.map(|p| p.trim().to_lowercase()) {
-        Some(p) if !p.is_empty() && p != "stub" => Some(format!("model provider `{p}`")),
-        _ => None,
     }
 }
 
@@ -284,12 +275,7 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
 
     match cli.command {
         Command::Scan(args) | Command::Generate(args) | Command::Reconcile(args) => {
-            if let Some(code) = delegate_if(python_reason(
-                &ctx,
-                args.model.model_provider.as_deref(),
-                true,
-                Some(&args.model),
-            )) {
+            if let Some(code) = delegate_if(python_reason(&ctx, Some(&args.model))) {
                 return code;
             }
             let (base, head) = ctx.resolve_range(
@@ -299,12 +285,7 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
                 args.range.from_latest_published,
             )?;
             let persist = path[0] == "generate";
-            let model = verlato::pipeline::ModelRequest {
-                provider: args.model.model_provider.clone(),
-                privacy: args.model.privacy.clone(),
-                allow_remote_patches: args.model.allow_remote_patches,
-            };
-            let items = ctx.scan(&base, &head, persist, &model)?;
+            let items = ctx.scan(&base, &head, persist, &args.model.request())?;
             if path[0] == "reconcile" {
                 json_out(&json!({"unpublished": items, "count": items.len()}))?;
             } else {
@@ -335,24 +316,9 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
             DraftCommand::Json(args)
             | DraftCommand::Preview(args)
             | DraftCommand::Apply { draft: args, .. }
-                if python_reason(
-                    &ctx,
-                    args.model.model_provider.as_deref(),
-                    false,
-                    Some(&args.model),
-                )
-                .is_some() =>
+                if python_reason(&ctx, Some(&args.model)).is_some() =>
             {
-                return delegate::run(
-                    &raw_args,
-                    &python_reason(
-                        &ctx,
-                        args.model.model_provider.as_deref(),
-                        false,
-                        Some(&args.model),
-                    )
-                    .unwrap(),
-                );
+                return delegate::run(&raw_args, &python_reason(&ctx, Some(&args.model)).unwrap());
             }
             DraftCommand::Json(args) => {
                 let document = draft(&ctx, &args)?;
@@ -389,12 +355,7 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
                 reviewer,
                 model,
             } => {
-                if let Some(code) = delegate_if(python_reason(
-                    &ctx,
-                    model.model_provider.as_deref(),
-                    false,
-                    Some(&model),
-                )) {
+                if let Some(code) = delegate_if(python_reason(&ctx, Some(&model))) {
                     return code;
                 }
                 let provenance = match summary_provenance_json {
@@ -422,6 +383,11 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
                     summary.as_deref(),
                     reviewer.as_deref(),
                     provenance,
+                    // Python passes only the provider to review detection.
+                    Some(&verlato::pipeline::ModelRequest {
+                        provider: model.model_provider.clone(),
+                        ..Default::default()
+                    }),
                 )?;
                 json_out(&updated)?;
             }
@@ -482,6 +448,7 @@ fn draft(ctx: &Context, args: &DraftArgs) -> Result<verlato::drafts::DraftDocume
         &args.version,
         args.include_confidence,
         args.include_provenance,
+        Some(&args.model.request()),
     )
 }
 

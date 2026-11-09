@@ -199,6 +199,32 @@ impl Context {
         Ok(items)
     }
 
+    /// Draft and review candidates (ports `_detect_review_candidates`): with a requested model
+    /// provider they are classified with model assists, as a scan would.
+    fn review_candidates(
+        &self,
+        base: &str,
+        head: &str,
+        model: Option<&ModelRequest>,
+    ) -> Result<Vec<ChangeItem>> {
+        match model.filter(|m| m.provider.as_deref().is_some_and(|p| !p.trim().is_empty())) {
+            Some(model) => self.detect_items(
+                base,
+                head,
+                "classifying_changes",
+                "Classifying changesets",
+                Some(model),
+            ),
+            None => self.detect_items(
+                base,
+                head,
+                "detecting_review_candidates",
+                "Detecting review candidates",
+                None,
+            ),
+        }
+    }
+
     /// Unreconciled items for a range; `persist` appends them to state (`generate`).
     pub fn scan(
         &self,
@@ -308,19 +334,14 @@ impl Context {
         version: &str,
         include_confidence: bool,
         include_provenance: bool,
+        model: Option<&ModelRequest>,
     ) -> Result<DraftDocument> {
         trace_progress(
             "draft_detecting_changes",
             "Detecting draft changes",
             json!({"detail": format!("{base}..{head}")}),
         );
-        let detected = self.detect_items(
-            base,
-            head,
-            "detecting_review_candidates",
-            "Detecting review candidates",
-            None,
-        )?;
+        let detected = self.review_candidates(base, head, model)?;
         let items = self.merge_review_state(detected)?;
         trace_progress(
             "draft_rendering",
@@ -377,6 +398,7 @@ impl Context {
         summary: Option<&str>,
         reviewer: Option<&str>,
         summary_provenance: Option<Map<String, Value>>,
+        model: Option<&ModelRequest>,
     ) -> Result<ChangeItem> {
         if status.is_none() && summary.is_none() && reviewer.is_none() {
             bail!("Provide at least one review update: --status, --summary, or --reviewer");
@@ -386,13 +408,7 @@ impl Context {
                 bail!("Unsupported review status: {status}");
             }
         }
-        let candidates = self.detect_items(
-            base,
-            head,
-            "detecting_review_candidates",
-            "Detecting review candidates",
-            None,
-        )?;
+        let candidates = self.review_candidates(base, head, model)?;
         let candidate = candidates
             .into_iter()
             .find(|item| item.id == item_id)

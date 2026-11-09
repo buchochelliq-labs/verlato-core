@@ -5,8 +5,8 @@ use std::io::BufRead;
 use std::time::Duration;
 
 pub enum HttpError {
-    /// The server answered with an error status (code, reason phrase).
-    Status(u16, String),
+    /// The server answered with an error status (code, reason phrase, response body).
+    Status(u16, String, String),
     /// Connection, TLS, timeout or protocol failure.
     Transport(String),
     /// The server closed the connection without answering (Python's `RemoteDisconnected`).
@@ -16,7 +16,7 @@ pub enum HttpError {
 impl std::fmt::Display for HttpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            HttpError::Status(code, reason) => write!(f, "HTTP Error {code}: {reason}"),
+            HttpError::Status(code, reason, _) => write!(f, "HTTP Error {code}: {reason}"),
             HttpError::Transport(message) | HttpError::Disconnected(message) => {
                 f.write_str(message)
             }
@@ -118,7 +118,9 @@ fn send(
     match request.send_string(body) {
         Ok(response) => Ok(response),
         Err(ureq::Error::Status(code, response)) => {
-            Err(HttpError::Status(code, response.status_text().to_owned()))
+            let reason = response.status_text().to_owned();
+            let body = response.into_string().unwrap_or_default();
+            Err(HttpError::Status(code, reason, body))
         }
         Err(ureq::Error::Transport(error)) => {
             let message = error.to_string();

@@ -492,7 +492,7 @@ impl OllamaProvider {
                     }
                 }
             }
-            Err(HttpError::Status(code, reason)) => {
+            Err(HttpError::Status(code, reason, _)) => {
                 self.trace(
                     &format!("error provider=ollama task={task} stage=chat http_status={code}"),
                     true,

@@ -1,11 +1,13 @@
 # Moving Verlato from Python to Rust
 
 Verlato is moving to Rust. The native `verlato` binary (crate `crates/verlato`) now owns the
-release-note pipeline and links the IntentumDiff engine in-process. Scans call the stub,
-Ollama (the default), external-command plugin and LiteLLM/OpenAI-compatible providers natively; the remaining
-model-backed features still run in the Python implementation, which the binary delegates to
-transparently. This document
-records the assessment, the current state, and the remaining phases.
+release-note pipeline and links the IntentumDiff engine in-process, and every model provider
+is native: scans and drafts call Ollama (the default), LiteLLM/OpenAI-compatible endpoints,
+GitHub Models, the external-command plugin, the Codex CLI and Claude Code agents, the mock and
+stub providers, and fallback chains of those. The remaining model-backed features (suggestions,
+commit intents, the MCP server) still run in the Python implementation, which the binary
+delegates to transparently. This document records the assessment, the current state, and the
+remaining phases.
 
 ## Why Rust
 
@@ -32,9 +34,8 @@ About 16k lines of Python (plus ~7k lines of tests):
 | IntentumDiff semantic evidence (digest, verdicts, summary, cache) | `core/semantic.py` | ~1k | **Ported** (engine linked natively) |
 | Drafts, rendering, changelog apply, state store, review/feedback/state commands | `core/{drafts,generator,changelog}`, `state/store.py`, parts of `cli/main.py` | ~1.5k | **Ported** |
 | Editor stdio service (deterministic methods) | `service_stdio.py`, parts of `mcp/service.py` | ~0.5k | **Ported**; other methods proxied |
-| Model providers: stub, Ollama (incl. streaming), plugin, LiteLLM, fallback chains; request audits, privacy records, OTEL-style model logs | `providers/{base,stub,ollama,plugin,litellm,fallback,factory,model_logging}`, `core/model_privacy.py` | ~1.6k | **Ported** (Ollama tool calling stays in Python with the suggestion strategies) |
+| Model providers: stub, mock, Ollama (incl. streaming), LiteLLM, GitHub Models, plugin, Codex/Claude CLI, fallback chains; request audits, privacy records, OTEL-style model logs | `providers/*`, `core/model_privacy.py` | ~2.4k | **Ported** (Ollama tool calling stays in Python with the suggestion strategies) |
 | Classifier model assists (summary rewrite, diff-fallback classification, change-summary payload) | parts of `core/classifier.py`, `core/change_summary.py` | ~0.6k | **Ported** |
-| Model providers: GitHub Models, Codex/Claude CLI, mock | `providers/{github_copilot,cli_agents,mock}` | ~0.8k | Delegated |
 | Suggestions (prompts, batching, cache, retrieval tools, adaptive recommendations) | `cli/main.py` (most of it), `core/suggestion_tools.py`, `state/suggestion_cache.py`, `core/change_summary.py` | ~4.5k | Delegated |
 | Commit intent inference and Conventional Commit drafting | `core/commit_intent.py` | ~1.1k | Delegated |
 | MCP server (FastMCP) | `mcp/server.py` | ~0.7k | Delegated |
@@ -49,13 +50,13 @@ so the Rust binary replaces the Python one command by command without extension 
 The native binary handles these command paths itself:
 
 ```
-scan | generate | reconcile          (with the stub, ollama, plugin or litellm provider; see below)
-draft json | preview | apply | review
+scan | generate | reconcile          (with any model provider; see below)
+draft json | preview | apply | review (including --model-provider)
 render
 state show | mark-published | clear-working
 feedback record
 doctor engine
-service                              (health, info, draft.*, feedback.record, state.show, state.clear_working)
+service                              (health, info, draft.* incl. model providers, feedback.record, state.show, state.clear_working)
 ```
 
 Everything else is delegated to the Python implementation with the original arguments:
@@ -63,16 +64,14 @@ Everything else is delegated to the Python implementation with the original argu
 `model-logs`, `feedback export|recommend`, `state clear-suggestion-cache`, and the
 `suggestion.*` / `commit.*` service methods (proxied to a lazily started Python service).
 
-`scan`/`generate`/`reconcile` ask the configured provider to enrich summaries (and, on the
-diff-fallback path, classifications). With `stub`, `ollama`, `plugin` or `litellm` (including
-fallback chains made only of those) this runs natively: the same prompts, evidence payloads,
-request audits and hashes, `[verlato:model]` trace lines and `VERLATO_MODEL_LOG_PATH` records as
-Python, checked by the parity suite with a recording plugin, a fake Ollama server (plain and
-streaming) and a local OpenAI-compatible server. A scan is delegated when its provider chain
-includes a provider that is not ported yet (`github-copilot`, `codex-cli`, `claude-code`, `mock`).
-Draft commands with an explicit `--model-provider`, commit intent inference and the `github` PR
-adapter are delegated too. The extension runs non-model commands with the `stub` provider, so its
-draft/review flows are fully native.
+`scan`/`generate`/`reconcile` (and drafts or reviews with `--model-provider`) ask the provider
+to enrich summaries and, on the diff-fallback path, classifications. This runs natively for every
+provider, with the same prompts, evidence payloads, request audits and hashes, `[verlato:model]`
+trace lines and `VERLATO_MODEL_LOG_PATH` records as Python. The parity suite checks it with a
+recording plugin, fake Ollama (plain and streaming), OpenAI-compatible and GitHub Models servers,
+fake Codex/Claude executables, and the deterministic mock provider (which reproduces Python's
+Mersenne Twister). A native command is still delegated for commit intent inference and the
+`github` PR adapter.
 
 The Python CLI is found through `VERLATO_PYTHON_CLI` (a path to `verlato-py` or a command line
 such as `python3 -m verlato.cli`), then `verlato-py` on `PATH`. The Python package installs
@@ -147,11 +146,9 @@ evidence without depending on patch text.
 
 ## Remaining phases
 
-1. **Providers** (in progress): done: the `Provider` trait, request/prompt/evidence hashes
-   (byte-identical canonical JSON), privacy records, Ollama (streaming, `/api/generate`
-   fallback, model telemetry), the plugin protocol, LiteLLM, fallback chains and the
-   classifier's model assists. Next: GitHub Models, the Codex/Claude CLI agents and the mock
-   provider, after which `scan`/`generate` never delegate.
+1. **Providers** (done): the `Provider` trait, request/prompt/evidence hashes (byte-identical
+   canonical JSON), privacy records, every provider, fallback chains, model telemetry and the
+   classifier's model assists.
 2. **Suggestions**: prompt construction and budgets, batching strategies, the suggestion cache,
    retrieval tools, telemetry events (`[verlato:suggestion]`), `draft suggest|prompt`.
 3. **Commit intents**: inference and Conventional Commit drafting (`commit conventional`).

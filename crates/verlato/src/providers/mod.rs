@@ -1,12 +1,16 @@
-//! Model providers (ports `verlato/providers/`). The native runtime implements the stub,
-//! external-command plugin and LiteLLM/OpenAI-compatible providers and fallback chains; other
-//! providers are still served by the Python implementation (see [`native_provider`]).
+//! Model providers (ports `verlato/providers/`): stub, mock, Ollama, LiteLLM/OpenAI-compatible,
+//! GitHub Models, the external-command plugin, the Codex CLI and Claude Code agents, and
+//! fallback chains of those.
 
+pub mod cli_agents;
+pub mod github;
 mod http;
 pub mod litellm;
+pub mod mock;
 pub mod model_log;
 pub mod ollama;
 pub mod plugin;
+mod process;
 
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -443,33 +447,6 @@ fn selected_mode(config: &ProviderConfig, mode: Option<&str>) -> String {
         .to_lowercase()
 }
 
-/// Whether every provider the configuration would build is implemented natively. Unknown
-/// names fall back to the stub provider in Python too, so they count as native.
-pub fn native_provider(config: &ProviderConfig, mode: Option<&str>) -> Result<(), String> {
-    let known_python = [
-        "mock",
-        "github-copilot",
-        "github",
-        "copilot",
-        "codex-cli",
-        "codex",
-        "claude-code",
-        "claude",
-    ];
-    let mut modes = vec![selected_mode(config, mode)];
-    for raw in &config.fallbacks {
-        // Fallbacks are built with no explicit mode, so VERLATO_MODEL_PROVIDER applies to them.
-        modes.push(selected_mode(&config.fallback(raw), None));
-    }
-    match modes
-        .into_iter()
-        .find(|m| known_python.contains(&m.as_str()))
-    {
-        Some(mode) => Err(mode),
-        None => Ok(()),
-    }
-}
-
 pub fn build_provider(config: &ProviderConfig, mode: Option<&str>) -> Box<dyn Provider> {
     let primary = build_single(config, mode);
     if config.fallbacks.is_empty() {
@@ -541,6 +518,21 @@ fn build_single(config: &ProviderConfig, mode: Option<&str>) -> Box<dyn Provider
                 config.num_predict,
             ))
         }
+        "mock" => Box::new(mock::MockProvider),
+        "github-copilot" | "github" | "copilot" => Box::new(github::GitHubModelsProvider::new(
+            env_text("VERLATO_GITHUB_MODELS_ENDPOINT").or_else(|| config.endpoint.clone()),
+            env_text("VERLATO_GITHUB_MODEL").or_else(|| config.model.clone()),
+        )),
+        "codex-cli" | "codex" => Box::new(cli_agents::CliAgentProvider::new(
+            cli_agents::Agent::Codex,
+            config.model.clone(),
+            env_float("VERLATO_CODEX_TIMEOUT_SECONDS", config.timeout_seconds),
+        )),
+        "claude-code" | "claude" => Box::new(cli_agents::CliAgentProvider::new(
+            cli_agents::Agent::ClaudeCode,
+            config.model.clone(),
+            env_float("VERLATO_CLAUDE_TIMEOUT_SECONDS", config.timeout_seconds),
+        )),
         "ollama" | "local" => {
             let env_flag = |name: &str| {
                 matches!(
@@ -619,20 +611,5 @@ mod tests {
             json!(sha256_hex("{\"a\":[0.5],\"b\":1}"))
         );
         assert_eq!(audit["schema_hash"], json!(sha256_hex("null")));
-    }
-
-    #[test]
-    fn python_only_providers_are_detected_in_fallback_chains() {
-        let mut config = ProviderConfig::from_raw(&json!({"provider": {"name": "plugin"}}));
-        assert!(native_provider(&config, None).is_ok());
-        assert!(native_provider(&config, Some("ollama")).is_ok());
-        assert_eq!(
-            native_provider(&config, Some("codex-cli")),
-            Err("codex-cli".into())
-        );
-        config
-            .fallbacks
-            .push(Map::from_iter([("name".to_owned(), json!("mock"))]));
-        assert_eq!(native_provider(&config, None), Err("mock".into()));
     }
 }

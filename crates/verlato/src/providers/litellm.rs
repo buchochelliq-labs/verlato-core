@@ -134,7 +134,7 @@ impl LiteLlmProvider {
             Duration::from_secs_f64(self.timeout_seconds),
         ) {
             Ok(text) => text,
-            Err(HttpError::Status(code, reason)) => {
+            Err(HttpError::Status(code, reason, _)) => {
                 let mut metadata = audit_only();
                 metadata.insert("http_status".into(), json!(code));
                 return ProviderResponse::error(
