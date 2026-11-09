@@ -61,7 +61,7 @@ struct ModelArgs {
     infer_commit_intents: bool,
     #[arg(long)]
     no_infer_commit_intents: bool,
-    /// Privacy mode for model evidence (accepted for CLI compatibility; native commands make no model calls).
+    /// Privacy mode for model evidence: metadata-only, local-summary-then-ai or trusted-provider-patch.
     #[arg(long = "privacy")]
     privacy: Option<String>,
     #[arg(long)]
@@ -242,19 +242,20 @@ fn python_reason(
     if ctx.pr_adapter().is_err() {
         return Some("the github PR adapter".into());
     }
-    let provider = if scan_family {
-        Some(ctx.config.effective_provider(provider_arg))
-    } else {
-        provider_arg.map(|p| p.trim().to_lowercase())
-    };
-    match provider {
-        Some(p)
-            if !p.is_empty()
-                && p != "stub"
-                && !(scan_family && ctx.config.max_model_items() == 0) =>
-        {
-            Some(format!("model provider `{p}`"))
+    if scan_family {
+        // Scans call the configured provider (and its fallbacks) natively when every provider in
+        // the chain is ported; with the fan-out guard at 0 no provider is built at all.
+        if ctx.config.max_model_items() == 0 {
+            return None;
         }
+        let config = verlato::providers::ProviderConfig::from_raw(&ctx.config.raw);
+        let requested = provider_arg.map(|p| p.trim().to_lowercase());
+        return verlato::providers::native_provider(&config, requested.as_deref())
+            .err()
+            .map(|mode| format!("model provider `{mode}`"));
+    }
+    match provider_arg.map(|p| p.trim().to_lowercase()) {
+        Some(p) if !p.is_empty() && p != "stub" => Some(format!("model provider `{p}`")),
         _ => None,
     }
 }
@@ -298,7 +299,12 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
                 args.range.from_latest_published,
             )?;
             let persist = path[0] == "generate";
-            let items = ctx.scan(&base, &head, persist)?;
+            let model = verlato::pipeline::ModelRequest {
+                provider: args.model.model_provider.clone(),
+                privacy: args.model.privacy.clone(),
+                allow_remote_patches: args.model.allow_remote_patches,
+            };
+            let items = ctx.scan(&base, &head, persist, &model)?;
             if path[0] == "reconcile" {
                 json_out(&json!({"unpublished": items, "count": items.len()}))?;
             } else {

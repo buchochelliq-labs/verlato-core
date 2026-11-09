@@ -1,10 +1,11 @@
-//! Deterministic classification of a change group into a `ChangeItem`. Ports the
-//! provider-free path of `verlato/core/classifier.py` (model assists stay in Python for now).
+//! Classification of a change group into a `ChangeItem` (ports `verlato/core/classifier.py`).
+//! Model assists (summary rewrite, diff-fallback classification) live in `crate::assist`.
 
 use regex::Regex;
 use serde_json::{json, Map, Value};
 use std::sync::OnceLock;
 
+use crate::assist::{self, ModelAssist};
 use crate::evidence::{self, DiffEvidence};
 use crate::models::{
     changed_files_for_group, default_review_status, ChangeGroup, ChangeItem, Classification,
@@ -61,7 +62,30 @@ struct Decision {
     confidence: f64,
 }
 
-pub fn classify(group: &ChangeGroup, base_ref: &str, head_ref: &str) -> ChangeItem {
+/// Removed/renamed/re-signatured public symbols or protected-config edits always deserve a
+/// human look before publishing, whatever the commit message or a model claims.
+fn cap_for_semantic_review(
+    semantic: Option<&SemanticEvidence>,
+    kind: &str,
+    confidence: f64,
+) -> f64 {
+    match semantic {
+        Some(semantic)
+            if (!semantic.api_break_candidates().is_empty() || !semantic.guardrails.is_empty())
+                && kind != "breaking" =>
+        {
+            confidence.min(0.79)
+        }
+        _ => confidence,
+    }
+}
+
+pub fn classify(
+    group: &ChangeGroup,
+    base_ref: &str,
+    head_ref: &str,
+    model: Option<&ModelAssist>,
+) -> ChangeItem {
     let pr = group.pr.as_ref();
     let labels: Vec<String> = pr
         .map(|p| p.labels.iter().map(|l| l.to_lowercase()).collect())
@@ -105,8 +129,9 @@ pub fn classify(group: &ChangeGroup, base_ref: &str, head_ref: &str) -> ChangeIt
         d.semver = semver_for_kind(kind).into();
     }
 
+    let mut semantic_decided = false;
     if let Some(semantic) = semantic {
-        apply_semantic_evidence(
+        semantic_decided = apply_semantic_evidence(
             semantic,
             &mut d,
             &mut commit_signals,
@@ -160,21 +185,45 @@ pub fn classify(group: &ChangeGroup, base_ref: &str, head_ref: &str) -> ChangeIt
         d.confidence = d.confidence.max(0.62);
         commit_signals.push("diff-fallback".into());
     }
-    if let Some(semantic) = semantic {
-        if (!semantic.api_break_candidates().is_empty() || !semantic.guardrails.is_empty())
-            && d.kind != "breaking"
-        {
-            // Removed/renamed/re-signatured public symbols or protected-config edits always
-            // deserve a human look before publishing, whatever the commit message claims.
-            d.confidence = d.confidence.min(0.79);
-        }
-    }
+    d.confidence = cap_for_semantic_review(semantic, &d.kind, d.confidence);
 
     let title = pr
         .map(|p| p.title.clone())
         .unwrap_or_else(|| subject(&group.commits[0].message).to_owned())
         .trim()
         .to_owned();
+    let mut summary = diff.summary.clone();
+    if let Some(model) = model {
+        let mut decision = assist::Decision {
+            kind: d.kind.clone(),
+            area: area.clone(),
+            audience: d.audience.clone(),
+            semver: d.semver.clone(),
+            summary: summary.clone(),
+            confidence: d.confidence,
+        };
+        let allow_classification_override = parsed.is_empty()
+            && !semantic_decided
+            && !has_security
+            && !(diff.docs_only || diff.tests_only);
+        model.apply(
+            group,
+            &labels,
+            &diff,
+            &changed_files,
+            &title,
+            &mut decision,
+            &mut commit_signals,
+            allow_classification_override,
+        );
+        d.kind = decision.kind;
+        area = decision.area;
+        d.audience = decision.audience;
+        d.semver = decision.semver;
+        summary = decision.summary;
+        // A confident model summary or classification must not lift the review cap.
+        d.confidence = cap_for_semantic_review(semantic, &d.kind, decision.confidence);
+    }
     let source = SourceRef {
         pr_number: pr.map(|p| p.number),
         commit_shas: group.commits.iter().map(|c| c.sha.clone()).collect(),
@@ -198,10 +247,7 @@ pub fn classify(group: &ChangeGroup, base_ref: &str, head_ref: &str) -> ChangeIt
             audience: d.audience,
             semver: d.semver,
         },
-        content: Content {
-            title,
-            summary: diff.summary.clone(),
-        },
+        content: Content { title, summary },
         evidence,
         confidence: d.confidence,
         published: false,
@@ -257,7 +303,7 @@ fn apply_semantic_evidence(
     signals: &mut Vec<String>,
     authored_type: Option<&str>,
     label_kind: Option<&str>,
-) {
+) -> bool {
     signals.push(format!("semantic:{}", semantic.verdict));
     if !semantic.complete {
         signals.push("semantic:partial".into());
@@ -306,6 +352,7 @@ fn apply_semantic_evidence(
     if !semantic.cross_file.is_empty() {
         signals.push("semantic:cross-file".into());
     }
+    decided
 }
 
 fn classify_area(labels: &[String], diff: &DiffEvidence) -> String {

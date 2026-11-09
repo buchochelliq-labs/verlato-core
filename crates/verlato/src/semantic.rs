@@ -1353,6 +1353,287 @@ pub fn cache_from_env(configured: &str) -> Option<SemanticCache> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// semantic diff records (what LLM prompts receive instead of raw patches)
+// ---------------------------------------------------------------------------
+
+/// Edit fields that can contain source content: kept only at the detailed privacy level.
+const SOURCE_EDIT_KEYS: &[&str] = &["detail", "before", "after"];
+
+/// IntentumDiff's semantic diff for a change group: one record per (commit, file), plus the
+/// files the engine could not review (ports `build_semantic_diff`).
+pub fn build_semantic_diff<'a>(
+    digests: impl IntoIterator<Item = &'a CommitSemantics>,
+    paths: Option<&[String]>,
+) -> Vec<Value> {
+    let owned = |path: &str, old_path: &str| match paths {
+        None => true,
+        Some(paths) => {
+            paths.iter().any(|p| p == path)
+                || (!old_path.is_empty() && paths.iter().any(|p| p == old_path))
+        }
+    };
+    let mut records = Vec::new();
+    for digest in digests {
+        let short: String = digest.sha.chars().take(12).collect();
+        for file in &digest.files {
+            if !owned(&file.path, &file.old_path) {
+                continue;
+            }
+            let mut record = Map::new();
+            record.insert("path".into(), json!(file.path));
+            record.insert("commit".into(), json!(short));
+            record.insert("language".into(), json!(file.language));
+            record.insert("lifecycle".into(), json!(file.lifecycle));
+            record.insert(
+                "style_only".into(),
+                json!(file.style_only || !file.has_semantic_changes),
+            );
+            record.insert("group_counts".into(), json!(file.group_counts));
+            record.insert("changes".into(), json!(file.changes));
+            if !file.old_path.is_empty() && file.old_path != file.path {
+                record.insert("old_path".into(), json!(file.old_path));
+            }
+            if !file.guardrails.is_empty() {
+                let mut rules: Vec<String> = file
+                    .guardrails
+                    .iter()
+                    .map(|g| g.get("rule_id").cloned().unwrap_or_else(|| "None".into()))
+                    .collect();
+                rules.sort();
+                rules.dedup();
+                record.insert("guardrails".into(), json!(rules));
+            }
+            records.push(Value::Object(record));
+        }
+        for item in &digest.unreviewed {
+            if owned(&item.path, "") {
+                records.push(json!({
+                    "path": item.path,
+                    "commit": short,
+                    "unreviewed": item.kind,
+                    "reason": item.reason,
+                }));
+            }
+        }
+    }
+    records
+}
+
+fn present(value: &Value) -> bool {
+    !matches!(value, Value::Null) && value.as_str() != Some("")
+}
+
+/// Apply the privacy detail level (ports `semantic_diff_for_prompt`): `detailed` keeps the
+/// engine's change descriptions and source snippets; otherwise only structure and names remain.
+pub fn semantic_diff_for_prompt(records: &[Value], detailed: bool) -> Vec<Value> {
+    records
+        .iter()
+        .map(|record| {
+            let Some(object) = record.as_object() else {
+                return record.clone();
+            };
+            let mut copy: Map<String, Value> = object
+                .iter()
+                .filter(|(k, _)| k.as_str() != "changes")
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            if let Some(changes) = object.get("changes").and_then(Value::as_array) {
+                let prepared: Vec<Value> = changes
+                    .iter()
+                    .map(|entry| {
+                        let empty = Map::new();
+                        let entry = entry.as_object().unwrap_or(&empty);
+                        let edits: Vec<Value> = entry
+                            .get("edits")
+                            .and_then(Value::as_array)
+                            .map(|edits| {
+                                edits
+                                    .iter()
+                                    .map(|edit| {
+                                        let kept: Map<String, Value> = edit
+                                            .as_object()
+                                            .map(|e| {
+                                                e.iter()
+                                                    .filter(|(k, v)| {
+                                                        present(v)
+                                                            && (detailed
+                                                                || !SOURCE_EDIT_KEYS
+                                                                    .contains(&k.as_str()))
+                                                    })
+                                                    .map(|(k, v)| (k.clone(), v.clone()))
+                                                    .collect()
+                                            })
+                                            .unwrap_or_default();
+                                        Value::Object(kept)
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let mut header: Map<String, Value> = entry
+                            .iter()
+                            .filter(|(k, v)| k.as_str() != "edits" && present(v))
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                        header.insert("edits".into(), Value::Array(edits));
+                        Value::Object(header)
+                    })
+                    .collect();
+                copy.insert("changes".into(), Value::Array(prepared));
+            }
+            Value::Object(copy)
+        })
+        .collect()
+}
+
+fn text_of<'a>(value: &'a Value, key: &str) -> &'a str {
+    value.get(key).and_then(Value::as_str).unwrap_or("")
+}
+
+fn render_edit(edit: &Value, detailed: bool) -> String {
+    let mut text = text_of(edit, "change").to_lowercase();
+    let node = text_of(edit, "node");
+    if !node.is_empty() {
+        text.push(' ');
+        text.push_str(node);
+    }
+    let (name, old_name) = (text_of(edit, "name"), text_of(edit, "old_name"));
+    if !old_name.is_empty() && !name.is_empty() {
+        text.push_str(&format!(" {old_name} -> {name}"));
+    } else if !name.is_empty() {
+        text.push_str(&format!(" {name}"));
+    }
+    let (before, after, detail) = (
+        text_of(edit, "before"),
+        text_of(edit, "after"),
+        text_of(edit, "detail"),
+    );
+    if detailed && !before.is_empty() && !after.is_empty() {
+        text.push_str(&format!(" (was `{before}`, now `{after}`)"));
+    } else if detailed && !after.is_empty() {
+        text.push_str(&format!(" (added `{after}`)"));
+    } else if detailed && !before.is_empty() {
+        text.push_str(&format!(" (removed `{before}`)"));
+    } else if detailed && !detail.is_empty() {
+        text.push_str(&format!(" [{detail}]"));
+    }
+    text
+}
+
+/// Prompt-friendly text rendering of a semantic diff (ports `render_semantic_diff`).
+pub fn render_semantic_diff(records: &[Value], detailed: bool, max_chars: Option<usize>) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for record in records {
+        let path = text_of(record, "path");
+        let commit = text_of(record, "commit");
+        if present(record.get("unreviewed").unwrap_or(&Value::Null)) {
+            lines.push(format!(
+                "{path} @{commit}: not semantically reviewed ({})",
+                text_of(record, "unreviewed")
+            ));
+            continue;
+        }
+        let old_path = text_of(record, "old_path");
+        let rename = if old_path.is_empty() {
+            String::new()
+        } else {
+            format!(" (renamed from {old_path})")
+        };
+        let language = Some(text_of(record, "language"))
+            .filter(|l| !l.is_empty())
+            .unwrap_or("text");
+        let lifecycle = match record.get("lifecycle") {
+            Some(Value::String(s)) => s.clone(),
+            _ => "None".into(),
+        };
+        lines.push(format!(
+            "{path}{rename} ({language}, {lifecycle}) @{commit}:"
+        ));
+        let changes = record
+            .get("changes")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for entry in &changes {
+            let mut header = text_of(entry, "group").to_owned();
+            let refactoring = text_of(entry, "refactoring");
+            if !refactoring.is_empty() {
+                header.push_str(&format!(" {refactoring}"));
+            }
+            let (symbol, old_symbol) = (text_of(entry, "symbol"), text_of(entry, "old_symbol"));
+            if !old_symbol.is_empty() && !symbol.is_empty() {
+                header.push_str(&format!(": {old_symbol} -> {symbol}"));
+            } else if !symbol.is_empty() {
+                header.push_str(&format!(" in {symbol}"));
+            }
+            let edits: Vec<String> = entry
+                .get("edits")
+                .and_then(Value::as_array)
+                .map(|edits| edits.iter().map(|e| render_edit(e, detailed)).collect())
+                .unwrap_or_default();
+            if edits.is_empty() {
+                lines.push(format!("  - {header}"));
+            } else {
+                lines.push(format!("  - {header}: {}", edits.join("; ")));
+            }
+        }
+        let count = |kind: &str| {
+            record
+                .get("group_counts")
+                .and_then(|c| c.get(kind))
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+        };
+        let ignored: Vec<String> = ["IGNORED_STYLE", "NOISE_SUPPRESSED"]
+            .iter()
+            .filter(|k| count(k) > 0)
+            .map(|k| format!("{}:{}", group_label(k), count(k)))
+            .collect();
+        if !ignored.is_empty() {
+            lines.push(format!(
+                "  - ignored as formatting/noise ({})",
+                ignored.join(", ")
+            ));
+        }
+        if changes.is_empty() && ignored.is_empty() {
+            let style_only = record
+                .get("style_only")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            lines.push(
+                if style_only {
+                    "  - no semantic change"
+                } else {
+                    "  - changed (no structural detail)"
+                }
+                .into(),
+            );
+        }
+        if let Some(rules) = record.get("guardrails").and_then(Value::as_array) {
+            if !rules.is_empty() {
+                let rules: Vec<&str> = rules.iter().filter_map(Value::as_str).collect();
+                lines.push(format!(
+                    "  - protected-config guardrails: {}",
+                    rules.join(", ")
+                ));
+            }
+        }
+    }
+    let text = lines.join("\n");
+    match max_chars {
+        Some(max) if text.chars().count() > max => {
+            let head: String = text.chars().take(max).collect();
+            let cut = match head.rfind('\n') {
+                Some(index) => head[..index].to_owned(),
+                None => head,
+            };
+            let remaining = text[cut.len()..].matches('\n').count();
+            format!("{cut}\n... ({remaining} more semantic diff line(s) omitted)")
+        }
+        _ => text,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
