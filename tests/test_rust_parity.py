@@ -573,3 +573,215 @@ def test_commit_intent_inference_is_still_delegated(tmp_path: Path):
     )
     assert result.returncode != 0
     assert "commit intent inference" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# draft suggest --preview (single strategy)
+# ---------------------------------------------------------------------------
+
+_SUGGEST_PLUGIN = r'''
+import json, os, sys
+request = json.load(sys.stdin)
+with open(os.environ["PARITY_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps(request, sort_keys=True) + "\n")
+evidence = request["evidence"]
+count = int(evidence.get("suggestion_count") or 1)
+title = evidence.get("title", "change")
+if count > 1:
+    content = "\n".join(
+        f"{i}. Option {i} explains how {title} changes behaviour across {len(request['prompt'])} prompt characters."
+        for i in range(1, count + 1)
+    )
+else:
+    content = f"Explains how {title} changes behaviour, based on {len(request['prompt'])} prompt characters."
+print(json.dumps({"request_hash": request["request_hash"], "content": content, "confidence": 0.8, "model": "parity"}))
+'''
+
+_TIMING_KEYS = {"age_seconds", "created_at", "updated_at"}
+
+
+def _strip_timings(value, *, engine_identity: bool = False):
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if key.endswith("_ms") or key in _TIMING_KEYS or key == "tokens_per_second":
+                continue
+            if engine_identity and (
+                key in _ENGINE_DERIVED or key.endswith("_hash") or key.startswith("verlato_") or key == "audit"
+            ):
+                continue
+            out[key] = _strip_timings(item, engine_identity=engine_identity)
+        return out
+    if isinstance(value, list):
+        return [_strip_timings(item, engine_identity=engine_identity) for item in value]
+    return value
+
+
+def _trace_records(stderr: str, *, engine_identity: bool, skip_model_prefixes: tuple[str, ...] = ()) -> list:
+    import re
+
+    records: list = []
+    for line in stderr.splitlines():
+        if line.startswith(("[verlato:suggestion] json ", "[verlato:progress] json ")):
+            prefix, _, payload = line.partition(" json ")
+            event = json.loads(payload)
+            if event.get("stage") == "semantic_review":
+                continue  # commits are reviewed in parallel: completion order varies
+            records.append((prefix, _strip_timings(event, engine_identity=engine_identity)))
+        elif line.startswith("[verlato:model]"):
+            if any(line.startswith(f"[verlato:model] {prefix}") for prefix in skip_model_prefixes):
+                continue
+            records.append(("model", re.sub(r"\b(\w+_ms|tokens_per_second)=\S+", r"\1=*", line)))
+    return records
+
+
+def _suggest_setup(tmp_path: Path, engine: str, provider: str, server_port: int | None):
+    py_repo, rs_repo, env = _pair(tmp_path, engine)
+    env = {**env, "VERLATO_TRACE_PROGRESS": "1", "VERLATO_TRACE_MODEL_CALLS": "1"}
+    env.pop("VERLATO_MODEL_PROVIDER")
+    if provider == "plugin":
+        plugin = tmp_path / "suggest_plugin.py"
+        plugin.write_text(_SUGGEST_PLUGIN)
+        config = {
+            "provider": {
+                "name": "plugin",
+                "plugin_manifest": {"id": "parity", "display_name": "Parity plugin"},
+                "plugin_command": [sys.executable, str(plugin)],
+                "plugin_env": ["PARITY_LOG"],
+            },
+            "suggestion_style": {"guidance": "Name the user-visible effect.", "banned_phrases": ["synergy"]},
+        }
+    else:
+        env.update({
+            "VERLATO_OLLAMA_ENDPOINT": f"http://127.0.0.1:{server_port}/api/chat",
+            "VERLATO_OLLAMA_MODEL": "parity-model",
+        })
+        config = {"provider": {"name": "ollama"}}
+    for repo in (py_repo, rs_repo):
+        (repo / "verlato.json").write_text(json.dumps(config))
+    return py_repo, rs_repo, env
+
+
+def _ollama_suggest_handler():
+    from http.server import BaseHTTPRequestHandler
+
+    class Handler(BaseHTTPRequestHandler):
+        bodies: list[dict] = []
+
+        def do_POST(self):  # noqa: N802 - http.server API
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            Handler.bodies.append(body)
+            prompt = body["messages"][-1]["content"]
+            count = 3 if "Return exactly 3 distinct" in prompt else 1
+            title = prompt.split("Title: ", 1)[1].splitlines()[0]
+            if count > 1:
+                content = "\n".join(
+                    f"{i}. Variant {i} clarifies how {title} affects release readers ({len(prompt)} chars)."
+                    for i in range(1, count + 1)
+                )
+            else:
+                content = f"Clarifies how {title} affects release readers ({len(prompt)} chars of evidence)."
+            payload = json.dumps({
+                "message": {"role": "assistant", "content": content},
+                "done": True, "done_reason": "stop", "eval_count": 12, "prompt_eval_count": 50,
+                "total_duration": 9_000_000, "eval_duration": 4_000_000,
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    return Handler
+
+
+def _run_full(cmd: list[str], repo: Path, env: dict[str, str]) -> tuple[dict, str]:
+    result = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True, timeout=600)
+    assert result.returncode == 0, f"{cmd} failed: {result.stderr[-3000:]}"
+    return json.loads(result.stdout), result.stderr
+
+
+def _cache_file(repo: Path, *, engine_identity: bool) -> dict:
+    return _strip_timings(json.loads((repo / ".verlato_suggestion_cache.json").read_text()), engine_identity=engine_identity)
+
+
+@pytest.mark.parametrize("engine", ["git", "intentumdiff"])
+@pytest.mark.parametrize("provider", ["plugin", "ollama"])
+@pytest.mark.parametrize("count", [1, 3])
+def test_draft_suggest_preview_matches(tmp_path: Path, engine: str, provider: str, count: int):
+    handler = _ollama_suggest_handler()
+    server = _serve(handler) if provider == "ollama" else None
+    try:
+        py_repo, rs_repo, env = _suggest_setup(
+            tmp_path, engine, provider, server.server_address[1] if server else None
+        )
+        identity = engine != "git"
+        logs = {name: tmp_path / f"{name}.jsonl" for name in ("py", "rs")}
+        item_id = json.loads(_run(_python("scan", "--base", "v1.0.0"), py_repo, env))[0]["id"]
+        skip = ("response-detail",) if provider == "plugin" else ()
+        for args in (
+            ("draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preview", "--count", str(count)),
+            ("draft", "suggest", "--base", "v1.0.0", "--id", item_id, "--preview", "--count", str(count)),
+            ("draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preview", "--count", str(count)),  # cache hits
+        ):
+            outputs = {}
+            handler.bodies.clear()
+            py_out, py_err = _run_full(_python(*args), py_repo, {**env, "PARITY_LOG": str(logs["py"])})
+            py_bodies = list(handler.bodies)
+            handler.bodies.clear()
+            rs_out, rs_err = _run_full(_rust(*args), rs_repo, _native_only({**env, "PARITY_LOG": str(logs["rs"])}))
+            outputs = (_strip_timings(rs_out, engine_identity=identity), _strip_timings(py_out, engine_identity=identity))
+            assert outputs[0] == outputs[1], args
+            assert _trace_records(rs_err, engine_identity=identity, skip_model_prefixes=skip) == _trace_records(
+                py_err, engine_identity=identity, skip_model_prefixes=skip
+            ), args
+            assert handler.bodies == py_bodies
+        assert rs_out["items"] and all(item["cache"]["hit"] for item in rs_out["items"])
+        assert all(len(item["suggestions"]) == count for item in rs_out["items"])
+        compare = _strip_engine_identity if identity else (lambda value: value)
+        assert compare(_read_log(logs["rs"])) == compare(_read_log(logs["py"]))
+        assert _cache_file(rs_repo, engine_identity=identity) == _cache_file(py_repo, engine_identity=identity)
+    finally:
+        if server:
+            server.shutdown()
+
+
+def test_draft_suggest_preflight_and_parallelism_match(tmp_path: Path):
+    handler = _ollama_suggest_handler()
+    server = _serve(handler)
+    try:
+        py_repo, rs_repo, env = _suggest_setup(tmp_path, "git", "ollama", server.server_address[1])
+        for args in (
+            ("draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preflight"),
+            ("draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preview", "--parallelism", "3", "--no-cache"),
+            ("draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preview", "--tone", "concise",
+             "--prompt-profile", "lean", "--suggest-model", "other-model", "--refresh-cache"),
+        ):
+            py_out, _ = _run_full(_python(*args), py_repo, env)
+            rs_out, _ = _run_full(_rust(*args), rs_repo, _native_only(env))
+            assert _strip_timings(rs_out) == _strip_timings(py_out), args
+        assert rs_out["effective_suggest_model"] == "other-model"
+    finally:
+        server.shutdown()
+
+
+def test_draft_suggest_batched_strategy_is_delegated(tmp_path: Path):
+    _, rs_repo, env = _pair(tmp_path, "git")
+    for args, reason in (
+        (("--strategy", "full-diff-json", "--model-provider", "litellm", "--privacy", "trusted-provider-patch"),
+         "full-diff-json suggestion strategy"),
+        (("--model-provider", "ollama", "--allow-remote-patches"), "tool-retrieval suggestion strategy"),
+        (("--model-provider", "mock", "--adaptive-recommendations"), "adaptive suggestion recommendations"),
+    ):
+        result = subprocess.run(
+            _rust("draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preview", *args),
+            cwd=rs_repo,
+            env=_native_only(env),
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0, args
+        assert "not available in the Rust build yet" in result.stderr and reason in result.stderr, result.stderr

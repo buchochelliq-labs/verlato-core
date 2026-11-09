@@ -1107,7 +1107,7 @@ fn parse_classification(content: &str) -> Option<(String, String, String, String
     ))
 }
 
-fn summary_rejection(content: &str, title: &str, group: &ChangeGroup) -> Option<&'static str> {
+pub fn summary_rejection(content: &str, title: &str, group: &ChangeGroup) -> Option<&'static str> {
     let normalized = content.trim();
     if normalized.is_empty() {
         return Some("empty");

@@ -36,7 +36,8 @@ About 16k lines of Python (plus ~7k lines of tests):
 | Editor stdio service (deterministic methods) | `service_stdio.py`, parts of `mcp/service.py` | ~0.5k | **Ported**; other methods proxied |
 | Model providers: stub, mock, Ollama (incl. streaming), LiteLLM, GitHub Models, plugin, Codex/Claude CLI, fallback chains; request audits, privacy records, OTEL-style model logs | `providers/*`, `core/model_privacy.py` | ~2.4k | **Ported** (Ollama tool calling stays in Python with the suggestion strategies) |
 | Classifier model assists (summary rewrite, diff-fallback classification, change-summary payload) | parts of `core/classifier.py`, `core/change_summary.py` | ~0.6k | **Ported** |
-| Suggestions (prompts, batching, cache, retrieval tools, adaptive recommendations) | `cli/main.py` (most of it), `core/suggestion_tools.py`, `state/suggestion_cache.py`, `core/change_summary.py` | ~4.5k | Delegated |
+| Suggestions: prompt preview, single-strategy `--preview`/`--preflight`, JSON cache, scoring, traces | `cli/main.py` (parts), `state/suggestion_cache.py` (JSON), `core/change_summary.py` | ~2.5k | **Ported** |
+| Suggestions: batched strategies (paired, full-diff-json), tool retrieval, non-JSON (plugin-registered) cache backends, adaptive recommendations, applying a suggestion (`draft suggest` without `--preview`) | `cli/main.py` (parts), `core/suggestion_tools.py` | ~2k | Delegated |
 | Commit intent inference and Conventional Commit drafting | `core/commit_intent.py` | ~1.1k | Delegated |
 | MCP server (FastMCP) | `mcp/server.py` | ~0.7k | Delegated |
 | GitHub API PR adapter | `github/adapter.py` | ~0.1k | Delegated |
@@ -53,6 +54,7 @@ The native binary handles these command paths itself:
 scan | generate | reconcile          (with any model provider; see below)
 draft json | preview | apply | review (including --model-provider)
 draft prompt
+draft suggest --preview | --preflight (single strategy, JSON cache; see below)
 render
 state show | mark-published | clear-working
 feedback record
@@ -61,7 +63,7 @@ service                              (health, info, draft.* incl. model provider
 ```
 
 Everything else is delegated to the Python implementation with the original arguments:
-`draft suggest`, `commit conventional`, `doctor ollama|model`, `serve` (MCP),
+the rest of `draft suggest` (see below), `commit conventional`, `doctor ollama|model`, `serve` (MCP),
 `model-logs`, `feedback export|recommend`, `state clear-suggestion-cache`, and the
 `suggestion.*` / `commit.*` service methods (proxied to a lazily started Python service).
 
@@ -73,6 +75,15 @@ recording plugin, fake Ollama (plain and streaming), OpenAI-compatible and GitHu
 fake Codex/Claude executables, and the deterministic mock provider (which reproduces Python's
 Mersenne Twister). A native command is still delegated for commit intent inference and the
 `github` PR adapter.
+
+`draft suggest --preview`/`--preflight` runs natively when the effective strategy is `single`:
+`--strategy single`, or `auto`/`paired`/`full-diff-json`/`tool-retrieval` whenever the privacy
+mode doesn't let the provider see source content (the default `metadata-only`), because Python
+downgrades those to `single`. It is delegated for a strategy that stays batched or uses tool
+retrieval, a non-JSON cache backend, adaptive recommendations, and without `--preview`/`--preflight`
+(which applies the suggestion to review state). The parity suite compares outputs, cache files,
+recorded model requests and trace lines against Python for both engines, a recording plugin and a
+fake Ollama server.
 
 The Python CLI is found through `VERLATO_PYTHON_CLI` (a path to `verlato-py` or a command line
 such as `python3 -m verlato.cli`), then `verlato-py` on `PATH`. The Python package installs
@@ -150,8 +161,13 @@ evidence without depending on patch text.
 1. **Providers** (done): the `Provider` trait, request/prompt/evidence hashes (byte-identical
    canonical JSON), privacy records, every provider, fallback chains, model telemetry and the
    classifier's model assists.
-2. **Suggestions**: prompt construction and budgets, batching strategies, the suggestion cache,
-   retrieval tools, telemetry events (`[verlato:suggestion]`), `draft suggest|prompt`.
+2. **Suggestions** (in progress): done: `draft prompt`, and `draft suggest --preview`/`--preflight`
+   for the single strategy (target selection, fan-out guard, prompt budgets, the JSON cache with
+   the same file format and lock, candidate parsing and filters, parallel workers, and the
+   `[verlato:suggestion]`/`[verlato:model]`/progress traces). Next: the paired and full-diff-json
+   batch strategies, tool retrieval (Ollama tool calling and `core/suggestion_tools.py`), the
+   registered non-JSON cache backends, adaptive recommendations and applying a suggestion to
+   review state.
 3. **Commit intents**: inference and Conventional Commit drafting (`commit conventional`).
 4. **MCP server** with the same tools/resources/prompts (e.g. `rmcp`), and the GitHub adapter.
 5. **Retire Python**: remove delegation, ship the extension with the native binary and parser

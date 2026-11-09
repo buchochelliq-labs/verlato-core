@@ -21,6 +21,7 @@ const NATIVE: &[&[&str]] = &[
     &["draft", "apply"],
     &["draft", "review"],
     &["draft", "prompt"],
+    &["draft", "suggest"],
     &["state", "show"],
     &["state", "mark-published"],
     &["state", "clear-working"],
@@ -154,6 +155,47 @@ enum DraftCommand {
         summary_provenance_json: Option<String>,
         #[arg(long)]
         reviewer: Option<String>,
+        #[command(flatten)]
+        model: ModelArgs,
+    },
+    /// Model suggestions for draft items (native for the single strategy with `--preview`).
+    Suggest {
+        #[command(flatten)]
+        range: RangeArgs,
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long)]
+        all_visible: bool,
+        #[arg(long)]
+        preview: bool,
+        /// Build planned AI request envelopes without calling the provider.
+        #[arg(long)]
+        preflight: bool,
+        #[arg(long)]
+        count: Option<i64>,
+        #[arg(long)]
+        parallelism: Option<i64>,
+        #[arg(long)]
+        batch_size: Option<i64>,
+        #[arg(long, value_parser = ["auto", "single", "paired", "full-diff-json", "tool-retrieval"])]
+        strategy: Option<String>,
+        #[arg(long, value_parser = ["conservative", "lean", "minimal"])]
+        prompt_profile: Option<String>,
+        #[arg(long)]
+        adaptive_recommendations: bool,
+        #[arg(long)]
+        suggest_model: Option<String>,
+        #[arg(long)]
+        no_cache: bool,
+        #[arg(long)]
+        refresh_cache: bool,
+        #[arg(long, value_parser = ["release-note", "concise", "technical", "customer-facing"])]
+        tone: Option<String>,
+        #[arg(long)]
+        reviewer: Option<String>,
+        /// Emit compact suggestion lifecycle trace logs for this invocation.
+        #[arg(long)]
+        trace_suggestions: bool,
         #[command(flatten)]
         model: ModelArgs,
     },
@@ -358,6 +400,66 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
                 let document = draft(&ctx, &args)?;
                 json_out(&ctx.apply_draft(&document, &target, file.as_deref())?)?;
             }
+            DraftCommand::Suggest {
+                range,
+                id,
+                all_visible,
+                preview,
+                preflight,
+                count,
+                parallelism,
+                batch_size: _,
+                strategy,
+                prompt_profile,
+                adaptive_recommendations,
+                suggest_model,
+                no_cache,
+                refresh_cache,
+                tone,
+                reviewer: _,
+                trace_suggestions,
+                model,
+            } => {
+                if let Some(code) = delegate_if(python_reason(&ctx, Some(&model))) {
+                    return code;
+                }
+                let args = verlato::suggest::SuggestArgs {
+                    item_id: id,
+                    all_visible,
+                    count,
+                    parallelism,
+                    strategy,
+                    prompt_profile,
+                    suggest_model,
+                    no_cache,
+                    refresh_cache,
+                    adaptive_recommendations,
+                    preflight,
+                    options: verlato::suggest::SuggestOptions {
+                        model_provider: model.model_provider.clone(),
+                        tone,
+                        privacy: model.privacy.clone(),
+                        allow_remote_patches: model.allow_remote_patches,
+                    },
+                };
+                if let Some(code) =
+                    delegate_if(verlato::suggest::python_reason(&ctx, &args, preview)?)
+                {
+                    return code;
+                }
+                if trace_suggestions {
+                    std::env::set_var("VERLATO_TRACE_MODEL_CALLS", "1");
+                }
+                let (base, head) = ctx.resolve_range(
+                    range.base.as_deref(),
+                    &range.head,
+                    range.from_latest_tag,
+                    range.from_latest_published,
+                )?;
+                json_out(&verlato::suggest::preview_suggestions(
+                    &ctx, &base, &head, &args,
+                )?)?;
+            }
             DraftCommand::Prompt {
                 range,
                 id,
@@ -539,8 +641,13 @@ mod tests {
             "draft", "json", "--base", "v1"
         ]))));
         assert!(is_native(&command_path(&args(&["scan", "--base", "v1"]))));
-        assert!(!is_native(&command_path(&args(&[
+        // `draft suggest` is parsed natively; unported strategies/flags delegate at run time.
+        assert!(is_native(&command_path(&args(&[
             "draft", "suggest", "--base", "v1"
+        ]))));
+        assert!(!is_native(&command_path(&args(&[
+            "state",
+            "clear-suggestion-cache"
         ]))));
         assert!(!is_native(&command_path(&args(&[
             "commit",

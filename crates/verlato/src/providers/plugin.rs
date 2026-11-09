@@ -95,7 +95,7 @@ impl PluginProvider {
         }
     }
 
-    fn model_for_task(&self, task: &str) -> &str {
+    fn task_model(&self, task: &str) -> &str {
         match (&self.suggest_model, task) {
             (Some(model), "suggest") => model,
             _ => &self.model,
@@ -107,7 +107,7 @@ impl PluginProvider {
     }
 
     fn invoke(&self, task: &str, request: &ProviderRequest) -> ProviderResponse {
-        let model = self.model_for_task(task).to_owned();
+        let model = self.task_model(task).to_owned();
         if self.command.is_empty() {
             return ProviderResponse::error(
                 "[plugin-unavailable] no command configured".into(),
@@ -287,6 +287,22 @@ fn trim_text(text: &str) -> String {
 }
 
 impl Provider for PluginProvider {
+    fn class_name(&self) -> &'static str {
+        "ExternalModelPluginProvider"
+    }
+
+    fn model(&self) -> Option<String> {
+        Some(self.model.clone())
+    }
+
+    fn suggest_model(&self) -> Option<String> {
+        self.suggest_model.clone()
+    }
+
+    fn model_for_task(&self, task: &str) -> Option<String> {
+        Some(self.task_model(task).to_owned())
+    }
+
     fn summarize(&self, request: &ProviderRequest) -> ProviderResponse {
         self.invoke(summarize_task(&request.task), request)
     }

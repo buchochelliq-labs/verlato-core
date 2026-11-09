@@ -54,6 +54,33 @@ impl ProviderResponse {
 pub trait Provider: Send + Sync {
     fn summarize(&self, request: &ProviderRequest) -> ProviderResponse;
     fn classify(&self, request: &ProviderRequest) -> ProviderResponse;
+
+    /// The provider's `model` attribute, when it has one (Python `getattr(provider, "model")`).
+    fn model(&self) -> Option<String> {
+        None
+    }
+
+    /// The provider's `suggest_model` attribute, when it has one.
+    fn suggest_model(&self) -> Option<String> {
+        None
+    }
+
+    /// `provider.model_for_task(task)`, for providers that route tasks to models.
+    fn model_for_task(&self, _task: &str) -> Option<String> {
+        None
+    }
+
+    /// The Python class name, used where Python falls back to `provider.__class__.__name__`.
+    fn class_name(&self) -> &'static str;
+}
+
+/// `_provider_effective_model`: the model a task would use.
+pub fn effective_model(provider: &dyn Provider, task: &str) -> String {
+    provider
+        .model_for_task(task)
+        .filter(|m| !m.is_empty())
+        .or_else(|| provider.model().map(|m| m.trim().to_owned()))
+        .unwrap_or_default()
 }
 
 /// Error markers Verlato's providers put at the start of `content` when a call failed.
@@ -143,6 +170,10 @@ pub fn summarize_task(task: &str) -> &str {
 pub struct StubProvider;
 
 impl Provider for StubProvider {
+    fn class_name(&self) -> &'static str {
+        "StubProvider"
+    }
+
     fn summarize(&self, _request: &ProviderRequest) -> ProviderResponse {
         ProviderResponse {
             content: String::new(),
@@ -210,6 +241,14 @@ fn is_fallback_failure(content: &str) -> bool {
 }
 
 impl Provider for FallbackProvider {
+    fn class_name(&self) -> &'static str {
+        "FallbackProvider"
+    }
+
+    fn model(&self) -> Option<String> {
+        Some("fallback-chain".into())
+    }
+
     fn summarize(&self, request: &ProviderRequest) -> ProviderResponse {
         self.invoke(|p| p.summarize(request))
     }
@@ -448,18 +487,39 @@ fn selected_mode(config: &ProviderConfig, mode: Option<&str>) -> String {
 }
 
 pub fn build_provider(config: &ProviderConfig, mode: Option<&str>) -> Box<dyn Provider> {
-    let primary = build_single(config, mode);
+    build_provider_with(config, mode, None)
+}
+
+/// `build_provider(config, mode=..., suggest_model=...)`: an explicit `suggest_model` (even an
+/// empty one) overrides the configured/env suggest model of Ollama, LiteLLM and plugin providers.
+pub fn build_provider_with(
+    config: &ProviderConfig,
+    mode: Option<&str>,
+    suggest_model: Option<&str>,
+) -> Box<dyn Provider> {
+    let primary = build_single(config, mode, suggest_model);
     if config.fallbacks.is_empty() {
         return primary;
     }
     let mut providers = vec![primary];
     for raw in &config.fallbacks {
-        providers.push(build_single(&config.fallback(raw), None));
+        providers.push(build_single(&config.fallback(raw), None, suggest_model));
     }
     Box::new(FallbackProvider { providers })
 }
 
-fn build_single(config: &ProviderConfig, mode: Option<&str>) -> Box<dyn Provider> {
+fn build_single(
+    config: &ProviderConfig,
+    mode: Option<&str>,
+    suggest_override: Option<&str>,
+) -> Box<dyn Provider> {
+    let override_or = |env: Option<String>, configured: &Option<String>| match suggest_override {
+        Some(explicit) => normalize_optional(Some(explicit.to_owned())),
+        None => match env {
+            Some(raw) => normalize_optional(Some(raw)),
+            None => normalize_optional(configured.clone()),
+        },
+    };
     let mode = selected_mode(config, mode);
     let named = |names: &[&str]| names.contains(&config.name.to_lowercase().as_str());
     match mode.as_str() {
@@ -483,10 +543,10 @@ fn build_single(config: &ProviderConfig, mode: Option<&str>) -> Box<dyn Provider
                         .then(|| config.model.clone())
                         .flatten()
                 });
-            let suggest_model = match env_text("VERLATO_PLUGIN_SUGGEST_MODEL") {
-                Some(raw) => normalize_optional(Some(raw)),
-                None => normalize_optional(config.suggest_model.clone()),
-            };
+            let suggest_model = override_or(
+                env_text("VERLATO_PLUGIN_SUGGEST_MODEL"),
+                &config.suggest_model,
+            );
             Box::new(PluginProvider::new(
                 &config.plugin_manifest,
                 command,
@@ -505,10 +565,10 @@ fn build_single(config: &ProviderConfig, mode: Option<&str>) -> Box<dyn Provider
                         .then(|| config.model.clone())
                         .flatten()
                 });
-            let suggest_model = match env_text("VERLATO_LITELLM_SUGGEST_MODEL") {
-                Some(raw) => normalize_optional(Some(raw)),
-                None => normalize_optional(config.suggest_model.clone()),
-            };
+            let suggest_model = override_or(
+                env_text("VERLATO_LITELLM_SUGGEST_MODEL"),
+                &config.suggest_model,
+            );
             Box::new(LiteLlmProvider::new(
                 env_text("VERLATO_LITELLM_ENDPOINT").or_else(|| config.endpoint.clone()),
                 model,
@@ -548,10 +608,10 @@ fn build_single(config: &ProviderConfig, mode: Option<&str>) -> Box<dyn Provider
                 Some(raw) if !raw.trim().is_empty() => raw.trim().parse().ok().or(fallback),
                 _ => fallback,
             };
-            let suggest_model = match env_text("VERLATO_OLLAMA_SUGGEST_MODEL") {
-                Some(raw) => normalize_optional(Some(raw)),
-                None => normalize_optional(config.suggest_model.clone()),
-            };
+            let suggest_model = override_or(
+                env_text("VERLATO_OLLAMA_SUGGEST_MODEL"),
+                &config.suggest_model,
+            );
             Box::new(OllamaProvider::new(OllamaSettings {
                 endpoint: env_text("VERLATO_OLLAMA_ENDPOINT").or_else(|| config.endpoint.clone()),
                 model: env_text("VERLATO_OLLAMA_MODEL").or_else(|| config.model.clone()),

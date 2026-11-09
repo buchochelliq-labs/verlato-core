@@ -24,4 +24,5 @@ pub mod semantic;
 pub mod service;
 pub mod store;
 pub mod suggest;
+pub mod suggestion_cache;
 pub mod vocab;

@@ -273,7 +273,7 @@ impl Context {
         Ok(unpublished)
     }
 
-    fn merge_review_state(&self, items: Vec<ChangeItem>) -> Result<Vec<ChangeItem>> {
+    pub fn merge_review_state(&self, items: Vec<ChangeItem>) -> Result<Vec<ChangeItem>> {
         let existing = self.store().load()?.items;
         let total = items.len();
         if total == 0 {
