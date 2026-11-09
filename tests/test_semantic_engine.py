@@ -207,6 +207,49 @@ def test_literals_reach_prompts_only_at_the_detailed_level():
     )
 
 
+def test_meaningful_edits_carry_source_snippets_only_at_the_detailed_level():
+    def pos(line, start, end):
+        return NS(start_line=line, start_col=start, end_line=line, end_col=end)
+
+    old_source = "def paginate(page, per_page):\n    start = page * per_page + 1\n    return start\n"
+    new_source = "def paginate(page, per_page):\n    start = page * per_page\n    return start\n"
+    old_assign = node("start", "assignment", definition=False)
+    old_assign.position = pos(1, 4, 31)
+    new_assign = node("start", "assignment", definition=False)
+    new_assign.position = pos(1, 4, 27)
+    moved_old = node("page", "binary_operator", definition=False)
+    moved_old.position = pos(1, 12, 27)
+    moved_new = node("page", "binary_operator", definition=False)
+    moved_new.position = pos(1, 12, 27)
+    changes = [change("MODIFICATION", old=old_assign, new=new_assign), change("MOVE", old=moved_old, new=moved_new)]
+    groups = [group("MEANINGFUL_CHANGE", [0], ["paginate"], ["paginate"]), group("MOVED_CODE", [1], ["page"], ["page"])]
+    digest_ = digest_file_diff(file_diff(changes, groups), path="shop/pagination.py", old_path="shop/pagination.py",
+                               old_content=old_source, new_content=new_source)
+    # The moved `page * per_page` lies inside the modified assignment: it is part of that edit.
+    (meaningful,) = digest_.changes
+    assert digest_.group_counts == {"MEANINGFUL_CHANGE": 1, "MOVED_CODE": 1}
+    assert meaningful["edits"][0]["before"] == "start = page * per_page + 1"
+    assert meaningful["edits"][0]["after"] == "start = page * per_page"
+
+    records = build_semantic_diff([semantic_commit("c1", "fix stuff", digest_)])
+    assert "+ 1" not in json.dumps(semantic_diff_for_prompt(records, detailed=False))
+    assert "+ 1" not in render_semantic_diff(records, detailed=False)
+    assert "modification assignment start (was `start = page * per_page + 1`, now `start = page * per_page`)" in (
+        render_semantic_diff(records, detailed=True)
+    )
+
+    # Without file contents (old cache entries, fakes) the digest has no snippets.
+    plain = digest_file_diff(file_diff(changes, groups), path="shop/pagination.py", old_path="shop/pagination.py")
+    assert "before" not in plain.changes[0]["edits"][0]
+
+    # A real move (outside any meaningful edit) is kept, without snippets.
+    moved_old.position = pos(5, 0, 15)
+    kept = digest_file_diff(file_diff(changes, groups), path="shop/pagination.py", old_path="shop/pagination.py",
+                            old_content=old_source, new_content=new_source)
+    assert [entry["group"] for entry in kept.changes] == ["meaningful", "moved"]
+    assert "before" not in kept.changes[1]["edits"][0]
+
+
 def test_whole_file_additions_without_groups_count_as_meaningful():
     digest_ = digest_file_diff(
         file_diff([change("ADDITION", new=node("root", "document", definition=False))], [], language="yaml",

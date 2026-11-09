@@ -253,6 +253,7 @@ impl Engine {
                             filename,
                             &change.old_path,
                             Some(lifecycle),
+                            Some((&old, &new)),
                         )),
                         Err(error) => Outcome::Unreviewed(UnreviewedFile {
                             path: filename.clone(),

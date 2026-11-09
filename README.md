@@ -105,8 +105,11 @@ instead of `patch`.
 
 The privacy mode decides the detail level. Under the default `metadata-only` mode the semantic diff carries structure
 and identifier names only. Modes that used to allow raw patches (`local-summary-then-ai` with a local model,
-`trusted-provider-patch`) additionally include IntentumDiff's change descriptions, which can contain literal values
-(e.g. `[30 -> 60]`). Raw patches are only sent with the legacy `diff_engine: "git"`. Prompt budgets and model request
+`trusted-provider-patch`) additionally include IntentumDiff's change descriptions and, for meaningful edits, the
+changed statement's source before and after (bounded to 120 characters), for example
+`` modification assignment start (was `start = page * per_page + 1`, now `start = page * per_page`) ``. Moved
+sub-expressions inside a meaningful edit are folded into that edit instead of being listed as moves. Raw patches are
+only sent with the legacy `diff_engine: "git"`. Prompt budgets and model request
 records report `evidence_source` and `semantic_diff_detail`.
 
 Engine selection: `diff_engine` in `verlato.json`, `VERLATO_DIFF_ENGINE`, `verlato --diff-engine`, or the

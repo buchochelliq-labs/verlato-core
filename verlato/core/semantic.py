@@ -39,7 +39,7 @@ from verlato.core.areas import is_test_path
 
 DIFF_ENGINE_CHOICES = ("intentumdiff", "git")
 DEFAULT_DIFF_ENGINE = "intentumdiff"
-SEMANTIC_DIGEST_VERSION = "v2"
+SEMANTIC_DIGEST_VERSION = "v3"
 DEFAULT_SEMANTIC_CACHE_PATH = ".verlato_semantic_cache.json"
 INTENTUMDIFF_INSTALL_HINT = "pip install --pre intentumdiff-python"
 
@@ -53,6 +53,10 @@ MAX_REASON_CHARS = 240
 MAX_SEMANTIC_ENTRIES_PER_FILE = 40
 MAX_SEMANTIC_EDITS_PER_ENTRY = 4
 MAX_SEMANTIC_DETAIL_CHARS = 160
+# Source text of a meaningful edit's old/new node (``before``/``after``), whitespace-collapsed.
+MAX_SEMANTIC_SNIPPET_CHARS = 120
+# Edit fields that can contain source content: kept only at the detailed privacy level.
+SOURCE_EDIT_KEYS = frozenset({"detail", "before", "after"})
 SEMANTIC_DIFF_GROUPS = {
     "MEANINGFUL_CHANGE": "meaningful",
     "REFACTORING": "refactoring",
@@ -287,7 +291,7 @@ def semantic_diff_for_prompt(records: list[dict[str, Any]], *, detailed: bool) -
                     kept = {
                         key: value
                         for key, value in edit.items()
-                        if value not in (None, "") and (detailed or key != "detail")
+                        if value not in (None, "") and (detailed or key not in SOURCE_EDIT_KEYS)
                     }
                     edits.append(kept)
                 header = {key: value for key, value in entry.items() if key != "edits" and value not in (None, "")}
@@ -305,7 +309,13 @@ def _render_edit(edit: dict[str, Any], *, detailed: bool) -> str:
         text += f" {edit['old_name']} -> {edit['name']}"
     elif edit.get("name"):
         text += f" {edit['name']}"
-    if detailed and edit.get("detail"):
+    if detailed and edit.get("before") and edit.get("after"):
+        text += f" (was `{edit['before']}`, now `{edit['after']}`)"
+    elif detailed and edit.get("after"):
+        text += f" (added `{edit['after']}`)"
+    elif detailed and edit.get("before"):
+        text += f" (removed `{edit['before']}`)"
+    elif detailed and edit.get("detail"):
         text += f" [{edit['detail']}]"
     return text
 
@@ -644,20 +654,120 @@ def _change_detail(change: Any) -> str:
     return detail[:MAX_SEMANTIC_DETAIL_CHARS]
 
 
-def semantic_diff_entries(changes: list[Any], groups: list[Any]) -> list[dict[str, Any]]:
+def _source_lines(content: Any) -> list[bytes] | None:
+    if isinstance(content, str):
+        return content.encode("utf-8").splitlines()
+    if isinstance(content, bytes):
+        return content.splitlines()
+    return None
+
+
+def _node_source(node: Any, lines: list[bytes] | None) -> str | None:
+    """Whitespace-collapsed source text of ``node`` (engine positions are 0-based lines and
+    byte columns), bounded to ``MAX_SEMANTIC_SNIPPET_CHARS``."""
+
+    position = getattr(node, "position", None) if node is not None else None
+    if position is None or lines is None:
+        return None
+    try:
+        start_line, end_line = int(position.start_line), int(position.end_line)
+        start_col, end_col = int(position.start_col), int(position.end_col)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not 0 <= start_line <= end_line < len(lines):
+        return None
+    if start_line == end_line:
+        raw = lines[start_line][start_col:end_col]
+    else:
+        raw = b"\n".join([lines[start_line][start_col:], *lines[start_line + 1:end_line], lines[end_line][:end_col]])
+    text = " ".join(raw.decode("utf-8", errors="replace").split())
+    if not text:
+        return None
+    if len(text) > MAX_SEMANTIC_SNIPPET_CHARS:
+        text = text[: MAX_SEMANTIC_SNIPPET_CHARS - 3].rstrip() + "..."
+    return text
+
+
+_Span = tuple[tuple[int, int], tuple[int, int]]
+
+
+def _node_span(node: Any) -> _Span | None:
+    position: Any = getattr(node, "position", None) if node is not None else None
+    if position is None:
+        return None
+    try:
+        return (
+            (int(position.start_line), int(position.start_col)),
+            (int(position.end_line), int(position.end_col)),
+        )
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _inside(span: _Span | None, containers: list[_Span]) -> bool:
+    return span is not None and any(outer[0] <= span[0] and span[1] <= outer[1] for outer in containers)
+
+
+def _group_changes(group: Any, changes: list[Any]) -> list[Any]:
+    return [
+        changes[index]
+        for index in getattr(group, "raw_change_indices", []) or []
+        if isinstance(index, int) and 0 <= index < len(changes)
+    ]
+
+
+def _is_moved_within_meaningful(group_changes: list[Any], old_spans: list[_Span], new_spans: list[_Span]) -> bool:
+    """A moved sub-expression whose old and new nodes lie inside meaningful edits (e.g. the
+    ``page * per_page`` left behind when ``+ 1`` is removed) is part of that edit, not a move."""
+
+    if not group_changes:
+        return False
+    for change in group_changes:
+        old_node = getattr(change, "old_node", None)
+        new_node = getattr(change, "new_node", None)
+        if old_node is not None and not _inside(_node_span(old_node), old_spans):
+            return False
+        if new_node is not None and not _inside(_node_span(new_node), new_spans):
+            return False
+    return True
+
+
+def semantic_diff_entries(
+    changes: list[Any],
+    groups: list[Any],
+    old_content: Any = None,
+    new_content: Any = None,
+) -> list[dict[str, Any]]:
     """IntentumDiff's review-level changes as compact semantic-diff entries.
 
     One entry per meaningful / refactoring / moved group: the enclosing definition (when the
     engine labels one), the refactoring kind, and up to a few edits with their change type,
     node type, identifier name and the engine's change description (``detail``). ``detail`` can
-    contain literal values; prompt builders drop it unless the privacy mode allows source
-    content. Style and noise groups are counted in ``group_counts`` only.
+    contain literal values. Meaningful edits also carry the bounded source text of the old and
+    new node (``before``/``after``) when the file contents are given, so a model can see what an
+    expression changed to. Prompt builders drop ``detail``, ``before`` and ``after`` unless the
+    privacy mode allows source content. Style and noise groups are counted in ``group_counts``
+    only, and moved sub-expressions inside a meaningful edit are folded into that edit.
     """
 
+    old_lines = _source_lines(old_content)
+    new_lines = _source_lines(new_content)
+    old_spans: list[_Span] = []
+    new_spans: list[_Span] = []
+    for group in groups:
+        if SEMANTIC_DIFF_GROUPS.get(_enum_value(getattr(group, "kind", ""))) != "meaningful":
+            continue
+        for change in _group_changes(group, changes):
+            for span, spans in ((_node_span(getattr(change, "old_node", None)), old_spans),
+                                (_node_span(getattr(change, "new_node", None)), new_spans)):
+                if span is not None:
+                    spans.append(span)
     entries: list[dict[str, Any]] = []
     for group in groups:
         group_name = SEMANTIC_DIFF_GROUPS.get(_enum_value(getattr(group, "kind", "")))
         if group_name is None:
+            continue
+        if group_name == "moved" and _is_moved_within_meaningful(_group_changes(group, changes), old_spans, new_spans):
             continue
         labels = list(getattr(group, "new_labels", None) or getattr(group, "old_labels", None) or [])
         old_labels = list(getattr(group, "old_labels", None) or [])
@@ -679,6 +789,14 @@ def semantic_diff_entries(changes: list[Any], groups: list[Any]) -> list[dict[st
                 old_name = _node_identifier(old_node)
                 if old_name and old_name != edit["name"]:
                     edit["old_name"] = old_name
+            if group_name == "meaningful":
+                before = _node_source(old_node, old_lines)
+                after = _node_source(new_node, new_lines)
+                if before != after:
+                    if before:
+                        edit["before"] = before
+                    if after:
+                        edit["after"] = after
             edits.append(edit)
             if len(edits) >= MAX_SEMANTIC_EDITS_PER_ENTRY:
                 break
@@ -719,7 +837,14 @@ def semantic_diff_entries(changes: list[Any], groups: list[Any]) -> list[dict[st
     return entries
 
 
-def digest_file_diff(file_diff: Any, *, path: str, old_path: str) -> FileSemantics:
+def digest_file_diff(
+    file_diff: Any,
+    *,
+    path: str,
+    old_path: str,
+    old_content: Any = None,
+    new_content: Any = None,
+) -> FileSemantics:
     """Reduce an IntentumDiff ``SemanticDiff`` to Verlato's privacy-safe digest."""
 
     changes = list(getattr(file_diff, "changes", []) or [])
@@ -816,7 +941,7 @@ def digest_file_diff(file_diff: Any, *, path: str, old_path: str) -> FileSemanti
         for violation in getattr(file_diff, "guardrail_violations", []) or []
     ]
     metadata = dict(getattr(file_diff, "metadata", {}) or {})
-    semantic_changes = semantic_diff_entries(changes, groups)
+    semantic_changes = semantic_diff_entries(changes, groups, old_content, new_content)
     return FileSemantics(
         path=path,
         old_path=old_path,
@@ -1132,7 +1257,15 @@ def review_commit(
                 continue
             new_path = str(getattr(result, "new_path", "") or getattr(file_diff, "new_filename", ""))
             old_path = str(getattr(result, "old_path", "") or getattr(file_diff, "old_filename", new_path))
-            digest.files.append(digest_file_diff(file_diff, path=new_path, old_path=old_path))
+            digest.files.append(
+                digest_file_diff(
+                    file_diff,
+                    path=new_path,
+                    old_path=old_path,
+                    old_content=getattr(result, "old_content", None),
+                    new_content=getattr(result, "new_content", None),
+                )
+            )
             if (
                 str(getattr(file_diff, "language", "")).lower() not in NON_CODE_LANGUAGES
                 and not is_test_path(new_path.lower())

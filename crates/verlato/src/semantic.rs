@@ -18,7 +18,7 @@ use crate::vocab::is_test_path;
 
 pub const DIFF_ENGINE_CHOICES: &[&str] = &["intentumdiff", "git"];
 pub const DEFAULT_DIFF_ENGINE: &str = "intentumdiff";
-pub const SEMANTIC_DIGEST_VERSION: &str = "v2";
+pub const SEMANTIC_DIGEST_VERSION: &str = "v3";
 pub const DEFAULT_SEMANTIC_CACHE_PATH: &str = ".verlato_semantic_cache.json";
 pub const GROUP_KINDS: &[&str] = &[
     "MEANINGFUL_CHANGE",
@@ -225,6 +225,7 @@ pub fn digest_file_diff(
     path: &str,
     old_path: &str,
     lifecycle: Option<&str>,
+    sources: Option<(&str, &str)>,
 ) -> FileSemantics {
     let empty = Vec::new();
     let changes = review
@@ -438,7 +439,7 @@ pub fn digest_file_diff(
             ])
         })
         .collect();
-    let semantic_changes = semantic_diff_entries(changes, groups);
+    let semantic_changes = semantic_diff_entries(changes, groups, sources);
     let metadata_lifecycle = review
         .get("metadata")
         .and_then(|m| m.get("file_lifecycle"))
@@ -483,6 +484,78 @@ pub fn digest_file_diff(
 const MAX_SEMANTIC_ENTRIES_PER_FILE: usize = 40;
 const MAX_SEMANTIC_EDITS_PER_ENTRY: usize = 4;
 const MAX_SEMANTIC_DETAIL_CHARS: usize = 160;
+/// Source text of a meaningful edit's old/new node (`before`/`after`), whitespace-collapsed.
+const MAX_SEMANTIC_SNIPPET_CHARS: usize = 120;
+
+/// Lines of a source file, split like Python's `bytes.splitlines` (`\n`, `\r\n`, `\r`).
+fn source_lines(content: &str) -> Vec<&[u8]> {
+    let bytes = content.as_bytes();
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\n' => {
+                lines.push(&bytes[start..index]);
+                start = index + 1;
+            }
+            b'\r' => {
+                lines.push(&bytes[start..index]);
+                if bytes.get(index + 1) == Some(&b'\n') {
+                    index += 1;
+                }
+                start = index + 1;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    if start < bytes.len() {
+        lines.push(&bytes[start..]);
+    }
+    lines
+}
+
+/// Whitespace-collapsed source text of `node` (engine positions are 0-based lines and UTF-8
+/// byte columns), bounded to `MAX_SEMANTIC_SNIPPET_CHARS`. Ports `_node_source`.
+fn node_source(node: Option<&Value>, lines: &[&[u8]]) -> Option<String> {
+    let position = node?.get("position")?;
+    let field = |key: &str| {
+        position
+            .get(key)
+            .and_then(Value::as_u64)
+            .map(|v| v as usize)
+    };
+    let (start_line, start_col) = (field("start_line")?, field("start_col")?);
+    let (end_line, end_col) = (field("end_line")?, field("end_col")?);
+    if start_line > end_line || end_line >= lines.len() {
+        return None;
+    }
+    let slice = |line: &[u8], from: usize, to: usize| -> Vec<u8> {
+        let to = to.min(line.len());
+        line.get(from.min(to)..to).unwrap_or_default().to_vec()
+    };
+    let raw = if start_line == end_line {
+        slice(lines[start_line], start_col, end_col)
+    } else {
+        let mut parts = vec![slice(lines[start_line], start_col, usize::MAX)];
+        parts.extend(lines[start_line + 1..end_line].iter().map(|l| l.to_vec()));
+        parts.push(slice(lines[end_line], 0, end_col));
+        parts.join(&b'\n')
+    };
+    let text = String::from_utf8_lossy(&raw)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().count() > MAX_SEMANTIC_SNIPPET_CHARS {
+        let cut: String = text.chars().take(MAX_SEMANTIC_SNIPPET_CHARS - 3).collect();
+        return Some(format!("{}...", cut.trim_end()));
+    }
+    Some(text)
+}
 
 fn semantic_group(kind: &str) -> Option<&'static str> {
     match kind {
@@ -543,12 +616,85 @@ fn edit_of(change: &Value) -> Value {
 
 /// IntentumDiff's review-level changes as compact semantic-diff entries (ports
 /// `semantic_diff_entries` in `verlato/core/semantic.py`).
-pub fn semantic_diff_entries(changes: &[Value], groups: &[Value]) -> Vec<Value> {
+type Span = ((u64, u64), (u64, u64));
+
+fn node_span(node: Option<&Value>) -> Option<Span> {
+    let position = node?.get("position")?;
+    let field = |key: &str| position.get(key).and_then(Value::as_u64);
+    Some((
+        (field("start_line")?, field("start_col")?),
+        (field("end_line")?, field("end_col")?),
+    ))
+}
+
+fn group_changes<'a>(group: &Value, changes: &'a [Value]) -> Vec<&'a Value> {
+    group
+        .get("raw_change_indices")
+        .and_then(Value::as_array)
+        .map(|indices| {
+            indices
+                .iter()
+                .filter_map(|i| i.as_u64().and_then(|i| changes.get(i as usize)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn object_node<'a>(change: &'a Value, key: &str) -> Option<&'a Value> {
+    change.get(key).filter(|n| n.is_object())
+}
+
+/// A moved sub-expression whose old and new nodes lie inside meaningful edits is part of that
+/// edit, not a move (ports `_is_moved_within_meaningful`).
+fn is_moved_within_meaningful(
+    group_changes: &[&Value],
+    old_spans: &[Span],
+    new_spans: &[Span],
+) -> bool {
+    let inside = |node: Option<&Value>, containers: &[Span]| {
+        node_span(node).is_some_and(|span| {
+            containers
+                .iter()
+                .any(|outer| outer.0 <= span.0 && span.1 <= outer.1)
+        })
+    };
+    !group_changes.is_empty()
+        && group_changes.iter().all(|change| {
+            let old = object_node(change, "old_node");
+            let new = object_node(change, "new_node");
+            (old.is_none() || inside(old, old_spans)) && (new.is_none() || inside(new, new_spans))
+        })
+}
+
+pub fn semantic_diff_entries(
+    changes: &[Value],
+    groups: &[Value],
+    sources: Option<(&str, &str)>,
+) -> Vec<Value> {
+    let (old_lines, new_lines) = match sources {
+        Some((old, new)) => (Some(source_lines(old)), Some(source_lines(new))),
+        None => (None, None),
+    };
+    let (mut old_spans, mut new_spans) = (Vec::new(), Vec::new());
+    for group in groups {
+        if semantic_group(str_field(group, "kind")) != Some("meaningful") {
+            continue;
+        }
+        for change in group_changes(group, changes) {
+            old_spans.extend(node_span(object_node(change, "old_node")));
+            new_spans.extend(node_span(object_node(change, "new_node")));
+        }
+    }
     let mut entries = Vec::new();
     for group in groups {
         let Some(group_name) = semantic_group(str_field(group, "kind")) else {
             continue;
         };
+        if group_name == "moved"
+            && is_moved_within_meaningful(&group_changes(group, changes), &old_spans, &new_spans)
+        {
+            continue;
+        }
         let labels_of = |key: &str| {
             group
                 .get(key)
@@ -570,7 +716,25 @@ pub fn semantic_diff_entries(changes: &[Value], groups: &[Value]) -> Vec<Value> 
             let Some(change) = index.as_u64().and_then(|i| changes.get(i as usize)) else {
                 continue;
             };
-            edits.push(edit_of(change));
+            let mut edit = edit_of(change);
+            if group_name == "meaningful" {
+                let side = |key: &str, lines: &Option<Vec<&[u8]>>| {
+                    lines.as_deref().and_then(|lines| {
+                        node_source(change.get(key).filter(|n| n.is_object()), lines)
+                    })
+                };
+                let before = side("old_node", &old_lines);
+                let after = side("new_node", &new_lines);
+                if before != after {
+                    if let Some(before) = before {
+                        edit["before"] = json!(before);
+                    }
+                    if let Some(after) = after {
+                        edit["after"] = json!(after);
+                    }
+                }
+            }
+            edits.push(edit);
             if edits.len() >= MAX_SEMANTIC_EDITS_PER_ENTRY {
                 break;
             }
@@ -1167,7 +1331,7 @@ mod tests {
                 {"kind": "IGNORED_STYLE", "raw_change_indices": []}
             ]
         });
-        let digest = digest_file_diff(&review, "src/app.py", "src/app.py", None);
+        let digest = digest_file_diff(&review, "src/app.py", "src/app.py", None, None);
         let found: Vec<(String, String)> = digest
             .symbols
             .iter()
@@ -1262,5 +1426,50 @@ mod tests {
         let evidence = build_semantic_evidence([&style, &failed], None).unwrap();
         assert!(!evidence.complete);
         assert_eq!(evidence.files_unreviewed, 1);
+    }
+
+    #[test]
+    fn meaningful_edits_carry_bounded_source_snippets() {
+        let at = |line: u64, start: u64, end: u64, label: &str, node_type: &str| {
+            let mut n = node(label, node_type, None, false);
+            n["position"] =
+                json!({"start_line": line, "start_col": start, "end_line": line, "end_col": end});
+            n
+        };
+        let old = "def paginate(page, per_page):\r\n    start = page * per_page + 1\r\n    return start\r\n";
+        let new = "def paginate(page, per_page):\n    start = page * per_page\n    return start\n";
+        let changes = vec![
+            json!({"change_type": "MODIFICATION", "old_node": at(1, 4, 31, "start", "assignment"), "new_node": at(1, 4, 27, "start", "assignment")}),
+            json!({"change_type": "MOVE", "old_node": at(1, 12, 27, "page", "binary_operator"), "new_node": at(1, 12, 27, "page", "binary_operator")}),
+        ];
+        let groups = vec![
+            json!({"kind": "MEANINGFUL_CHANGE", "raw_change_indices": [0], "new_labels": ["paginate"]}),
+            json!({"kind": "MOVED_CODE", "raw_change_indices": [1], "new_labels": ["page"]}),
+        ];
+        let entries = semantic_diff_entries(&changes, &groups, Some((old, new)));
+        // The moved `page * per_page` lies inside the modified assignment.
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0]["edits"][0]["before"],
+            "start = page * per_page + 1"
+        );
+        assert_eq!(entries[0]["edits"][0]["after"], "start = page * per_page");
+        let plain = semantic_diff_entries(&changes, &groups, None);
+        assert!(plain[0]["edits"][0].get("before").is_none());
+        let mut moved_elsewhere = changes.clone();
+        moved_elsewhere[1]["old_node"] = at(5, 0, 15, "page", "binary_operator");
+        let kept = semantic_diff_entries(&moved_elsewhere, &groups, Some((old, new)));
+        assert_eq!(kept[1]["group"], "moved");
+        assert!(kept[1]["edits"][0].get("before").is_none());
+
+        let long = format!("x = [{}]", "1, ".repeat(60));
+        let lines = source_lines(&long);
+        let snippet = node_source(
+            Some(&at(0, 0, long.len() as u64, "x", "assignment")),
+            &lines,
+        )
+        .unwrap();
+        assert_eq!(snippet.chars().count(), MAX_SEMANTIC_SNIPPET_CHARS);
+        assert!(snippet.ends_with("..."));
     }
 }

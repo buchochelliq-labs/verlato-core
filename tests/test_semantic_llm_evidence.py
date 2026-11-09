@@ -259,7 +259,7 @@ def test_draft_prompt_end_to_end_sends_semantic_diff(monkeypatch, tmp_path: Path
         assert "Semantic diff (IntentumDiff" in prompt
         assert "meaningful in greet: addition default_parameter punct" in prompt
         assert "@@" not in prompt and "+def greet" not in prompt
-        assert ("30 -> 60" in prompt) is detailed
+        assert ("(was `30`, now `60`)" in prompt) is detailed
 
 
 def test_suggestion_parser_keeps_multi_line_entries():
