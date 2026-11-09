@@ -23,10 +23,13 @@ export function resolveVerlatoExecutable(options: {
   }
 
   const platform = options.platform ?? process.platform;
+  // The native Rust binary is preferred: bundled with the extension (bin/ + wasm/), or built in
+  // the Verlato checkout. It delegates model-backed commands to the Python CLI (verlato-py).
+  const nativeCandidates = getNativeExecutables(options.extensionPath, platform);
   const workspaceCli = getVenvExecutable(options.workspacePath, platform);
   const extensionCli = getVenvExecutable(options.extensionPath, platform);
   const extensionCheckoutCli = getVenvExecutable(path.dirname(options.extensionPath), platform);
-  const candidates = [workspaceCli, extensionCli, extensionCheckoutCli];
+  const candidates = [...nativeCandidates, workspaceCli, extensionCli, extensionCheckoutCli];
   const executable = candidates.find((candidate) => options.existsSync(candidate)) ?? configuredPath;
 
   return { executable, searched: [...candidates, configuredPath] };
@@ -45,6 +48,28 @@ export function resolveSpawnCommand(
     };
   }
   return { command: executable, args };
+}
+
+/** Native (Rust) verlato binaries, most specific first. */
+export function getNativeExecutables(extensionPath: string, platform: NodeJS.Platform = process.platform): string[] {
+  const binary = platform === "win32" ? "verlato.exe" : "verlato";
+  return [
+    path.join(extensionPath, "bin", binary),
+    path.join(path.dirname(extensionPath), "target", "release", binary),
+  ];
+}
+
+/** The Python implementation (`verlato-py`) the native binary delegates model features to. */
+export function resolvePythonDelegate(options: {
+  workspacePath: string;
+  extensionPath: string;
+  existsSync: (candidate: string) => boolean;
+  platform?: NodeJS.Platform;
+}): string | undefined {
+  const platform = options.platform ?? process.platform;
+  const binary = platform === "win32" ? path.join("Scripts", "verlato-py.exe") : path.join("bin", "verlato-py");
+  const roots = [options.workspacePath, options.extensionPath, path.dirname(options.extensionPath)];
+  return roots.map((root) => path.join(root, ".venv", binary)).find((candidate) => options.existsSync(candidate));
 }
 
 export function getVenvExecutable(rootPath: string, platform: NodeJS.Platform = process.platform): string {

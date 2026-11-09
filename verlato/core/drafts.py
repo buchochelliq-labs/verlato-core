@@ -219,7 +219,12 @@ class DraftService:
 
     def _apply_changelog(self, existing: str, rendered: str, version: str) -> tuple[str, str]:
         if re.search(rf"^### {re.escape(version)} \([^)]+\)$", existing, flags=re.MULTILINE):
-            pattern = re.compile(rf"^### {re.escape(version)} \([^)]+\)\n.*?(?=^### |\Z)", re.MULTILINE | re.DOTALL)
+            # Replace through the next *version* heading; entries contain "### Added"-style
+            # subsections that must be replaced along with the heading.
+            pattern = re.compile(
+                rf"^### {re.escape(version)} \([^)]+\)\n.*?(?=^### [^\n]* \([^)\n]+\)$|\Z)",
+                re.MULTILINE | re.DOTALL,
+            )
             return pattern.sub(rendered.rstrip() + "\n\n", existing, count=1), "replace"
 
         if not existing.strip():

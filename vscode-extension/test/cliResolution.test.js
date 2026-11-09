@@ -2,7 +2,13 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const test = require("node:test");
 
-const { getVenvExecutable, resolveSpawnCommand, resolveVerlatoExecutable } = require("../dist/client/cliResolution");
+const {
+  getNativeExecutables,
+  getVenvExecutable,
+  resolvePythonDelegate,
+  resolveSpawnCommand,
+  resolveVerlatoExecutable,
+} = require("../dist/client/cliResolution");
 
 const workspacePath = path.join("C:", "repos", "consumer-project");
 const extensionPath = path.join("C:", "repos", "verlato", "vscode-extension");
@@ -56,6 +62,7 @@ test("prefers a workspace-local verlato CLI when no explicit path is configured"
 
   assert.equal(resolution.executable, workspaceCli);
   assert.deepEqual(resolution.searched, [
+    ...getNativeExecutables(extensionPath, "win32"),
     workspaceCli,
     getVenvExecutable(extensionPath, "win32"),
     getVenvExecutable(path.dirname(extensionPath), "win32"),
@@ -103,6 +110,7 @@ test("falls back to the verlato command when no local venv executable exists", (
 
   assert.equal(resolution.executable, "verlato");
   assert.deepEqual(resolution.searched, [
+    ...getNativeExecutables(extensionPath, "linux"),
     getVenvExecutable(workspacePath, "linux"),
     getVenvExecutable(extensionPath, "linux"),
     getVenvExecutable(path.dirname(extensionPath), "linux"),
@@ -142,4 +150,29 @@ test("spawns native executables directly", () => {
     command: exePath,
     args: ["state", "show"],
   });
+});
+
+test("prefers the native Rust binary bundled with the extension or built in the checkout", () => {
+  const [bundled, checkoutBuild] = getNativeExecutables(extensionPath, "win32");
+  assert.equal(bundled, path.join(extensionPath, "bin", "verlato.exe"));
+  assert.equal(checkoutBuild, path.join(path.dirname(extensionPath), "target", "release", "verlato.exe"));
+
+  const workspaceCli = getVenvExecutable(workspacePath, "win32");
+  const resolution = resolveVerlatoExecutable({
+    configuredPath: "verlato",
+    workspacePath,
+    extensionPath,
+    existsSync: (candidate) => candidate === checkoutBuild || candidate === workspaceCli,
+    platform: "win32",
+  });
+  assert.equal(resolution.executable, checkoutBuild);
+});
+
+test("finds the Python delegate used for model-backed commands", () => {
+  const delegate = path.join(path.dirname(extensionPath), ".venv", "bin", "verlato-py");
+  assert.equal(
+    resolvePythonDelegate({ workspacePath, extensionPath, existsSync: (c) => c === delegate, platform: "linux" }),
+    delegate,
+  );
+  assert.equal(resolvePythonDelegate({ workspacePath, extensionPath, existsSync: () => false, platform: "linux" }), undefined);
 });

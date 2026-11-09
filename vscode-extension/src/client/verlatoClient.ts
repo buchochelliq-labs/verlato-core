@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import * as fs from "node:fs";
 
-import { ExecutableResolution, resolveSpawnCommand, resolveVerlatoExecutable } from "./cliResolution";
+import { ExecutableResolution, resolvePythonDelegate, resolveSpawnCommand, resolveVerlatoExecutable } from "./cliResolution";
 import { resolveCommandModelProvider, semanticEngineEnvironment, shouldAttachGithubToken } from "./modelEnvironment";
 import { VerlatoServiceClient } from "./verlatoServiceClient";
 import {
@@ -1049,6 +1049,17 @@ export class VerlatoClient implements vscode.Disposable {
     env.VERLATO_TRACE_PROGRESS = "1";
     env.VERLATO_OLLAMA_STREAM = settings.ollamaStreamResponses ? "1" : "0";
     const verlatoConfig = vscode.workspace.getConfiguration("verlato");
+    if (!env.VERLATO_PYTHON_CLI) {
+      // The native binary delegates model-backed commands to the Python implementation.
+      const pythonDelegate = resolvePythonDelegate({
+        workspacePath: this.workspaceFolder.uri.fsPath,
+        extensionPath: this.extensionPath,
+        existsSync: fs.existsSync,
+      });
+      if (pythonDelegate) {
+        env.VERLATO_PYTHON_CLI = pythonDelegate;
+      }
+    }
     Object.assign(env, semanticEngineEnvironment({
       diffEngine: verlatoConfig.get<string>("diffEngine"),
       parallelism: verlatoConfig.get<number>("semanticParallelism"),

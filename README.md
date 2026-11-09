@@ -110,6 +110,23 @@ evidence with `diff_engine: "git"`):
 
 ## Install
 
+### Native binary (Rust)
+
+Verlato is moving from Python to Rust (see [docs/RUST_MIGRATION.md](docs/RUST_MIGRATION.md)). The native
+`verlato` binary links the IntentumDiff engine in-process and runs the release-note pipeline, drafts, review
+state and the editor service without Python:
+
+```bash
+cargo build --release -p verlato
+scripts/fetch_intentumdiff_parsers.sh      # IntentumDiff parser bundle -> target/release/wasm
+target/release/verlato draft preview --from-latest-tag
+```
+
+Model-backed commands (suggestions, LLM summaries, commit-message drafting, MCP server) are delegated to the
+Python implementation below (`verlato-py`) until they are ported.
+
+### Python implementation
+
 ```bash
 python -m pip install -e .
 ```
