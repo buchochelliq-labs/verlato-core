@@ -81,9 +81,33 @@ Each change group aggregates the digests of its commits (restricted to the group
 
 Authored conventional commits and labels keep precedence. IntentumDiff adds review signals on top:
 `semantic:conflict` (e.g. `feat:` with formatting-only changes), `semantic:api-break-candidate` (public symbols removed,
-renamed or re-signatured outside tests) and `semantic:guardrail` force the item into `needs-review`. The semantic
-summary leads the deterministic summary and the model prompts, so local and remote models get real change semantics
-even under the default `metadata-only` privacy mode.
+renamed or re-signatured outside tests) and `semantic:guardrail` force the item into `needs-review`.
+
+### What the LLM sees
+
+When Verlato asks a model to write a release note (summaries, `draft suggest` in every strategy, `draft prompt`,
+tool-retrieval, commit intent inference and Conventional Commit drafting), it sends IntentumDiff's **semantic
+diff**, never the raw patch. For each file the model gets the meaningful changes with their enclosing symbol, the
+behavior-preserving refactorings and moved code, and the formatting IntentumDiff ignored, for example:
+
+```text
+src/app.py (python, modified) @b0e74cb78711:
+  - meaningful in greet: addition default_parameter punct; modification return_statement
+  - meaningful in fresh: addition function_definition fresh
+  - refactoring RENAME_SYMBOL: bar -> baz
+  - ignored as formatting/noise (style:1)
+```
+
+The prompt tells the model to base the entry on this semantic diff and never to present moved code, refactorings
+or formatting as new behavior. Tool-calling models get `verlato_get_file_semantic_diff` /
+`verlato_search_semantic_diff` instead of patch tools; the full-diff JSON strategy sends a `semantic_diff` per file
+instead of `patch`.
+
+The privacy mode decides the detail level. Under the default `metadata-only` mode the semantic diff carries structure
+and identifier names only. Modes that used to allow raw patches (`local-summary-then-ai` with a local model,
+`trusted-provider-patch`) additionally include IntentumDiff's change descriptions, which can contain literal values
+(e.g. `[30 -> 60]`). Raw patches are only sent with the legacy `diff_engine: "git"`. Prompt budgets and model request
+records report `evidence_source` and `semantic_diff_detail`.
 
 Engine selection: `diff_engine` in `verlato.json`, `VERLATO_DIFF_ENGINE`, `verlato --diff-engine`, or the
 `verlato.diffEngine` VS Code setting. `intentumdiff` is the default; `git` keeps the legacy text-patch evidence below.

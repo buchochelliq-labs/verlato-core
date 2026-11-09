@@ -10,11 +10,14 @@ digest of the result:
 * cross-file changes (symbols moved or renamed across modules)
 * protected-config guardrail violations
 * files the engine could not review, with the engine's reason
+* the semantic diff: IntentumDiff's review-level changes per file (group, enclosing symbol,
+  edit types, node types, identifier names and the engine's change descriptions)
 
-Only structural metadata and definition names are kept. Source bodies, literal values and
-IntentumDiff's raw change descriptions (which may embed literals) are never stored, so the
-digest is safe to show in the editor and to place in model prompts under every Verlato
-privacy mode.
+The semantic diff is what Verlato's LLM prompts receive instead of raw patches. Source bodies
+are never stored. The engine's change descriptions can contain literal values, so prompt
+builders include them only when the privacy mode allows source content (the modes that used
+to allow raw patches); otherwise prompts get structure and identifier names only. The editor
+evidence (`SemanticEvidence`) never includes change descriptions.
 
 The digest of each commit is cached by ``(parent, sha, engine version)`` because commits are
 immutable: re-scanning a release range only reviews commits that have not been seen before.
@@ -36,7 +39,7 @@ from verlato.core.areas import is_test_path
 
 DIFF_ENGINE_CHOICES = ("intentumdiff", "git")
 DEFAULT_DIFF_ENGINE = "intentumdiff"
-SEMANTIC_DIGEST_VERSION = "v1"
+SEMANTIC_DIGEST_VERSION = "v2"
 DEFAULT_SEMANTIC_CACHE_PATH = ".verlato_semantic_cache.json"
 INTENTUMDIFF_INSTALL_HINT = "pip install --pre intentumdiff-python"
 
@@ -45,6 +48,16 @@ MAX_SYMBOLS_PER_FILE = 24
 MAX_EVIDENCE_SYMBOLS = 12
 MAX_CROSS_FILE = 12
 MAX_REASON_CHARS = 240
+# Semantic diff (the per-change view of IntentumDiff's output that LLM prompts use instead of
+# raw patches): bounded per file, per entry and per detail string.
+MAX_SEMANTIC_ENTRIES_PER_FILE = 40
+MAX_SEMANTIC_EDITS_PER_ENTRY = 4
+MAX_SEMANTIC_DETAIL_CHARS = 160
+SEMANTIC_DIFF_GROUPS = {
+    "MEANINGFUL_CHANGE": "meaningful",
+    "REFACTORING": "refactoring",
+    "MOVED_CODE": "moved",
+}
 # Cross-file symbol indexing only makes sense for code; indexing large docs/data files
 # costs parser fuel without producing symbol moves.
 NON_CODE_LANGUAGES = {
@@ -100,6 +113,8 @@ class FileSemantics:
     symbols: list[SymbolChange] = field(default_factory=list)
     guardrails: list[dict[str, str]] = field(default_factory=list)
     parse_errors: list[str] = field(default_factory=list)
+    # IntentumDiff's review-level changes for this file (see `semantic_diff_entries`).
+    changes: list[dict[str, Any]] = field(default_factory=list)
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> FileSemantics:
@@ -211,6 +226,127 @@ def semantic_prompt_payload(evidence: SemanticEvidence | None) -> dict[str, Any]
         "guardrail_rules": sorted({str(item.get("rule_id")) for item in evidence.guardrails}),
         "summary": evidence.summary,
     }
+
+
+def build_semantic_diff(commits: Iterable[Any], *, paths: Iterable[str] | None = None) -> list[dict[str, Any]]:
+    """IntentumDiff's semantic diff for a change group: one record per (commit, file).
+
+    This is what LLM prompts receive instead of raw patches. Records keep full ``detail``
+    strings; use `semantic_diff_for_prompt` / `render_semantic_diff` to apply the privacy
+    detail level. Files IntentumDiff could not review are listed with the engine's reason.
+    """
+
+    path_filter = set(paths) if paths is not None else None
+
+    def owned(path: str, old_path: str = "") -> bool:
+        return path_filter is None or path in path_filter or bool(old_path and old_path in path_filter)
+
+    records: list[dict[str, Any]] = []
+    for commit in commits:
+        digest = getattr(commit, "semantics", None)
+        if not isinstance(digest, CommitSemantics):
+            continue
+        short_sha = digest.sha[:12]
+        for file in digest.files:
+            if not owned(file.path, file.old_path):
+                continue
+            record: dict[str, Any] = {
+                "path": file.path,
+                "commit": short_sha,
+                "language": file.language,
+                "lifecycle": file.lifecycle,
+                "style_only": file.style_only or not file.has_semantic_changes,
+                "group_counts": dict(file.group_counts),
+                "changes": [
+                    dict(entry, edits=[dict(edit) for edit in entry.get("edits", [])]) for entry in file.changes
+                ],
+            }
+            if file.old_path and file.old_path != file.path:
+                record["old_path"] = file.old_path
+            if file.guardrails:
+                record["guardrails"] = sorted({str(item.get("rule_id")) for item in file.guardrails})
+            records.append(record)
+        for item in digest.unreviewed:
+            if owned(item.path):
+                records.append({"path": item.path, "commit": short_sha, "unreviewed": item.kind, "reason": item.reason})
+    return records
+
+
+def semantic_diff_for_prompt(records: list[dict[str, Any]], *, detailed: bool) -> list[dict[str, Any]]:
+    """Apply the privacy detail level: ``detailed`` keeps IntentumDiff's change descriptions
+    (which may contain literal values); otherwise only structure and identifier names remain."""
+
+    prepared: list[dict[str, Any]] = []
+    for record in records:
+        copy = {key: value for key, value in record.items() if key != "changes"}
+        if "changes" in record:
+            changes = []
+            for entry in record["changes"]:
+                edits = []
+                for edit in entry.get("edits", []):
+                    kept = {
+                        key: value
+                        for key, value in edit.items()
+                        if value not in (None, "") and (detailed or key != "detail")
+                    }
+                    edits.append(kept)
+                header = {key: value for key, value in entry.items() if key != "edits" and value not in (None, "")}
+                changes.append({**header, "edits": edits})
+            copy["changes"] = changes
+        prepared.append(copy)
+    return prepared
+
+
+def _render_edit(edit: dict[str, Any], *, detailed: bool) -> str:
+    text = str(edit.get("change", "")).lower()
+    if edit.get("node"):
+        text += f" {edit['node']}"
+    if edit.get("old_name") and edit.get("name"):
+        text += f" {edit['old_name']} -> {edit['name']}"
+    elif edit.get("name"):
+        text += f" {edit['name']}"
+    if detailed and edit.get("detail"):
+        text += f" [{edit['detail']}]"
+    return text
+
+
+def render_semantic_diff(records: list[dict[str, Any]], *, detailed: bool, max_chars: int | None = None) -> str:
+    """Prompt-friendly text rendering of a semantic diff (see `build_semantic_diff`)."""
+
+    lines: list[str] = []
+    for record in records:
+        if record.get("unreviewed"):
+            lines.append(
+                f"{record['path']} @{record['commit']}: not semantically reviewed ({record['unreviewed']})"
+            )
+            continue
+        rename = f" (renamed from {record['old_path']})" if record.get("old_path") else ""
+        language = record.get("language") or "text"
+        lines.append(f"{record['path']}{rename} ({language}, {record.get('lifecycle')}) @{record['commit']}:")
+        for entry in record.get("changes", []):
+            header = str(entry.get("group", ""))
+            if entry.get("refactoring"):
+                header += f" {entry['refactoring']}"
+            if entry.get("old_symbol") and entry.get("symbol"):
+                header += f": {entry['old_symbol']} -> {entry['symbol']}"
+            elif entry.get("symbol"):
+                header += f" in {entry['symbol']}"
+            edits = "; ".join(_render_edit(edit, detailed=detailed) for edit in entry.get("edits", []))
+            lines.append(f"  - {header}" + (f": {edits}" if edits else ""))
+        counts = record.get("group_counts", {})
+        ignored = [f"{_GROUP_LABELS[k]}:{counts[k]}" for k in ("IGNORED_STYLE", "NOISE_SUPPRESSED") if counts.get(k)]
+        if ignored:
+            lines.append(f"  - ignored as formatting/noise ({', '.join(ignored)})")
+        if not record.get("changes") and not ignored:
+            lines.append("  - no semantic change" if record.get("style_only") else "  - changed (no structural detail)")
+        if record.get("guardrails"):
+            lines.append(f"  - protected-config guardrails: {', '.join(record['guardrails'])}")
+    text = "\n".join(lines)
+    if max_chars is not None and len(text) > max_chars:
+        cut = text[:max_chars].rsplit("\n", 1)[0]
+        remaining = text[len(cut):].count("\n")
+        text = f"{cut}\n... ({remaining} more semantic diff line(s) omitted)"
+    return text
 
 
 def commit_semantic_payload(commit: Any) -> dict[str, Any] | None:
@@ -490,6 +626,98 @@ _CHANGE_TYPE_GROUP = {
 }
 
 
+def _identifier_or_none(value: object, node_type: str = "") -> str | None:
+    text = str(value or "").strip()
+    return text if _IDENTIFIER.match(text) and text != node_type else None
+
+
+def _node_identifier(node: Any) -> str | None:
+    if node is None:
+        return None
+    return _identifier_or_none(_node_name(node), str(getattr(node, "node_type", "") or ""))
+
+
+def _change_detail(change: Any) -> str:
+    detail = str(getattr(change, "text_diff", None) or getattr(change, "description", "") or "").strip()
+    detail = " ".join(detail.split())
+    return detail[:MAX_SEMANTIC_DETAIL_CHARS]
+
+
+def semantic_diff_entries(changes: list[Any], groups: list[Any]) -> list[dict[str, Any]]:
+    """IntentumDiff's review-level changes as compact semantic-diff entries.
+
+    One entry per meaningful / refactoring / moved group: the enclosing definition (when the
+    engine labels one), the refactoring kind, and up to a few edits with their change type,
+    node type, identifier name and the engine's change description (``detail``). ``detail`` can
+    contain literal values; prompt builders drop it unless the privacy mode allows source
+    content. Style and noise groups are counted in ``group_counts`` only.
+    """
+
+    entries: list[dict[str, Any]] = []
+    for group in groups:
+        group_name = SEMANTIC_DIFF_GROUPS.get(_enum_value(getattr(group, "kind", "")))
+        if group_name is None:
+            continue
+        labels = list(getattr(group, "new_labels", None) or getattr(group, "old_labels", None) or [])
+        old_labels = list(getattr(group, "old_labels", None) or [])
+        edits: list[dict[str, Any]] = []
+        for index in getattr(group, "raw_change_indices", []) or []:
+            if not isinstance(index, int) or not 0 <= index < len(changes):
+                continue
+            change = changes[index]
+            old_node = getattr(change, "old_node", None)
+            new_node = getattr(change, "new_node", None)
+            node = new_node or old_node
+            edit: dict[str, Any] = {
+                "change": _enum_value(getattr(change, "change_type", "")),
+                "node": str(getattr(node, "node_type", "") or ""),
+                "name": _node_identifier(node),
+                "detail": _change_detail(change),
+            }
+            if old_node is not None and new_node is not None:
+                old_name = _node_identifier(old_node)
+                if old_name and old_name != edit["name"]:
+                    edit["old_name"] = old_name
+            edits.append(edit)
+            if len(edits) >= MAX_SEMANTIC_EDITS_PER_ENTRY:
+                break
+        entry: dict[str, Any] = {
+            "group": group_name,
+            "symbol": _identifier_or_none(labels[0]) if labels else None,
+            "old_symbol": None,
+            "refactoring": _enum_value(getattr(group, "refactoring_kind", None)) or None,
+            "edits": edits,
+        }
+        if old_labels:
+            old_symbol = _identifier_or_none(old_labels[0])
+            if old_symbol and old_symbol != entry["symbol"]:
+                entry["old_symbol"] = old_symbol
+        entries.append(entry)
+        if len(entries) >= MAX_SEMANTIC_ENTRIES_PER_FILE:
+            break
+    if not groups and changes:
+        # Whole-file additions/deletions carry raw changes without review-level groups.
+        for change in changes[:MAX_SEMANTIC_ENTRIES_PER_FILE]:
+            node = getattr(change, "new_node", None) or getattr(change, "old_node", None)
+            entries.append(
+                {
+                    "group": "meaningful",
+                    "symbol": None,
+                    "old_symbol": None,
+                    "refactoring": None,
+                    "edits": [
+                        {
+                            "change": _enum_value(getattr(change, "change_type", "")),
+                            "node": str(getattr(node, "node_type", "") or ""),
+                            "name": _node_identifier(node),
+                            "detail": _change_detail(change),
+                        }
+                    ],
+                }
+            )
+    return entries
+
+
 def digest_file_diff(file_diff: Any, *, path: str, old_path: str) -> FileSemantics:
     """Reduce an IntentumDiff ``SemanticDiff`` to Verlato's privacy-safe digest."""
 
@@ -587,6 +815,7 @@ def digest_file_diff(file_diff: Any, *, path: str, old_path: str) -> FileSemanti
         for violation in getattr(file_diff, "guardrail_violations", []) or []
     ]
     metadata = dict(getattr(file_diff, "metadata", {}) or {})
+    semantic_changes = semantic_diff_entries(changes, groups)
     return FileSemantics(
         path=path,
         old_path=old_path,
@@ -601,6 +830,7 @@ def digest_file_diff(file_diff: Any, *, path: str, old_path: str) -> FileSemanti
         symbols=symbols,
         guardrails=guardrails,
         parse_errors=[str(error)[:MAX_REASON_CHARS] for error in getattr(file_diff, "parse_errors", []) or []][:5],
+        changes=semantic_changes,
     )
 
 

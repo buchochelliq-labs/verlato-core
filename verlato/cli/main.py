@@ -25,8 +25,11 @@ from verlato.core.semantic import (
     DIFF_ENGINE_CHOICES,
     IntentumDiffEngine,
     build_semantic_engine,
+    render_semantic_diff,
     resolve_diff_engine,
+    semantic_diff_for_prompt,
     semantic_engine_info,
+    semantic_prompt_payload,
 )
 from verlato.core.commit_intent import (
     commit_intent_payload,
@@ -2927,7 +2930,7 @@ def _preview_draft_model_suggestions(
             batch_total=len(target_batches),
         )
         evidence_start = perf_counter()
-        diff = provider_classifier.diff_builder.build(changed_files_for_group(group))
+        diff = provider_classifier.diff_builder.build(changed_files_for_group(group), commits=group.commits)
         evidence_ms = _elapsed_ms(evidence_start)
         hunk_count = sum(len(hunks) for hunks in diff.representative_hunks.values())
         file_count = len(diff.file_statuses)
@@ -2984,7 +2987,10 @@ def _preview_draft_model_suggestions(
             project_vocabulary=list(suggestion_style["project_vocabulary"]),
             banned_phrases=list(suggestion_style["banned_phrases"]),
             prompt_profile=suggestion_prompt_profile,
-            include_hunks=raw_patches_allowed and effective_suggestion_strategy == "single",
+            # The semantic diff is compact, so every strategy gets the privacy-allowed detail level;
+            # raw hunks (legacy git engine only) stay limited to the single-item strategy.
+            include_hunks=raw_patches_allowed
+            and (effective_suggestion_strategy == "single" or diff.semantic is not None),
         )
         prompt = prompt_result.prompt
         prompt_budget = dict(prompt_result.budget)
@@ -2997,7 +3003,9 @@ def _preview_draft_model_suggestions(
         )
         if effective_suggestion_strategy == "tool-retrieval":
             old_prompt_chars = int(prompt_budget.get("prompt_chars", len(prompt)))
-            tool_provider = SuggestionEvidenceToolProvider.from_groups([group], [baseline_item])
+            tool_provider = SuggestionEvidenceToolProvider.from_groups(
+                [group], [baseline_item], semantic_detail=raw_patches_allowed
+            )
             tools = tool_provider.ollama_tools()
             tool_executor = tool_provider.call_tool
             max_tool_rounds = SUGGESTION_TOOL_MAX_ROUNDS
@@ -4081,20 +4089,36 @@ def _build_full_diff_suggestion_batch_prompt(works: list[_SuggestionWork]) -> st
         "items": [work.full_diff_item for work in works if work.full_diff_item is not None],
     }
     raw_patch_chars_sent = sum(work.full_diff_patch_chars for work in works)
-    evidence_name = "full diff evidence" if raw_patch_chars_sent else "privacy-filtered ChangeSummary evidence"
-    source_instruction = (
-        "Use the file patches as the primary source of truth. Do not infer behavior from titles alone."
-        if raw_patch_chars_sent
-        else "Use the change_summary, commit metadata, file paths/statuses, and deterministic facts. "
-        "Do not invent line-level behavior that is not present in the sanitized evidence."
+    semantic = any(
+        (work.full_diff_item or {}).get("evidence_source") == "intentumdiff-semantic-diff" for work in works
     )
+    if semantic:
+        evidence_name = "IntentumDiff semantic diff"
+        source_instruction = (
+            "Use each file's semantic_diff and the item's semantic_review as the primary source of truth. "
+            "They list meaningful changes with their enclosing symbols, behavior-preserving refactorings, "
+            "moved code and ignored formatting. Describe the meaningful changes; never present moved code, "
+            "refactorings or formatting as new behavior. Do not infer behavior from titles alone."
+        )
+    elif raw_patch_chars_sent:
+        evidence_name = "full diff evidence"
+        source_instruction = (
+            "Use the file patches as the primary source of truth. Do not infer behavior from titles alone."
+        )
+    else:
+        evidence_name = "privacy-filtered ChangeSummary evidence"
+        source_instruction = (
+            "Use the change_summary, commit metadata, file paths/statuses, and deterministic facts. "
+            "Do not invent line-level behavior that is not present in the sanitized evidence."
+        )
     return (
         f"Generate release-note suggestion variants from the {evidence_name}.\n"
         f"{source_instruction}\n"
         "Return only JSON that matches the requested schema. Do not include Markdown fences or prose.\n"
         f"For each item, return exactly {works[0].suggestion_count} suggestion string(s) in the suggestions array.\n"
         "Do not combine items, rename item ids, omit an item, or mention implementation details unless they matter to release-note readers.\n"
-        "If a file has patch_available=false, treat that file as changed but do not invent unavailable line-level details.\n"
+        "If a file has no semantic_diff (and patch_available=false), treat that file as changed but do not invent "
+        "unavailable details.\n"
         "Input JSON:\n"
         + json.dumps(payload, indent=2, sort_keys=True)
     )
@@ -4116,12 +4140,24 @@ def _build_tool_retrieval_suggestion_prompt(
         "prompt_shape": TOOL_RETRIEVAL_SUGGESTION_PROMPT_SHAPE,
         "item": manifest,
     }
+    if manifest.get("evidence_source") == "intentumdiff-semantic-diff":
+        evidence_instruction = (
+            "Start from the compact item manifest and its semantic_review, then call "
+            "verlato_get_file_semantic_diff for the files you need (or verlato_search_semantic_diff for a "
+            "symbol). The IntentumDiff semantic diff is the primary source of truth: describe meaningful "
+            "changes, never present moved code, refactorings or formatting as new behavior, and do not infer "
+            "behavior from titles alone.\n"
+        )
+    else:
+        evidence_instruction = (
+            "Start from the compact item manifest, then call tools to inspect the specific patches needed. "
+            "Prefer targeted file patches over reading every file. Use patches as the primary source of truth, "
+            "and do not infer behavior from titles alone.\n"
+        )
     return (
         "Generate release-note suggestion variants for this item using the available Verlato tools.\n"
-        "Start from the compact item manifest, then call tools to inspect the specific patches needed. "
-        "Prefer targeted file patches over reading every file. Use patches as the primary source of truth, "
-        "and do not infer behavior from titles alone.\n"
-        "Return only the suggestion text. Do not include JSON, Markdown fences, tool names, or commentary.\n"
+        + evidence_instruction
+        + "Return only the suggestion text. Do not include JSON, Markdown fences, tool names, or commentary.\n"
         f"Return exactly {suggestion_count} distinct complete release-note option(s), one per line.\n"
         "Compact input JSON:\n"
         + json.dumps(payload, indent=2, sort_keys=True)
@@ -4588,9 +4624,34 @@ def _build_full_diff_suggestion_payload_item(
     patch_chars_available = 0
     patch_chars_sent = 0
     missing_patch_count = 0
+    use_semantic_diff = getattr(diff, "semantic", None) is not None
+    if use_semantic_diff:
+        # IntentumDiff evidence replaces raw patches; `include_patches` (privacy allows source
+        # content) only decides whether the engine's change descriptions are included.
+        semantic_by_path: dict[str, list[dict[str, object]]] = {}
+        for record in semantic_diff_for_prompt(list(diff.semantic_diff), detailed=include_patches):
+            semantic_by_path.setdefault(str(record["path"]), []).append(
+                {key: value for key, value in record.items() if key != "path"}
+            )
     for changed_file in files:
         patch = changed_file.patch or ""
         patch_chars_available += len(patch)
+        if use_semantic_diff:
+            records = semantic_by_path.get(changed_file.path, [])
+            file_payloads.append(
+                {
+                    "path": changed_file.path,
+                    "status": changed_file.status,
+                    "semantic_diff": records,
+                    "semantic_diff_available": bool(records),
+                    "patch_chars_available": len(patch),
+                    "patch_chars_sent": 0,
+                    "patch_available": False,
+                }
+            )
+            if not records:
+                missing_patch_count += 1
+            continue
         if not patch:
             missing_patch_count += 1
         file_payload = {
@@ -4637,7 +4698,10 @@ def _build_full_diff_suggestion_payload_item(
         "patch_chars_sent": patch_chars_sent,
         "patch_chars": patch_chars_sent,
         "missing_patch_count": missing_patch_count,
-        "omitted_fields": [] if include_patches else list(OMITTED_PATCH_EVIDENCE),
+        "evidence_source": "intentumdiff-semantic-diff" if use_semantic_diff else "git-patch",
+        "semantic_diff_detail": ("detailed" if include_patches else "structure") if use_semantic_diff else None,
+        "semantic_review": semantic_prompt_payload(diff.semantic) if use_semantic_diff else None,
+        "omitted_fields": [] if include_patches and not use_semantic_diff else list(OMITTED_PATCH_EVIDENCE),
         "diff_summary": {
             "summary": diff.summary,
             "files_by_area": diff.files_by_area,
@@ -4710,7 +4774,17 @@ def _build_suggestion_source_evidence(diff, group: ChangeGroup, *, include_hunks
                 "detail": status,
             }
         )
-    if include_hunks:
+    if getattr(diff, "semantic", None) is not None:
+        for record in semantic_diff_for_prompt(list(diff.semantic_diff), detailed=include_hunks)[:3]:
+            excerpt = render_semantic_diff([record], detailed=include_hunks).replace("\n", " ")
+            evidence.append(
+                {
+                    "kind": "semantic-diff",
+                    "label": str(record["path"]),
+                    "detail": " ".join(excerpt.split())[:240],
+                }
+            )
+    elif include_hunks:
         for path, hunks in list(diff.representative_hunks.items())[:3]:
             excerpt = " ".join(hunk.replace("\n", " ") for hunk in hunks)
             evidence.append(
@@ -5402,7 +5476,7 @@ def _build_draft_model_prompt(
     )
     classifier = Classifier()
     draft_item = classifier.classify(target_group, base, head)[0]
-    diff = classifier.diff_builder.build(changed_files_for_group(target_group))
+    diff = classifier.diff_builder.build(changed_files_for_group(target_group), commits=target_group.commits)
     prompt_result = classifier._build_summary_prompt_with_budget(
         title=draft_item.content.title,
         labels=[label.lower() for label in (target_group.pr.labels if target_group.pr else [])],

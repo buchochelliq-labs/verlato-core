@@ -26,7 +26,7 @@ from verlato.core.models import (
     changed_files_for_group,
     default_review_status,
 )
-from verlato.core.semantic import SemanticEvidence
+from verlato.core.semantic import SemanticEvidence, render_semantic_diff
 from verlato.providers.base import ProviderRequest, VerlatoProvider
 
 MAX_PROMPT_CHANGED_FILES = 12
@@ -627,7 +627,18 @@ class Classifier:
         included_hunk_files = 0
         included_hunks = 0
         included_hunk_chars = 0
-        if include_hunks:
+        # With IntentumDiff evidence the model gets the semantic diff, never raw patch hunks.
+        # `include_hunks` (the privacy mode allows source content) then only decides whether
+        # IntentumDiff's change descriptions, which may contain literal values, are included.
+        semantic_records = list(getattr(diff, "semantic_diff", None) or [])
+        use_semantic_diff = getattr(diff, "semantic", None) is not None
+        semantic_detail = "detailed" if include_hunks else "structure"
+        semantic_text = ""
+        semantic_budget = max(profile.hunk_files * profile.hunks_per_file * profile.hunk_chars, 1200)
+        if use_semantic_diff:
+            semantic_text = render_semantic_diff(semantic_records, detailed=include_hunks, max_chars=semantic_budget)
+            hunk_text = semantic_text or "no reviewed changes"
+        elif include_hunks:
             for path, hunks in list(diff.representative_hunks.items())[:profile.hunk_files]:
                 included_hunk_files += 1
                 hunk_lines.append(f"{path}:")
@@ -641,6 +652,7 @@ class Classifier:
             hunk_text = "\n".join(hunk_lines) or "none"
         else:
             hunk_text = "omitted by privacy mode; use the deterministic change summary and file/status signals"
+        raw_hunks_sent = include_hunks and not use_semantic_diff
         pr_body_text = _truncate_prompt_text(pr_body.strip(), profile.pr_body_chars) or "none"
         diff_summary = _truncate_prompt_text(diff.summary, profile.diff_summary_chars)
         context_bits = []
@@ -686,7 +698,15 @@ class Classifier:
             f"PR body: {pr_body_text}\n"
             f"Changed files:\n{file_lines}\n"
             f"Diff summary: {diff_summary}\n"
-            f"Representative hunks:\n{hunk_text}"
+            + (
+                "Base the entry on the IntentumDiff semantic diff below. It lists, per file, the meaningful "
+                "changes (with the enclosing symbol), behavior-preserving refactorings and moved code, and "
+                "formatting that was ignored. Describe meaningful changes; never present moved code, "
+                "refactorings or formatting as new behavior.\n"
+                f"Semantic diff (IntentumDiff, {semantic_detail}):\n{hunk_text}"
+                if use_semantic_diff
+                else f"Representative hunks:\n{hunk_text}"
+            )
         )
         pr_body_chars_included = 0 if pr_body_text == "none" else len(pr_body_text)
         return SummaryPrompt(
@@ -716,9 +736,13 @@ class Classifier:
                 "hunk_chars_included": included_hunk_chars,
                 "hunk_chars_total": total_hunk_chars,
                 "hunk_chars_skipped": max(total_hunk_chars - included_hunk_chars, 0),
-                "raw_patch_text_included": include_hunks,
-                "raw_patch_chars_sent": included_hunk_chars if include_hunks else 0,
-                "omitted_fields": "" if include_hunks else ", ".join(OMITTED_PATCH_EVIDENCE),
+                "evidence_source": "intentumdiff-semantic-diff" if use_semantic_diff else "git-patch",
+                "semantic_diff_detail": semantic_detail if use_semantic_diff else None,
+                "semantic_diff_chars_included": len(semantic_text),
+                "semantic_diff_files": len(semantic_records),
+                "raw_patch_text_included": raw_hunks_sent,
+                "raw_patch_chars_sent": included_hunk_chars if raw_hunks_sent else 0,
+                "omitted_fields": "" if raw_hunks_sent else ", ".join(OMITTED_PATCH_EVIDENCE),
             },
         )
 

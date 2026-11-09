@@ -11,6 +11,7 @@ from verlato.core.commit_intent import (
 )
 from verlato.core.model_privacy import OMITTED_PATCH_EVIDENCE, estimate_token_count
 from verlato.core.models import ChangedFile, ChangeGroup, ChangeItem, DiffEvidence, changed_files_for_group
+from verlato.core.semantic import semantic_diff_for_prompt, semantic_prompt_payload
 
 MAX_CHANGE_SUMMARY_COMMITS = 12
 MAX_CHANGE_SUMMARY_FILES = 80
@@ -38,7 +39,10 @@ def build_change_summary_payload(
     changed_files = changed_files_for_group(group)
     raw_patch_chars = raw_patch_chars_available(changed_files)
     status_counts = Counter(file.status or "modified" for file in changed_files)
-    public_symbols = _public_symbols(changed_files)
+    semantic = getattr(diff, "semantic", None)
+    # With IntentumDiff evidence, symbols come from the semantic review instead of regexes
+    # over raw patch lines.
+    public_symbols = _semantic_public_symbols(semantic) if semantic is not None else _public_symbols(changed_files)
     commits = [_commit_payload(commit) for commit in group.commits[:MAX_CHANGE_SUMMARY_COMMITS]]
     files = [
         _file_payload(file, diff=diff, public_symbols=public_symbols.get(file.path, []))
@@ -62,6 +66,14 @@ def build_change_summary_payload(
         "areas": {area: sorted(paths) for area, paths in sorted(diff.files_by_area.items())},
         "deterministic_facts": deterministic_diff_facts(diff=diff, files=changed_files),
         "local_summary": (local_summary or "").strip() or None,
+        "evidence_source": "intentumdiff-semantic-diff" if semantic is not None else "git-patch",
+        "semantic_review": semantic_prompt_payload(semantic) if semantic is not None else None,
+        # Structure-level semantic diff (no literal values): this payload is privacy-filtered.
+        "semantic_diff": (
+            semantic_diff_for_prompt(list(getattr(diff, "semantic_diff", []) or []), detailed=False)
+            if semantic is not None
+            else None
+        ),
         "privacy": {
             "raw_patch_chars_available": raw_patch_chars,
             "raw_patch_chars_sent": 0,
@@ -205,6 +217,17 @@ def _public_symbols(files: list[ChangedFile]) -> dict[str, list[str]]:
         if symbols:
             result[file.path] = symbols
             symbol_file_count += 1
+    return result
+
+
+def _semantic_public_symbols(semantic: Any) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {}
+    for entry in [*semantic.added_symbols, *semantic.signature_changes, *semantic.renamed_symbols]:
+        name, _, path = entry.partition(" in ")
+        name = name.split(" -> ")[-1]
+        symbols = result.setdefault(path, [])
+        if name not in symbols and len(symbols) < MAX_PUBLIC_SYMBOLS_PER_FILE:
+            symbols.append(name)
     return result
 
 

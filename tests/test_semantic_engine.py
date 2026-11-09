@@ -21,11 +21,14 @@ from verlato.core.semantic import (
     SemanticEngineUnavailable,
     SymbolChange,
     UnreviewedFile,
+    build_semantic_diff,
     build_semantic_engine,
     build_semantic_evidence,
     digest_file_diff,
     normalize_diff_engine,
+    render_semantic_diff,
     resolve_diff_engine,
+    semantic_diff_for_prompt,
 )
 
 HAS_INTENTUMDIFF = importlib.util.find_spec("intentumdiff") is not None
@@ -174,7 +177,7 @@ def test_digest_extracts_definition_symbols_signatures_and_renames():
     assert digest_.meaningful_change_types == {"ADDITION": 2, "DELETION": 1}
 
 
-def test_digest_never_stores_change_descriptions_or_literals():
+def test_literals_reach_prompts_only_at_the_detailed_level():
     literal_change = change("MODIFICATION", old=node("'secret-v1'", "string", definition=False),
                             new=node("'secret-v2'", "string", definition=False))
     literal_change.description = "Update string('secret-v1') -> string('secret-v2')"
@@ -184,7 +187,24 @@ def test_digest_never_stores_change_descriptions_or_literals():
         path="config.py",
         old_path="config.py",
     )
-    assert "secret" not in json.dumps(digest_.__dict__, default=lambda value: value.__dict__)
+    # The local digest keeps IntentumDiff's change description...
+    assert digest_.changes == [{
+        "group": "meaningful",
+        "symbol": "token",
+        "old_symbol": None,
+        "refactoring": None,
+        "edits": [{"change": "MODIFICATION", "node": "string", "name": None, "detail": "secret-v1 -> secret-v2"}],
+    }]
+    commit = semantic_commit("c1", "rotate", digest_)
+    records = build_semantic_diff([commit])
+    # ...but prompts only get it when the privacy mode allows source content.
+    structural = semantic_diff_for_prompt(records, detailed=False)
+    assert "secret" not in json.dumps(structural)
+    assert "secret" not in render_semantic_diff(records, detailed=False)
+    assert render_semantic_diff(records, detailed=True) == (
+        "config.py (python, modified) @c1:\n"
+        "  - meaningful in token: modification string [secret-v1 -> secret-v2]"
+    )
 
 
 def test_whole_file_additions_without_groups_count_as_meaningful():

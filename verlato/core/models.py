@@ -150,6 +150,9 @@ class DiffEvidence:
     # IntentumDiff group-level evidence (verlato.core.semantic.SemanticEvidence) when the
     # semantic engine reviewed the group's commits; None for the legacy git engine.
     semantic: Any = None
+    # IntentumDiff semantic diff records (verlato.core.semantic.build_semantic_diff). When present,
+    # LLM prompts use these instead of raw patch hunks.
+    semantic_diff: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

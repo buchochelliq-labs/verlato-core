@@ -61,8 +61,9 @@ struct ModelArgs {
     infer_commit_intents: bool,
     #[arg(long)]
     no_infer_commit_intents: bool,
-    #[arg(long)]
-    model_privacy: Option<String>,
+    /// Privacy mode for model evidence (accepted for CLI compatibility; native commands make no model calls).
+    #[arg(long = "privacy")]
+    privacy: Option<String>,
     #[arg(long)]
     allow_remote_patches: bool,
 }
@@ -494,6 +495,21 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn accepts_python_compatible_privacy_flags() {
+        let parsed = Cli::try_parse_from([
+            "verlato",
+            "draft",
+            "json",
+            "--base",
+            "v1",
+            "--privacy",
+            "local-summary-then-ai",
+            "--allow-remote-patches",
+        ]);
+        assert!(parsed.is_ok(), "{:?}", parsed.err());
     }
 
     #[test]

@@ -4,7 +4,7 @@ from collections import defaultdict
 
 from verlato.core.areas import infer_area, is_docs_path, is_test_path
 from verlato.core.models import ChangedFile, DiffEvidence
-from verlato.core.semantic import build_semantic_evidence
+from verlato.core.semantic import build_semantic_diff, build_semantic_evidence
 
 
 class DiffEvidenceBuilder:
@@ -50,8 +50,14 @@ class DiffEvidenceBuilder:
             config_changes,
             representative_hunks,
         )
-        semantic = build_semantic_evidence(commits or [], paths=[f.path for f in files]) if commits else None
+        paths = [f.path for f in files]
+        semantic = build_semantic_evidence(commits or [], paths=paths) if commits else None
+        semantic_diff = build_semantic_diff(commits or [], paths=paths) if semantic is not None else []
         if semantic is not None:
+            # The semantic diff replaces raw hunk excerpts, so the summary does not point at them.
+            summary = self._build_summary(
+                files_by_area, file_statuses, api_changes, migration_changes, config_changes, {}
+            )
             summary = f"{semantic.summary}; {summary}"
 
         return DiffEvidence(
@@ -65,6 +71,7 @@ class DiffEvidenceBuilder:
             representative_hunks=representative_hunks,
             summary=summary,
             semantic=semantic,
+            semantic_diff=semantic_diff,
         )
 
     @staticmethod

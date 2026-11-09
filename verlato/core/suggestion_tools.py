@@ -6,6 +6,7 @@ from typing import Any
 from verlato.core.commit_intent import commit_intent_payload, conventional_commit_message, effective_conventional_commit
 from verlato.core.diff_evidence import DiffEvidenceBuilder
 from verlato.core.models import ChangedFile, ChangeGroup, ChangeItem, changed_files_for_group
+from verlato.core.semantic import render_semantic_diff, semantic_diff_for_prompt, semantic_prompt_payload
 from verlato.core.tooling import ToolDefinition, ToolProvider
 
 DEFAULT_PATCH_CHUNK_CHARS = 12_000
@@ -28,17 +29,36 @@ class SuggestionEvidenceItem:
 
 
 class SuggestionEvidenceToolProvider(ToolProvider):
-    def __init__(self, entries: list[SuggestionEvidenceItem]) -> None:
+    """Evidence tools for tool-calling models.
+
+    When IntentumDiff reviewed the change, models get the semantic diff tools
+    (``verlato_get_file_semantic_diff`` / ``verlato_search_semantic_diff``) instead of raw patch
+    tools. ``semantic_detail`` (the privacy mode allows source content) decides whether
+    IntentumDiff's change descriptions, which may contain literal values, are returned.
+    """
+
+    def __init__(self, entries: list[SuggestionEvidenceItem], *, semantic_detail: bool = False) -> None:
         self.entries = entries
+        self.semantic_detail = semantic_detail
         self._by_id = {entry.id: entry for entry in entries}
 
+    @property
+    def uses_semantic_diff(self) -> bool:
+        return any(getattr(entry.diff, "semantic", None) is not None for entry in self.entries)
+
     @classmethod
-    def from_groups(cls, groups: list[ChangeGroup], items: list[ChangeItem]) -> SuggestionEvidenceToolProvider:
+    def from_groups(
+        cls,
+        groups: list[ChangeGroup],
+        items: list[ChangeItem],
+        *,
+        semantic_detail: bool = False,
+    ) -> SuggestionEvidenceToolProvider:
         diff_builder = DiffEvidenceBuilder()
         entries: list[SuggestionEvidenceItem] = []
         for group, item in zip(groups, items, strict=False):
             files = changed_files_for_group(group)
-            diff = diff_builder.build(files)
+            diff = diff_builder.build(files, commits=group.commits)
             patch_chars = sum(len(file.patch or "") for file in files)
             missing_patch_count = sum(1 for file in files if not file.patch)
             entries.append(
@@ -51,9 +71,47 @@ class SuggestionEvidenceToolProvider(ToolProvider):
                     missing_patch_count=missing_patch_count,
                 )
             )
-        return cls(entries)
+        return cls(entries, semantic_detail=semantic_detail)
 
     def list_tools(self) -> list[ToolDefinition]:
+        tools = self._base_tools()
+        if self.uses_semantic_diff:
+            return [*tools[:2], *self._semantic_tools()]
+        return tools
+
+    def _semantic_tools(self) -> list[ToolDefinition]:
+        return [
+            ToolDefinition(
+                name="verlato_get_file_semantic_diff",
+                description=(
+                    "Return the IntentumDiff semantic diff for one file in one suggestion item: meaningful "
+                    "changes with their enclosing symbols, refactorings, moved code and ignored formatting."
+                ),
+                input_schema={
+                    "type": "object",
+                    "required": ["item_id", "path"],
+                    "properties": {
+                        "item_id": {"type": "string", "description": "Suggestion item id."},
+                        "path": {"type": "string", "description": "Changed file path."},
+                    },
+                },
+            ),
+            ToolDefinition(
+                name="verlato_search_semantic_diff",
+                description="Search the IntentumDiff semantic diff of one suggestion item for a symbol or term.",
+                input_schema={
+                    "type": "object",
+                    "required": ["item_id", "query"],
+                    "properties": {
+                        "item_id": {"type": "string", "description": "Suggestion item id."},
+                        "query": {"type": "string", "description": "Case-insensitive symbol or term."},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": MAX_SEARCH_RESULTS},
+                    },
+                },
+            ),
+        ]
+
+    def _base_tools(self) -> list[ToolDefinition]:
         return [
             ToolDefinition(
                 name="verlato_list_suggestion_items",
@@ -125,6 +183,17 @@ class SuggestionEvidenceToolProvider(ToolProvider):
                     maximum=MAX_PATCH_CHUNK_CHARS,
                 ),
             )
+        if name == "verlato_get_file_semantic_diff":
+            return self.get_file_semantic_diff(
+                item_id=_required_string(arguments, "item_id"),
+                path=_required_string(arguments, "path"),
+            )
+        if name == "verlato_search_semantic_diff":
+            return self.search_semantic_diff(
+                item_id=_required_string(arguments, "item_id"),
+                query=_required_string(arguments, "query"),
+                limit=_coerce_int(arguments.get("limit"), default=5, minimum=1, maximum=MAX_SEARCH_RESULTS),
+            )
         if name == "verlato_search_item_diff":
             return self.search_item_diff(
                 item_id=_required_string(arguments, "item_id"),
@@ -143,14 +212,50 @@ class SuggestionEvidenceToolProvider(ToolProvider):
 
     def get_suggestion_item(self, *, item_id: str) -> dict[str, Any]:
         entry = self._entry(item_id)
+        semantic = getattr(entry.diff, "semantic", None)
         return {
             **self._item_manifest(entry, include_files=True),
+            "evidence_source": "intentumdiff-semantic-diff" if semantic is not None else "git-patch",
+            "semantic_review": semantic_prompt_payload(semantic) if semantic is not None else None,
             "labels": list(entry.group.pr.labels if entry.group.pr else []),
             "pr": _pr_payload(entry.group),
             "commit_boundaries": _commit_boundaries_payload(entry.group),
             "commits": _commit_payloads(entry.group),
             "diff_summary": _diff_summary_payload(entry.diff),
         }
+
+    def _semantic_records(self, entry: SuggestionEvidenceItem) -> list[dict[str, Any]]:
+        records = list(getattr(entry.diff, "semantic_diff", []) or [])
+        return semantic_diff_for_prompt(records, detailed=self.semantic_detail)
+
+    def get_file_semantic_diff(self, *, item_id: str, path: str) -> dict[str, Any]:
+        entry = self._entry(item_id)
+        changed_file = self._file(entry, path)
+        records = [record for record in self._semantic_records(entry) if record.get("path") == changed_file.path]
+        return {
+            "item_id": item_id,
+            "path": changed_file.path,
+            "status": changed_file.status,
+            "semantic_diff_available": bool(records),
+            "detail": "detailed" if self.semantic_detail else "structure",
+            "records": records,
+            "text": render_semantic_diff(records, detailed=self.semantic_detail),
+        }
+
+    def search_semantic_diff(self, *, item_id: str, query: str, limit: int = 5) -> dict[str, Any]:
+        entry = self._entry(item_id)
+        needle = query.strip().lower()
+        results: list[dict[str, Any]] = []
+        if needle:
+            for record in self._semantic_records(entry):
+                for line in render_semantic_diff([record], detailed=self.semantic_detail).splitlines()[1:]:
+                    if needle in line.lower():
+                        results.append(
+                            {"path": record["path"], "commit": record.get("commit"), "change": line.strip()}
+                        )
+                        if len(results) >= limit:
+                            return {"item_id": item_id, "query": query, "results": results}
+        return {"item_id": item_id, "query": query, "results": results}
 
     def get_file_patch(self, *, item_id: str, path: str, offset: int = 0, limit: int = DEFAULT_PATCH_CHUNK_CHARS) -> dict[str, Any]:
         entry = self._entry(item_id)

@@ -113,6 +113,14 @@ Known, intentional differences:
 A changelog re-apply bug found while porting (re-applying a version left that version's old
 subsections behind) was fixed in both implementations.
 
+## LLM evidence
+
+Model-backed features still run in Python, but they already consume the IntentumDiff semantic
+diff instead of raw patches (see "What the LLM sees" in the README). The semantic diff lives in
+the per-commit digest (`FileSemantics.changes`, digest format `v2`), which the Rust engine
+produces in the identical format, so the providers ported in the next phase receive the same
+evidence without depending on patch text.
+
 ## Remaining phases
 
 1. **Providers** (next): a `Provider` trait with Ollama, OpenAI-compatible/LiteLLM, GitHub

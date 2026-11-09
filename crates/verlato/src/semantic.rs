@@ -18,7 +18,7 @@ use crate::vocab::is_test_path;
 
 pub const DIFF_ENGINE_CHOICES: &[&str] = &["intentumdiff", "git"];
 pub const DEFAULT_DIFF_ENGINE: &str = "intentumdiff";
-pub const SEMANTIC_DIGEST_VERSION: &str = "v1";
+pub const SEMANTIC_DIGEST_VERSION: &str = "v2";
 pub const DEFAULT_SEMANTIC_CACHE_PATH: &str = ".verlato_semantic_cache.json";
 pub const GROUP_KINDS: &[&str] = &[
     "MEANINGFUL_CHANGE",
@@ -101,6 +101,10 @@ pub struct FileSemantics {
     pub guardrails: Vec<BTreeMap<String, String>>,
     #[serde(default)]
     pub parse_errors: Vec<String>,
+    /// IntentumDiff's review-level changes (the semantic diff LLM prompts use instead of raw
+    /// patches); same shape as the Python `semantic_diff_entries`.
+    #[serde(default)]
+    pub changes: Vec<Value>,
 }
 
 fn modified() -> String {
@@ -434,6 +438,7 @@ pub fn digest_file_diff(
             ])
         })
         .collect();
+    let semantic_changes = semantic_diff_entries(changes, groups);
     let metadata_lifecycle = review
         .get("metadata")
         .and_then(|m| m.get("file_lifecycle"))
@@ -471,7 +476,138 @@ pub fn digest_file_diff(
             .take(5)
             .map(|e| truncate_chars(e.as_str().unwrap_or(&e.to_string()), MAX_REASON_CHARS))
             .collect(),
+        changes: semantic_changes,
     }
+}
+
+const MAX_SEMANTIC_ENTRIES_PER_FILE: usize = 40;
+const MAX_SEMANTIC_EDITS_PER_ENTRY: usize = 4;
+const MAX_SEMANTIC_DETAIL_CHARS: usize = 160;
+
+fn semantic_group(kind: &str) -> Option<&'static str> {
+    match kind {
+        "MEANINGFUL_CHANGE" => Some("meaningful"),
+        "REFACTORING" => Some("refactoring"),
+        "MOVED_CODE" => Some("moved"),
+        _ => None,
+    }
+}
+
+fn identifier_or_null(value: &str, node_type: &str) -> Value {
+    let text = value.trim();
+    if identifier().is_match(text) && text != node_type {
+        json!(text)
+    } else {
+        Value::Null
+    }
+}
+
+fn node_identifier(node: Option<&Value>) -> Value {
+    match node {
+        Some(node) => identifier_or_null(&node_name(node), str_field(node, "node_type")),
+        None => Value::Null,
+    }
+}
+
+fn change_detail(change: &Value) -> String {
+    let text_diff = str_field(change, "text_diff");
+    let raw = if text_diff.is_empty() {
+        str_field(change, "description")
+    } else {
+        text_diff
+    };
+    truncate_chars(
+        &raw.split_whitespace().collect::<Vec<_>>().join(" "),
+        MAX_SEMANTIC_DETAIL_CHARS,
+    )
+}
+
+fn edit_of(change: &Value) -> Value {
+    let old_node = change.get("old_node").filter(|n| n.is_object());
+    let new_node = change.get("new_node").filter(|n| n.is_object());
+    let node = new_node.or(old_node);
+    let mut edit = json!({
+        "change": str_field(change, "change_type"),
+        "node": node.map(|n| str_field(n, "node_type")).unwrap_or(""),
+        "name": node_identifier(node),
+        "detail": change_detail(change),
+    });
+    if old_node.is_some() && new_node.is_some() {
+        let old_name = node_identifier(old_node);
+        if !old_name.is_null() && old_name != edit["name"] {
+            edit["old_name"] = old_name;
+        }
+    }
+    edit
+}
+
+/// IntentumDiff's review-level changes as compact semantic-diff entries (ports
+/// `semantic_diff_entries` in `verlato/core/semantic.py`).
+pub fn semantic_diff_entries(changes: &[Value], groups: &[Value]) -> Vec<Value> {
+    let mut entries = Vec::new();
+    for group in groups {
+        let Some(group_name) = semantic_group(str_field(group, "kind")) else {
+            continue;
+        };
+        let labels_of = |key: &str| {
+            group
+                .get(key)
+                .and_then(Value::as_array)
+                .filter(|l| !l.is_empty())
+                .cloned()
+        };
+        let labels = labels_of("new_labels")
+            .or_else(|| labels_of("old_labels"))
+            .unwrap_or_default();
+        let old_labels = labels_of("old_labels").unwrap_or_default();
+        let mut edits = Vec::new();
+        for index in group
+            .get("raw_change_indices")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+        {
+            let Some(change) = index.as_u64().and_then(|i| changes.get(i as usize)) else {
+                continue;
+            };
+            edits.push(edit_of(change));
+            if edits.len() >= MAX_SEMANTIC_EDITS_PER_ENTRY {
+                break;
+            }
+        }
+        let first_label = |labels: &[Value]| {
+            labels
+                .first()
+                .and_then(Value::as_str)
+                .map(|l| identifier_or_null(l, ""))
+                .unwrap_or(Value::Null)
+        };
+        let symbol = first_label(&labels);
+        let old_symbol = first_label(&old_labels);
+        let refactoring = str_field(group, "refactoring_kind");
+        entries.push(json!({
+            "group": group_name,
+            "old_symbol": if !old_symbol.is_null() && old_symbol != symbol { old_symbol } else { Value::Null },
+            "symbol": symbol,
+            "refactoring": if refactoring.is_empty() { Value::Null } else { json!(refactoring) },
+            "edits": edits,
+        }));
+        if entries.len() >= MAX_SEMANTIC_ENTRIES_PER_FILE {
+            break;
+        }
+    }
+    if groups.is_empty() {
+        for change in changes.iter().take(MAX_SEMANTIC_ENTRIES_PER_FILE) {
+            entries.push(json!({
+                "group": "meaningful",
+                "symbol": null,
+                "old_symbol": null,
+                "refactoring": null,
+                "edits": [edit_of(change)],
+            }));
+        }
+    }
+    entries
 }
 
 // ---------------------------------------------------------------------------

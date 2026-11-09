@@ -77,7 +77,16 @@ pub fn build(files: &[ChangedFile], commits: Option<&[Commit]>) -> DiffEvidence 
         )
     });
     if let Some(semantic) = &semantic {
-        summary = format!("{}; {summary}", semantic.summary);
+        // The semantic diff replaces raw hunk excerpts, so the summary does not point at them.
+        let without_hunks = build_summary(
+            &files_by_area,
+            &file_statuses,
+            &api_changes,
+            &migration_changes,
+            &config_changes,
+            &IndexMap::new(),
+        );
+        summary = format!("{}; {without_hunks}", semantic.summary);
     }
     DiffEvidence {
         files_by_area,
