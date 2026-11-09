@@ -99,6 +99,12 @@ class _FakeService:
     def get_suggestion_item(self, *, base: str, item_id: str, head: str = "HEAD"):
         return {"item_id": item_id, "base": base, "head": head}
 
+    def get_file_semantic_diff(self, *, base: str, item_id: str, path: str, head: str = "HEAD"):
+        return {"item_id": item_id, "path": path, "records": [], "text": ""}
+
+    def search_semantic_diff(self, *, base: str, item_id: str, query: str, head: str = "HEAD", limit: int = 5):
+        return {"item_id": item_id, "query": query, "results": []}
+
     def get_file_patch(
         self,
         *,
@@ -148,11 +154,28 @@ def test_mcp_tool_metadata_lists_agent_facing_tools():
         "verlato_reconcile_preview",
         "verlato_list_suggestion_items",
         "verlato_get_suggestion_item",
-        "verlato_get_file_patch",
-        "verlato_search_item_diff",
+        "verlato_get_file_semantic_diff",
+        "verlato_search_semantic_diff",
         "verlato_draft_conventional_commit",
         "verlato_draft_conventional_commits",
     ]
+
+
+def test_legacy_git_engine_exposes_patch_tools_instead(monkeypatch):
+    monkeypatch.setenv("VERLATO_DIFF_ENGINE", "git")
+    names = [tool["name"] for tool in list_tool_metadata()]
+    assert "verlato_get_file_patch" in names and "verlato_search_item_diff" in names
+    server = create_fastmcp_server(service=_FakeService(), fastmcp_cls=_FakeFastMCP)
+    patch = server.registered["verlato_get_file_patch"](base="v1.0.0", item_id="ci_1", path="src/a.py")
+    assert patch["path"] == "src/a.py"
+    assert "verlato_get_file_semantic_diff" in server.registered
+
+
+def test_semantic_engine_hides_raw_patch_tools(monkeypatch):
+    monkeypatch.delenv("VERLATO_DIFF_ENGINE", raising=False)
+    server = create_fastmcp_server(service=_FakeService(), fastmcp_cls=_FakeFastMCP)
+    assert "verlato_get_file_patch" not in server.registered
+    assert "verlato_search_item_diff" not in server.registered
 
 
 def test_mcp_resource_and_prompt_metadata_lists_capabilities():
@@ -182,8 +205,8 @@ def test_create_fastmcp_server_registers_verlato_tools():
         "verlato_reconcile_preview",
         "verlato_list_suggestion_items",
         "verlato_get_suggestion_item",
-        "verlato_get_file_patch",
-        "verlato_search_item_diff",
+        "verlato_get_file_semantic_diff",
+        "verlato_search_semantic_diff",
         "verlato_draft_conventional_commit",
         "verlato_draft_conventional_commits",
     }
@@ -198,7 +221,9 @@ def test_create_fastmcp_server_registers_verlato_tools():
     assert "file" in hints
     assert server.registered["verlato_preview_release_notes"](base="v1.0.0") == "preview:v1.0.0->HEAD"
     assert server.registered["verlato_apply_draft"](base="v1.0.0", target="changelog")["target"] == "changelog"
-    assert server.registered["verlato_get_file_patch"](base="v1.0.0", item_id="ci_1", path="src/a.py")["path"] == "src/a.py"
+    semantic = server.registered["verlato_get_file_semantic_diff"](base="v1.0.0", item_id="ci_1", path="src/a.py")
+    assert semantic["path"] == "src/a.py"
+    assert "IntentumDiff semantic diff" in server.kwargs["instructions"]
     assert server.registered["verlato_draft_conventional_commit"](base="v1.0.0", sha="a1")["sha"] == "a1"
     batch = server.registered["verlato_draft_conventional_commits"](base="v1.0.0", shas=["a1", "b2"])
     assert batch["completed"] == 2

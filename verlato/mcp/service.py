@@ -22,9 +22,14 @@ from verlato.core.collector import Collector
 from verlato.core.commit_intent import draft_conventional_commit
 from verlato.core.drafts import DraftDocument, DraftItem, DraftSection, DraftService, DraftTarget
 from verlato.core.suggestion_tools import SuggestionEvidenceToolProvider
-from verlato.core.model_privacy import resolve_model_privacy
+from verlato.core.model_privacy import can_send_raw_patches, resolve_model_privacy
+from verlato.core.semantic import resolve_diff_engine
 from verlato.providers.factory import build_provider
 from verlato.state.store import StateStore
+
+
+# Provider label for MCP clients: an external agent, never a local model.
+MCP_AGENT_PROVIDER = "mcp-agent"
 
 
 @dataclass
@@ -220,6 +225,31 @@ class MCPService:
 
     def get_suggestion_item(self, *, base: str, item_id: str, head: str = "HEAD") -> dict:
         return self._suggestion_tool_provider(base=base, head=head).get_suggestion_item(item_id=item_id)
+
+    def uses_semantic_diff(self) -> bool:
+        """True when change evidence comes from IntentumDiff (the default diff engine)."""
+
+        return resolve_diff_engine(load_config().diff_engine) == "intentumdiff"
+
+    def semantic_detail_allowed(self) -> bool:
+        """Whether agents may receive IntentumDiff's change descriptions (which can contain literals).
+
+        MCP clients are treated as remote models: only `trusted-provider-patch` (or an explicit
+        remote-patch opt-in) allows the detailed semantic diff; otherwise agents get structure
+        and identifier names only.
+        """
+
+        return can_send_raw_patches(MCP_AGENT_PROVIDER, resolve_model_privacy(load_config().model_privacy))
+
+    def get_file_semantic_diff(self, *, base: str, item_id: str, path: str, head: str = "HEAD") -> dict:
+        return self._suggestion_tool_provider(base=base, head=head).get_file_semantic_diff(item_id=item_id, path=path)
+
+    def search_semantic_diff(self, *, base: str, item_id: str, query: str, head: str = "HEAD", limit: int = 5) -> dict:
+        return self._suggestion_tool_provider(base=base, head=head).search_semantic_diff(
+            item_id=item_id,
+            query=query,
+            limit=limit,
+        )
 
     def get_file_patch(
         self,
@@ -428,7 +458,9 @@ class MCPService:
         groups = _collect_groups(base, head)
         classifier = Classifier()
         items = [classifier.classify(group, base_ref=base, head_ref=head)[0] for group in groups]
-        return SuggestionEvidenceToolProvider.from_groups(groups, items)
+        return SuggestionEvidenceToolProvider.from_groups(
+            groups, items, semantic_detail=self.semantic_detail_allowed()
+        )
 
     def _draft_document_from_dict(self, data: dict) -> DraftDocument:
         return DraftDocument(

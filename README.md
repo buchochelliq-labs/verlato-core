@@ -319,7 +319,7 @@ Editor integration:
 
 - The bundled VS Code extension uses `verlato service`, a built-in JSON-lines stdio service, for core draft/review/state/feedback flows when `verlato.serviceMode` is `auto` (the default). If the service cannot start, the extension falls back to one-off CLI commands and shows a degraded status.
 - Model-heavy flows such as `draft suggest`, Ollama doctor/warmup, and realtime model telemetry still use direct CLI commands in this first service pass.
-- The release control view exposes an `Infer commit` action beside each changeset commit, plus `Infer all commits` for the current draft. These call the backend commit inference contract in diff-only mode so the model sees commit IDs, file/status evidence, deterministic facts, and privacy-gated patch excerpts rather than the authored commit subject/body. Single-commit inference copies the generated Conventional Commits message to the clipboard; batch inference renders each result or per-commit error in sequence.
+- The release control view exposes an `Infer commit` action beside each changeset commit, plus `Infer all commits` for the current draft. These call the backend commit inference contract in diff-only mode so the model sees commit IDs, file/status evidence, and the IntentumDiff semantic diff (detail gated by privacy mode) rather than the authored commit subject/body or raw patches. Single-commit inference copies the generated Conventional Commits message to the clipboard; batch inference renders each result or per-commit error in sequence.
 - The repo includes [.vscode/mcp.json](.vscode/mcp.json) so VS Code/Copilot can attach to the FastMCP server from the workspace.
 - The MCP server exposes these tool names:
   - `verlato_service_health`
@@ -332,11 +332,18 @@ Editor integration:
   - `verlato_request_model_input`
   - `verlato_reconcile_preview`
   - `verlato_list_suggestion_items`
-  - `verlato_get_suggestion_item`
-  - `verlato_get_file_patch`
-  - `verlato_search_item_diff`
+  - `verlato_get_suggestion_item` (includes the IntentumDiff `semantic_review`)
+  - `verlato_get_file_semantic_diff`
+  - `verlato_search_semantic_diff`
   - `verlato_draft_conventional_commit`
   - `verlato_draft_conventional_commits`
+- MCP agents get IntentumDiff's semantic diff, not raw patches: `verlato_get_file_semantic_diff` returns a file's
+  meaningful changes (with enclosing symbols), refactorings, moved code and ignored formatting, and
+  `verlato_search_semantic_diff` finds a symbol or term in it. MCP clients are treated as remote models, so IntentumDiff's
+  change descriptions (which can contain literal values) are included only under `trusted-provider-patch`; otherwise
+  agents get structure and identifier names. The raw-patch tools `verlato_get_file_patch` and
+  `verlato_search_item_diff` are registered only with the legacy `diff_engine: "git"`. The server instructions and the
+  `verlato_review_request` prompt tell agents to base release notes on the semantic diff.
 - The MCP server also exposes read-only resources:
   - `verlato://overview`
   - `verlato://guidance/{name}`
