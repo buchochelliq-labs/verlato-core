@@ -113,6 +113,21 @@ Known, intentional differences:
 A changelog re-apply bug found while porting (re-applying a version left that version's old
 subsections behind) was fixed in both implementations.
 
+## Upstream IntentumDiff issues
+
+Engine gaps found while building on IntentumDiff, with the workaround Verlato carries until each
+is fixed (both runtimes implement the same workaround):
+
+| Issue | Gap | Verlato workaround |
+|---|---|---|
+| [core#297](https://github.com/buchochelliq-labs/intentumdiff-core/issues/297) | No definition-level signature change; a new required parameter is only an `identifier` addition | Infers "extended" (compatible) signatures from `default_parameter`/`optional_parameter` additions; required-parameter additions go undetected |
+| [core#298](https://github.com/buchochelliq-labs/intentumdiff-core/issues/298) | One file over the fuel budget fails cross-file analysis for the whole commit | Parses the failing path from the error, excludes it and retries (`_attach_cross_file`); cross-file stays opt-in |
+| [core#299](https://github.com/buchochelliq-labs/intentumdiff-core/issues/299) | Spurious `MOVED_CODE` for the surviving sub-expression of a modified statement | Folds moves inside meaningful-edit spans (`_is_moved_within_meaningful`) |
+| [core#300](https://github.com/buchochelliq-labs/intentumdiff-core/issues/300) | Change descriptions don't say what changed (`text_diff` empty) | Slices bounded before/after snippets from the file contents (`_node_source`) |
+| [core#301](https://github.com/buchochelliq-labs/intentumdiff-core/issues/301) | Files over ~10k lines fail the fixed 16 MiB output/tree limits | Recorded as unreviewed with the engine's reason |
+| [core#250](https://github.com/buchochelliq-labs/intentumdiff-core/issues/250) (comment) | Spurious `module` pseudo-moves and a `module.` prefix on real moves | Cross-file stays opt-in |
+| [python#332](https://github.com/buchochelliq-labs/intentumdiff-python/issues/332) | `finalize_commit_diff` crashes on `FileDiffError` results | Only diffed results are passed to cross-file analysis |
+
 ## LLM evidence
 
 Model-backed features still run in Python, but they already consume the IntentumDiff semantic

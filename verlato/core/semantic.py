@@ -647,7 +647,9 @@ def _looks_like_parameter(node: Any) -> bool:
 
 def _is_optional_parameter(node: Any) -> bool:
     """Parameter nodes that carry a default or are declared optional (Python
-    ``default_parameter`` / ``typed_default_parameter``, TypeScript ``optional_parameter``)."""
+    ``default_parameter`` / ``typed_default_parameter``, TypeScript ``optional_parameter``).
+    Grammar-specific until the engine reports definition-level signature facts
+    (intentumdiff-core#297)."""
 
     node_type = str(getattr(node, "node_type", "") or "").lower()
     return "parameter" in node_type and ("default" in node_type or "optional" in node_type)
@@ -696,7 +698,8 @@ def _source_lines(content: Any) -> list[bytes] | None:
 
 def _node_source(node: Any, lines: list[bytes] | None) -> str | None:
     """Whitespace-collapsed source text of ``node`` (engine positions are 0-based lines and
-    byte columns), bounded to ``MAX_SEMANTIC_SNIPPET_CHARS``."""
+    byte columns), bounded to ``MAX_SEMANTIC_SNIPPET_CHARS``. The engine's own change
+    descriptions don't carry the changed text (intentumdiff-core#300)."""
 
     position = getattr(node, "position", None) if node is not None else None
     if position is None or lines is None:
@@ -750,7 +753,8 @@ def _group_changes(group: Any, changes: list[Any]) -> list[Any]:
 
 def _is_moved_within_meaningful(group_changes: list[Any], old_spans: list[_Span], new_spans: list[_Span]) -> bool:
     """A moved sub-expression whose old and new nodes lie inside meaningful edits (e.g. the
-    ``page * per_page`` left behind when ``+ 1`` is removed) is part of that edit, not a move."""
+    ``page * per_page`` left behind when ``+ 1`` is removed) is part of that edit, not a move.
+    Workaround for intentumdiff-core#299."""
 
     if not group_changes:
         return False
@@ -1327,8 +1331,8 @@ def _attach_cross_file(differ: Any, digest: CommitSemantics, results: list[Any],
     """Best-effort cross-file analysis.
 
     IntentumDiff builds a symbol index over every result; a single file that exceeds the
-    parser fuel budget fails the whole index. Such files are dropped (and reported) so the
-    rest of the commit still gets cross-file move/rename detection.
+    parser fuel budget fails the whole index (intentumdiff-core#298). Such files are dropped
+    (and reported) so the rest of the commit still gets cross-file move/rename detection.
     """
 
     excluded: list[str] = []
