@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterator, Protocol
+from typing import Any, Protocol
 
 
 class SuggestionCacheError(RuntimeError):
@@ -29,7 +30,7 @@ class SuggestionCacheBackend(Protocol):
     path: Path
     dirty: bool
 
-    def load(self) -> "SuggestionCacheBackend":
+    def load(self) -> SuggestionCacheBackend:
         ...
 
     def get(self, key: str) -> CachedSuggestion | None:
@@ -87,7 +88,7 @@ class JsonSuggestionCacheStore:
         self.entries: dict[str, dict[str, Any]] = {}
         self.dirty = False
 
-    def load(self) -> "JsonSuggestionCacheStore":
+    def load(self) -> JsonSuggestionCacheStore:
         if not self.path.exists():
             return self
         try:
@@ -280,7 +281,7 @@ def _process_lock_for(path: Path) -> threading.Lock:
 
 
 def _lock_file(lock_file) -> None:
-    if os.name == "nt":
+    if sys.platform == "win32":
         import msvcrt
 
         lock_file.seek(0, os.SEEK_END)
@@ -296,7 +297,7 @@ def _lock_file(lock_file) -> None:
 
 
 def _unlock_file(lock_file) -> None:
-    if os.name == "nt":
+    if sys.platform == "win32":
         import msvcrt
 
         lock_file.seek(0)

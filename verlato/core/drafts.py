@@ -47,6 +47,9 @@ class DraftItem:
     edited_summary: str | None
     summary_provenance: dict | None
     hidden: bool
+    # IntentumDiff semantic review for this item (verlato.core.semantic.SemanticEvidence as a dict).
+    semantic: dict | None = None
+    diff_engine: str = "git"
 
 
 @dataclass
@@ -192,6 +195,8 @@ class DraftService:
                     edited_summary=item.edited_summary,
                     summary_provenance=item.summary_provenance,
                     hidden=item.hidden,
+                    semantic=self._semantic(item),
+                    diff_engine="intentumdiff" if self._semantic(item) else "git",
                 )
             )
 
@@ -214,7 +219,12 @@ class DraftService:
 
     def _apply_changelog(self, existing: str, rendered: str, version: str) -> tuple[str, str]:
         if re.search(rf"^### {re.escape(version)} \([^)]+\)$", existing, flags=re.MULTILINE):
-            pattern = re.compile(rf"^### {re.escape(version)} \([^)]+\)\n.*?(?=^### |\Z)", re.MULTILINE | re.DOTALL)
+            # Replace through the next *version* heading; entries contain "### Added"-style
+            # subsections that must be replaced along with the heading.
+            pattern = re.compile(
+                rf"^### {re.escape(version)} \([^)]+\)\n.*?(?=^### [^\n]* \([^)\n]+\)$|\Z)",
+                re.MULTILINE | re.DOTALL,
+            )
             return pattern.sub(rendered.rstrip() + "\n\n", existing, count=1), "replace"
 
         if not existing.strip():
@@ -257,6 +267,8 @@ class DraftService:
             return "Human edited summary, originally generated from deterministic diff evidence"
         if provider_signal:
             return f"LLM summary generated from diff evidence ({provider_signal.split(':', 1)[1]})"
+        if self._semantic(item):
+            return "Deterministic summary generated from IntentumDiff semantic evidence"
         return "Deterministic summary generated from changed-file evidence"
 
     def _classification_source(self, item: ChangeItem) -> str:
@@ -274,7 +286,14 @@ class DraftService:
             return "Deterministic classification from conventional commit signal"
         if any(signal.startswith("label:") for signal in item.evidence.commit_signals):
             return "Deterministic classification from labels and changed files"
+        if "semantic-classified" in item.evidence.commit_signals:
+            return "Deterministic classification from IntentumDiff semantic review"
         return "Deterministic classification from changed-file evidence"
+
+    @staticmethod
+    def _semantic(item: ChangeItem) -> dict | None:
+        semantic = item.evidence.diff_summary.get("semantic")
+        return semantic if isinstance(semantic, dict) else None
 
     def _evidence_summary(self, item: ChangeItem) -> str:
         summary = item.evidence.diff_summary.get("summary")

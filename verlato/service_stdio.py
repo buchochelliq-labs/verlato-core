@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import IO
+from typing import IO, Any
 
 from verlato.mcp.service import MCPService, ReleasePreviewRequest
 
@@ -125,6 +125,21 @@ def _dispatch(service: MCPService, method: str, params: dict[str, object]) -> ob
             offset=_optional_int(params.get("offset"), 0),
             limit=_optional_int(params.get("limit"), 12000),
         )
+    if method == "suggestion.semantic_diff":
+        return service.get_file_semantic_diff(
+            base=_required_string(params, "base"),
+            head=str(params.get("head") or "HEAD"),
+            item_id=_required_string(params, "item_id"),
+            path=_required_string(params, "path"),
+        )
+    if method == "suggestion.semantic_search":
+        return service.search_semantic_diff(
+            base=_required_string(params, "base"),
+            head=str(params.get("head") or "HEAD"),
+            item_id=_required_string(params, "item_id"),
+            query=_required_string(params, "query"),
+            limit=_optional_int(params.get("limit"), 5),
+        )
     if method == "suggestion.search":
         return service.search_item_diff(
             base=_required_string(params, "base"),
@@ -190,7 +205,7 @@ def _optional_string_list(value: object) -> list[str] | None:
     return [str(item) for item in value if str(item).strip()]
 
 
-def _optional_int(value: object, default: int) -> int:
+def _optional_int(value: Any, default: int) -> int:
     if value is None:
         return default
     try:

@@ -4,13 +4,21 @@ import subprocess
 
 from verlato.core.adapters import PullRequestAdapter, parse_git_show_changed_files
 from verlato.core.models import ChangedFile, Commit, PullRequest
+from verlato.core.semantic import IntentumDiffEngine, ProgressCallback
 
 _COMMIT_PATCH_MARKER = "__VERLATO_COMMIT_PATCH__"
 
 
 class Collector:
-    def __init__(self, pr_adapter: PullRequestAdapter) -> None:
+    def __init__(
+        self,
+        pr_adapter: PullRequestAdapter,
+        semantic_engine: IntentumDiffEngine | None = None,
+        semantic_progress: ProgressCallback | None = None,
+    ) -> None:
         self.pr_adapter = pr_adapter
+        self.semantic_engine = semantic_engine
+        self.semantic_progress = semantic_progress
 
     def collect_commits(self, base: str, head: str) -> list[Commit]:
         cmd = ["git", "log", "--first-parent", "--pretty=format:%H%x09%P%x09%s%x09%an", f"{base}..{head}"]
@@ -23,7 +31,10 @@ class Collector:
         patch_by_commit = self.changed_files_for_commits([commit.sha for commit in commits])
         for commit in commits:
             commit.files = patch_by_commit.get(commit.sha, [])
-        return list(reversed(commits))
+        ordered = list(reversed(commits))
+        if self.semantic_engine is not None:
+            self.semantic_engine.annotate(ordered, progress=self.semantic_progress)
+        return ordered
 
     def latest_tag(self, head: str = "HEAD") -> str | None:
         cmd = ["git", "describe", "--tags", "--abbrev=0", head]

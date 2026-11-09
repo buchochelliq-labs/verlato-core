@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from verlato.core.model_privacy import DEFAULT_MODEL_PRIVACY, normalize_model_privacy
+from verlato.core.semantic import DEFAULT_DIFF_ENGINE, DEFAULT_SEMANTIC_CACHE_PATH, normalize_diff_engine
 
 
 class ConfigError(RuntimeError):
@@ -54,6 +55,10 @@ class SuggestionStyleConfig:
 @dataclass
 class VerlatoConfig:
     state_path: str = ".verlato_state.json"
+    diff_engine: str = DEFAULT_DIFF_ENGINE
+    semantic_cache_path: str = DEFAULT_SEMANTIC_CACHE_PATH
+    semantic_parallelism: int | None = None
+    semantic_cross_file: bool = False
     commit_intent_inference: str = "off"
     model_privacy: str = DEFAULT_MODEL_PRIVACY
     suggestion_cache_backend: str = "json"
@@ -91,6 +96,14 @@ def load_config(cwd: str | None = None) -> VerlatoConfig:
     config = VerlatoConfig(raw=raw)
     if raw.get("state_path"):
         config.state_path = str(raw["state_path"])
+    if raw.get("diff_engine") is not None:
+        config.diff_engine = normalize_diff_engine(raw["diff_engine"])
+    if raw.get("semantic_cache_path") is not None:
+        config.semantic_cache_path = str(raw["semantic_cache_path"])
+    if raw.get("semantic_parallelism") is not None:
+        config.semantic_parallelism = int(raw["semantic_parallelism"])
+    if raw.get("semantic_cross_file") is not None:
+        config.semantic_cross_file = bool(raw["semantic_cross_file"])
     if raw.get("commit_intent_inference") is not None:
         configured_inference = str(raw["commit_intent_inference"]).strip().lower()
         config.commit_intent_inference = (

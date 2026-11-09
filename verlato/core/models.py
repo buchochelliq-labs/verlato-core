@@ -31,6 +31,9 @@ class Commit:
     files: list[ChangedFile] = field(default_factory=list)
     inferred_intent: CommitIntent | None = None
     derived_intent: CommitIntent | None = None
+    # IntentumDiff digest for ``parent_sha..sha`` (verlato.core.semantic.CommitSemantics),
+    # attached by the Collector when the semantic engine is enabled.
+    semantics: Any = field(default=None, repr=False, compare=False)
 
 
 @dataclass
@@ -144,6 +147,12 @@ class DiffEvidence:
     tests_only: bool
     representative_hunks: dict[str, list[str]]
     summary: str
+    # IntentumDiff group-level evidence (verlato.core.semantic.SemanticEvidence) when the
+    # semantic engine reviewed the group's commits; None for the legacy git engine.
+    semantic: Any = None
+    # IntentumDiff semantic diff records (verlato.core.semantic.build_semantic_diff). When present,
+    # LLM prompts use these instead of raw patch hunks.
+    semantic_diff: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

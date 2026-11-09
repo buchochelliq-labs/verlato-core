@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import os
 from dataclasses import asdict, dataclass
+from typing import Any
 
 from verlato import __version__
 from verlato.cli.main import (
-    _build_adapter,
-    _can_send_raw_patches_for_config,
+    _annotate_semantics,
     _append_feedback_event,
+    _build_adapter,
     _build_suggestion_cache_store,
+    _can_send_raw_patches_for_config,
     _collect_groups,
+    _diff_engine_info,
     _update_draft_review,
     build_draft_document,
     run_scan,
@@ -19,10 +22,14 @@ from verlato.core.classifier import Classifier
 from verlato.core.collector import Collector
 from verlato.core.commit_intent import draft_conventional_commit
 from verlato.core.drafts import DraftDocument, DraftItem, DraftSection, DraftService, DraftTarget
+from verlato.core.model_privacy import can_send_raw_patches, resolve_model_privacy
+from verlato.core.semantic import resolve_diff_engine
 from verlato.core.suggestion_tools import SuggestionEvidenceToolProvider
-from verlato.core.model_privacy import resolve_model_privacy
 from verlato.providers.factory import build_provider
 from verlato.state.store import StateStore
+
+# Provider label for MCP clients: an external agent, never a local model.
+MCP_AGENT_PROVIDER = "mcp-agent"
 
 
 @dataclass
@@ -55,6 +62,7 @@ class MCPService:
         return {
             "status": "ok",
             "version": __version__,
+            "diff_engine": _diff_engine_info(),
             "state_path": config.state_path,
             "schema_version": state.schema_version,
             "tracked_items": len(state.items),
@@ -218,6 +226,31 @@ class MCPService:
     def get_suggestion_item(self, *, base: str, item_id: str, head: str = "HEAD") -> dict:
         return self._suggestion_tool_provider(base=base, head=head).get_suggestion_item(item_id=item_id)
 
+    def uses_semantic_diff(self) -> bool:
+        """True when change evidence comes from IntentumDiff (the default diff engine)."""
+
+        return resolve_diff_engine(load_config().diff_engine) == "intentumdiff"
+
+    def semantic_detail_allowed(self) -> bool:
+        """Whether agents may receive IntentumDiff's change descriptions (which can contain literals).
+
+        MCP clients are treated as remote models: only `trusted-provider-patch` (or an explicit
+        remote-patch opt-in) allows the detailed semantic diff; otherwise agents get structure
+        and identifier names only.
+        """
+
+        return can_send_raw_patches(MCP_AGENT_PROVIDER, resolve_model_privacy(load_config().model_privacy))
+
+    def get_file_semantic_diff(self, *, base: str, item_id: str, path: str, head: str = "HEAD") -> dict:
+        return self._suggestion_tool_provider(base=base, head=head).get_file_semantic_diff(item_id=item_id, path=path)
+
+    def search_semantic_diff(self, *, base: str, item_id: str, query: str, head: str = "HEAD", limit: int = 5) -> dict:
+        return self._suggestion_tool_provider(base=base, head=head).search_semantic_diff(
+            item_id=item_id,
+            query=query,
+            limit=limit,
+        )
+
     def get_file_patch(
         self,
         *,
@@ -262,6 +295,7 @@ class MCPService:
         evidence_mode: str = "diff-only",
     ) -> dict:
         commit = self._find_commit(base=base, head=head, sha=sha)
+        _annotate_semantics([commit])
         context = self._conventional_draft_context(
             model_provider=model_provider,
             model_privacy=model_privacy,
@@ -291,6 +325,7 @@ class MCPService:
     ) -> dict:
         commits = Collector(pr_adapter=_build_adapter()).collect_commits(base, head)
         selected_commits, lookup_errors = self._select_commits(commits, shas)
+        _annotate_semantics(selected_commits)
         context = self._conventional_draft_context(
             model_provider=model_provider,
             model_privacy=model_privacy,
@@ -379,7 +414,7 @@ class MCPService:
         model_provider: str | None,
         model_privacy: str | None,
         allow_remote_patches: bool,
-    ) -> dict[str, object]:
+    ) -> dict[str, Any]:
         config = load_config()
         privacy_mode = resolve_model_privacy(
             config.model_privacy,
@@ -423,7 +458,9 @@ class MCPService:
         groups = _collect_groups(base, head)
         classifier = Classifier()
         items = [classifier.classify(group, base_ref=base, head_ref=head)[0] for group in groups]
-        return SuggestionEvidenceToolProvider.from_groups(groups, items)
+        return SuggestionEvidenceToolProvider.from_groups(
+            groups, items, semantic_detail=self.semantic_detail_allowed()
+        )
 
     def _draft_document_from_dict(self, data: dict) -> DraftDocument:
         return DraftDocument(

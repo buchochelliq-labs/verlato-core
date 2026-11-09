@@ -2,8 +2,8 @@ import * as vscode from "vscode";
 import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import * as fs from "node:fs";
 
-import { ExecutableResolution, resolveSpawnCommand, resolveVerlatoExecutable } from "./cliResolution";
-import { resolveCommandModelProvider, shouldAttachGithubToken } from "./modelEnvironment";
+import { ExecutableResolution, resolvePythonDelegate, resolveSpawnCommand, resolveVerlatoExecutable } from "./cliResolution";
+import { resolveCommandModelProvider, semanticEngineEnvironment, shouldAttachGithubToken } from "./modelEnvironment";
 import { VerlatoServiceClient } from "./verlatoServiceClient";
 import {
   ApplyResult,
@@ -27,6 +27,7 @@ import {
   RepositoryPullRequest,
   RepositoryRef,
   ReviewUpdateRequest,
+  SemanticEngineStatus,
 } from "./types";
 
 type CommandActivityHandler = (entry: CommandLogEntry) => void;
@@ -56,6 +57,39 @@ export class VerlatoClient implements vscode.Disposable {
     private readonly output: vscode.OutputChannel,
   ) {
     this.emitStatus(this.lastStatus);
+    this.configurationWatcher = vscode.workspace.onDidChangeConfiguration?.((event) => {
+      if (
+        event.affectsConfiguration("verlato.diffEngine")
+        || event.affectsConfiguration("verlato.semanticParallelism")
+        || event.affectsConfiguration("verlato.semanticCrossFile")
+      ) {
+        // The long-running service captures its engine environment at start; restart lazily.
+        this.stopService("Verlato diff engine settings changed.");
+        this.serviceStartFailed = false;
+      }
+    });
+  }
+
+  private readonly configurationWatcher: vscode.Disposable | undefined;
+
+  /** IntentumDiff engine status as reported by `verlato doctor engine`. */
+  async getEngineStatus(): Promise<SemanticEngineStatus> {
+    try {
+      return await this.runJsonCommand<SemanticEngineStatus>(["doctor", "engine"]);
+    } catch (error) {
+      return {
+        engine: this.getDiffEngine(),
+        available: false,
+        version: null,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  getDiffEngine(): "intentumdiff" | "git" {
+    return semanticEngineEnvironment({
+      diffEngine: vscode.workspace.getConfiguration("verlato").get<string>("diffEngine"),
+    }).VERLATO_DIFF_ENGINE as "intentumdiff" | "git";
   }
 
   async getDraft(request: DraftRangeRequest): Promise<DraftDocument> {
@@ -465,6 +499,7 @@ export class VerlatoClient implements vscode.Disposable {
   dispose(): void {
     this.cancelActiveCommands();
     this.stopService("Verlato client disposed.");
+    this.configurationWatcher?.dispose();
     if (this.pendingRequestEmit) {
       clearTimeout(this.pendingRequestEmit);
       this.pendingRequestEmit = undefined;
@@ -495,6 +530,7 @@ export class VerlatoClient implements vscode.Disposable {
       `Extension: ${this.extensionPath}`,
       `CLI: ${resolution.executable}`,
       `Service: ${this.lastStatus.label}`,
+      `Diff engine: ${this.getDiffEngine() === "git" ? "legacy git patches" : "IntentumDiff semantic review"}`,
       `Model: ${formatModelSettings(this.getModelSettings())}`,
       `Searched: ${resolution.searched.join(", ")}`,
     ].join("\n");
@@ -1012,6 +1048,23 @@ export class VerlatoClient implements vscode.Disposable {
     env.VERLATO_TRACE_MODEL_CALLS = "1";
     env.VERLATO_TRACE_PROGRESS = "1";
     env.VERLATO_OLLAMA_STREAM = settings.ollamaStreamResponses ? "1" : "0";
+    const verlatoConfig = vscode.workspace.getConfiguration("verlato");
+    if (!env.VERLATO_PYTHON_CLI) {
+      // The native binary delegates model-backed commands to the Python implementation.
+      const pythonDelegate = resolvePythonDelegate({
+        workspacePath: this.workspaceFolder.uri.fsPath,
+        extensionPath: this.extensionPath,
+        existsSync: fs.existsSync,
+      });
+      if (pythonDelegate) {
+        env.VERLATO_PYTHON_CLI = pythonDelegate;
+      }
+    }
+    Object.assign(env, semanticEngineEnvironment({
+      diffEngine: verlatoConfig.get<string>("diffEngine"),
+      parallelism: verlatoConfig.get<number>("semanticParallelism"),
+      crossFile: verlatoConfig.get<boolean>("semanticCrossFile"),
+    }));
     if (settings.includePromptPayloads) {
       env.VERLATO_TRACE_MODEL_PAYLOADS = "1";
     }

@@ -224,4 +224,5 @@ class Grouper:
             ".github/release.md",
             ".verlato_state.json",
             ".verlato_suggestion_cache.json",
+            ".verlato_semantic_cache.json",
         } or normalized.endswith((".vsix", ".tgz"))

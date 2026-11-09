@@ -10,7 +10,8 @@ This document captures the current MVP architecture and should be reviewed befor
 
 2. **Signal hierarchy**
    - Conventional commits are preferred when present and high quality.
-   - Diff evidence and changed-file context are fallback truth when commit messages are vague.
+   - IntentumDiff semantic evidence (meaningful / refactoring / moved / style-only changes and symbol-level edits) is
+     fallback truth when commit messages are vague; changed-file paths and hunks are supporting context.
 
 3. **Deterministic first, model-ready second**
    - MVP behavior is deterministic and testable.
@@ -29,8 +30,12 @@ This document captures the current MVP architecture and should be reviewed befor
   - Group commits into PR-level groups (with no-PR fallback groups).
 - `verlato/core/conventional.py`
   - Conventional commit parser + breaking-change detection.
+- `verlato/core/semantic.py`
+  - The IntentumDiff engine adapter: reviews each commit with `intentumdiff.CommitDiffer`, reduces the result to a
+    privacy-safe `CommitSemantics` digest, caches digests per commit, runs uncached reviews in worker processes, and
+    aggregates digests into group-level `SemanticEvidence` (verdict, group counts, symbols, guardrails).
 - `verlato/core/diff_evidence.py`
-  - Builds compact `DiffEvidence` from changed files and patch hunks.
+  - Builds compact `DiffEvidence` led by IntentumDiff `SemanticEvidence`, plus changed-file paths and patch hunks.
 - `verlato/core/classifier.py`
   - Heuristic classification layer with diff fallback signals and model prompt construction for summary suggestions.
 - `verlato/core/reconciler.py`
@@ -55,7 +60,8 @@ This document captures the current MVP architecture and should be reviewed befor
 ## Data flow
 
 1. CLI receives `base` and `head` refs.
-2. `Collector` loads commits and optional PR mappings.
+2. `Collector` loads commits and optional PR mappings, and the IntentumDiff engine attaches a semantic digest to every
+   commit (cached per `parent..sha`).
 3. `Grouper` converts commit stream into PR-oriented groups.
 4. `Classifier` produces `ChangeItem` objects, attaching provenance and evidence.
 5. `Reconciler` filters already-known items by checksum.
@@ -69,6 +75,8 @@ For suggestion previews, `draft suggest --preview` is diff-first and model-backe
 
 - **GitHub adapter boundary** allows replacement with real API implementation and easy mocking in tests.
 - **Provider boundary** allows future model-backed summarization/classification without changing core pipeline contracts.
+- **Diff engine boundary** (`diff_engine`) selects IntentumDiff (default) or legacy git-patch evidence; IntentumDiff is
+  consumed only through its public `CommitDiffer` API, so engine upgrades do not touch the pipeline.
 - **Diff evidence bundle** is intentionally compact and model-friendly.
 - **Suggestion tone** is explicit CLI/config/editor state, so prompt style changes are reproducible and recorded in applied-summary provenance.
 - **Project language controls** stay explicit in config/env/editor settings and are copied into applied-summary provenance for auditability.

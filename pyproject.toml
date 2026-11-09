@@ -5,10 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "verlato"
 version = "0.1.0"
-description = "Diff-first release notes with conventional commit and intent inference"
+description = "Semantic release notes powered by IntentumDiff, with conventional commit and intent inference"
 readme = "README.md"
-requires-python = ">=3.10"
-dependencies = []
+requires-python = ">=3.12"
+dependencies = [
+  # The semantic diff engine that powers Verlato's change evidence.
+  "intentumdiff-python>=0.0.2b2",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -22,13 +25,19 @@ mcp = [
 
 [project.scripts]
 verlato = "verlato.cli.main:main"
+# Stable name for the Python implementation; the native Rust `verlato` binary delegates
+# not-yet-ported (model-backed) commands to it.
+verlato-py = "verlato.cli.main:main"
 verlato-mcp = "verlato.mcp.server:main"
+
+[tool.setuptools.packages.find]
+include = ["verlato*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 
 [tool.ruff]
-line-length = 120
+line-length = 140
 target-version = "py310"
 
 [tool.ruff.lint]
@@ -40,3 +49,7 @@ strict = false
 warn_unused_ignores = true
 warn_redundant_casts = true
 warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["intentumdiff", "intentumdiff.*", "fastmcp", "fastmcp.*"]
+ignore_missing_imports = true

@@ -12,6 +12,7 @@ import type {
   RepositoryCommit,
   RepositoryOverview,
   RepositoryPullRequest,
+  SemanticEvidence,
 } from "../client/types";
 
 export interface ReleaseControlRenderState {
@@ -1668,6 +1669,88 @@ function renderDraftReleaseNote(document: DraftDocument | undefined): string {
   return `<div class="release-note-list">${items.map((item) => `<p><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.summary)}</span></p>`).join("")}</div>`;
 }
 
+const SEMANTIC_VERDICT_LABELS: Record<string, string> = {
+  "style-only": "style only",
+  "refactor-only": "refactor only",
+  additive: "additive",
+  behavioral: "behavioral",
+  unreviewed: "unreviewed",
+};
+
+const SEMANTIC_GROUP_LABELS: [keyof SemanticEvidence["group_counts"], string][] = [
+  ["MEANINGFUL_CHANGE", "meaningful"],
+  ["REFACTORING", "refactoring"],
+  ["MOVED_CODE", "moved"],
+  ["IGNORED_STYLE", "style"],
+  ["NOISE_SUPPRESSED", "noise"],
+];
+
+export function renderSemanticVerdictBadge(semantic: SemanticEvidence | null | undefined): string {
+  if (!semantic) {
+    return "";
+  }
+  const verdict = String(semantic.verdict || "unreviewed");
+  const label = SEMANTIC_VERDICT_LABELS[verdict] ?? verdict;
+  const title = `IntentumDiff ${semantic.engine_version || ""}: ${semantic.summary}`.trim();
+  return `<span class="badge semantic semantic-${escapeHtml(verdict)}" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
+}
+
+function semanticSymbolNames(entries: string[] | undefined): string[] {
+  return (entries ?? []).map((entry) => entry.split(" in ")[0]);
+}
+
+function renderSemanticSymbolRow(label: string, entries: string[] | undefined): string {
+  const names = semanticSymbolNames(entries);
+  if (!names.length) {
+    return "";
+  }
+  return `<div class="semantic-symbols"><span>${escapeHtml(label)}</span>${names
+    .map((name) => `<code title="${escapeHtml(name)}">${escapeHtml(name)}</code>`)
+    .join("")}</div>`;
+}
+
+export function renderSemanticEvidence(item: DraftItem): string {
+  const semantic = item.semantic;
+  if (!semantic) {
+    return "";
+  }
+  const counts = SEMANTIC_GROUP_LABELS
+    .filter(([kind]) => (semantic.group_counts?.[kind] ?? 0) > 0)
+    .map(([kind, label]) => `<span class="semantic-count ${escapeHtml(label)}">${escapeHtml(label)} ${semantic.group_counts[kind]}</span>`)
+    .join("");
+  const alerts: string[] = [];
+  if (semantic.guardrails?.length) {
+    const rules = [...new Set(semantic.guardrails.map((violation) => `${violation.rule_id} (${violation.severity})`))];
+    alerts.push(`Protected config guardrail: ${rules.slice(0, 3).join(", ")}`);
+  }
+  if (item.commit_signals?.includes("semantic:api-break-candidate")) {
+    alerts.push("Public symbols were removed, renamed, or changed signature; confirm whether this is breaking.");
+  }
+  if (item.commit_signals?.includes("semantic:conflict")) {
+    alerts.push("The commit message claims a behavior change, but IntentumDiff found formatting-only edits.");
+  }
+  if (semantic.files_unreviewed > 0) {
+    alerts.push(`${semantic.files_unreviewed} file(s) could not be semantically reviewed.`);
+  }
+  const crossFile = (semantic.cross_file ?? []).map((change) =>
+    `${change.symbol_name}: ${change.old_file} -> ${change.new_file}`,
+  );
+  const verdict = SEMANTIC_VERDICT_LABELS[String(semantic.verdict)] ?? String(semantic.verdict);
+  const scope = `${semantic.files_reviewed} file(s)${semantic.languages?.length ? ` | ${semantic.languages.slice(0, 4).join(", ")}` : ""}`;
+  return `<details class="semantic-evidence${alerts.length ? " has-alerts" : ""}">
+    <summary>Semantic review <span>${escapeHtml(verdict)} | ${escapeHtml(scope)}</span></summary>
+    ${counts ? `<div class="semantic-counts">${counts}</div>` : ""}
+    ${alerts.map((alert) => `<div class="semantic-alert">${renderIcon("warning")}<span>${escapeHtml(alert)}</span></div>`).join("")}
+    ${renderSemanticSymbolRow("Added", semantic.added_symbols)}
+    ${renderSemanticSymbolRow("Removed", semantic.removed_symbols)}
+    ${renderSemanticSymbolRow("Renamed", semantic.renamed_symbols)}
+    ${renderSemanticSymbolRow("Signature", semantic.signature_changes)}
+    ${renderSemanticSymbolRow("Cross-file", crossFile)}
+    ${semantic.style_only_files?.length ? `<div class="semantic-files">Style-only: ${escapeHtml(semantic.style_only_files.slice(0, 5).join(", "))}</div>` : ""}
+    <small class="semantic-engine">IntentumDiff ${escapeHtml(semantic.engine_version || "")}${semantic.complete ? "" : " | partial review"}</small>
+  </details>`;
+}
+
 function renderReleaseDraftRow(item: DraftItem, commitsBySha: Map<string, RepositoryCommit> = new Map()): string {
   const suggestionSource = item.summary_source === "model-suggestion" || item.summary_provenance?.source === "model-suggestion"
     ? "model suggestion"
@@ -1676,7 +1759,7 @@ function renderReleaseDraftRow(item: DraftItem, commitsBySha: Map<string, Reposi
   return `<div class="release-row">
     <div class="release-row-main">
       <span>${escapeHtml(item.title)}</span>
-      <small>${commitCount} commit(s) in changeset | ${escapeHtml(item.status)} | ${escapeHtml(suggestionSource)}</small>
+      <small>${commitCount} commit(s) in changeset | ${escapeHtml(item.status)} | ${escapeHtml(suggestionSource)}${item.semantic ? ` | ${escapeHtml(SEMANTIC_VERDICT_LABELS[String(item.semantic.verdict)] ?? String(item.semantic.verdict))}` : ""}</small>
     </div>
     ${renderChangesetCommits(item, commitsBySha)}
   </div>`;
@@ -2381,11 +2464,13 @@ function renderItem(
     <div class="item-head">
       <span class="name">${escapeHtml(item.title)}</span>
       <button class="icon mini" data-action="suggest" data-item="${escapeHtml(item.id)}" title="Infer intent for this diff" aria-label="Infer intent for this diff">${renderIcon("intent")}</button>
+      ${renderSemanticVerdictBadge(item.semantic)}
       <span class="badge ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span>
     </div>
     <p>${escapeHtml(item.summary)}</p>
     ${hiddenNotice}
     <div class="item-meta">${escapeHtml(pr)} | ${commitCount} commit(s) in changeset | ${escapeHtml(item.area)} | ${escapeHtml(item.semver)} | ${item.confidence.toFixed(2)}</div>
+    ${renderSemanticEvidence(item)}
     ${renderChangesetCommits(item, commitsBySha, conventionalCommits, conventionalCommitErrors, modelBusy)}
     <div class="actions">
       <button data-action="ready" data-item="${escapeHtml(item.id)}">Ready</button>
@@ -3369,6 +3454,60 @@ function styles(): string {
       color: var(--vscode-descriptionForeground);
       font-size: 11px;
     }
+    .item .badge.semantic {
+      color: var(--vscode-descriptionForeground);
+      background: transparent;
+      border: 1px solid var(--verlato-border);
+    }
+    .item .badge.semantic-behavioral { border-color: color-mix(in srgb, var(--verlato-blue) 70%, transparent); }
+    .item .badge.semantic-additive { border-color: color-mix(in srgb, var(--verlato-green) 70%, transparent); }
+    .item .badge.semantic-refactor-only { border-color: color-mix(in srgb, var(--verlato-purple) 70%, transparent); }
+    .item .badge.semantic-style-only,
+    .item .badge.semantic-unreviewed { border-color: var(--verlato-border); opacity: .8; }
+    .semantic-evidence {
+      margin: 3px 0 0;
+      padding: 3px 5px;
+      border-left: 2px solid color-mix(in srgb, var(--verlato-purple) 70%, transparent);
+      background: color-mix(in srgb, var(--vscode-input-background, #1f1f1f) 72%, transparent);
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+    }
+    .semantic-evidence.has-alerts { border-left-color: color-mix(in srgb, var(--verlato-red) 70%, transparent); }
+    .semantic-evidence summary {
+      padding: 0;
+      font-size: 10px;
+      text-transform: none;
+    }
+    .semantic-counts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+    .semantic-count {
+      padding: 0 5px;
+      border-radius: 999px;
+      background: var(--vscode-badge-background, var(--vscode-button-secondaryBackground));
+      font-size: 10px;
+    }
+    .semantic-count { border: 1px solid transparent; color: var(--vscode-foreground); }
+    .semantic-count.meaningful { border-color: color-mix(in srgb, var(--verlato-blue) 80%, transparent); }
+    .semantic-count.refactoring,
+    .semantic-count.moved { border-color: color-mix(in srgb, var(--verlato-purple) 80%, transparent); }
+    .semantic-alert {
+      display: grid;
+      grid-template-columns: 14px minmax(0, 1fr);
+      gap: 5px;
+      align-items: center;
+      margin-top: 4px;
+    }
+    .semantic-alert .verlato-icon { width: 12px; height: 12px; color: var(--verlato-red); }
+    .semantic-symbols { display: flex; flex-wrap: wrap; gap: 3px; align-items: baseline; margin-top: 4px; }
+    .semantic-symbols > span { min-width: 58px; }
+    .semantic-symbols code {
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 10px;
+    }
+    .semantic-files { margin-top: 4px; overflow-wrap: anywhere; }
+    .semantic-engine { display: block; margin-top: 4px; opacity: .8; }
     .changeset-commits summary {
       padding: 0;
       font-size: 10px;

@@ -70,7 +70,21 @@ _TOOL_METADATA: tuple[MCPToolMetadata, ...] = (
     ),
     MCPToolMetadata(
         name="verlato_get_suggestion_item",
-        description="Return commits, PR metadata, file manifest, and diff summary for one suggestion item.",
+        description=(
+            "Return commits, PR metadata, file manifest, diff summary, and the IntentumDiff semantic review "
+            "for one suggestion item."
+        ),
+    ),
+    MCPToolMetadata(
+        name="verlato_get_file_semantic_diff",
+        description=(
+            "Return the IntentumDiff semantic diff for one file in one suggestion item: meaningful changes with "
+            "their enclosing symbols, refactorings, moved code, and ignored formatting."
+        ),
+    ),
+    MCPToolMetadata(
+        name="verlato_search_semantic_diff",
+        description="Search the IntentumDiff semantic diff of one suggestion item for a symbol or term.",
     ),
     MCPToolMetadata(
         name="verlato_get_file_patch",
@@ -124,12 +138,31 @@ _SAMPLE_CONFIG_PATH = _ROOT / "verlato.sample.json"
 
 SERVER_INSTRUCTIONS = (
     "Verlato helps agents inspect git ranges, generate structured draft release notes, "
-    "review draft items, and apply changelog or GitHub release-note updates."
+    "review draft items, and apply changelog or GitHub release-note updates. "
+    "Change evidence comes from the IntentumDiff semantic diff: use verlato_get_file_semantic_diff and "
+    "verlato_search_semantic_diff to see meaningful changes, refactorings, moved code and ignored formatting, "
+    "and never describe moved code, refactorings or formatting as new behavior. Raw patches are not exposed."
 )
+
+# Raw-patch tools exist only for the legacy `git` diff engine, which has no semantic diff.
+LEGACY_PATCH_TOOLS = frozenset({"verlato_get_file_patch", "verlato_search_item_diff"})
+
+
+def legacy_patch_tools_enabled() -> bool:
+    from verlato.config import load_config
+    from verlato.core.semantic import resolve_diff_engine
+
+    return resolve_diff_engine(load_config().diff_engine) == "git"
+
+
+def _active_tool_metadata() -> tuple[MCPToolMetadata, ...]:
+    if legacy_patch_tools_enabled():
+        return _TOOL_METADATA
+    return tuple(tool for tool in _TOOL_METADATA if tool.name not in LEGACY_PATCH_TOOLS)
 
 
 def list_tool_metadata() -> list[dict[str, str]]:
-    return [asdict(tool) for tool in _TOOL_METADATA]
+    return [asdict(tool) for tool in _active_tool_metadata()]
 
 
 def list_resource_metadata() -> list[dict[str, str]]:
@@ -158,7 +191,7 @@ OptionalModelProvider = Annotated[
 PatchOffset = Annotated[int, "Character offset into the requested patch."]
 PatchLimit = Annotated[int, "Maximum patch characters to return."]
 SearchQuery = Annotated[str, "Case-insensitive query to search inside patch text."]
-SearchLimit = Annotated[int, "Maximum number of patch search snippets to return."]
+SearchLimit = Annotated[int, "Maximum number of search results to return."]
 CommitSha = Annotated[str, "Commit SHA or unique prefix to draft a conventional commit for."]
 CommitShas = Annotated[list[str] | None, "Optional ordered commit SHAs or unique prefixes to infer. Defaults to every commit in the range."]
 EvidenceMode = Annotated[
@@ -177,7 +210,8 @@ def _register_server_components(server, svc: MCPService) -> None:
             "name": "verlato",
             "version": __version__,
             "instructions": SERVER_INSTRUCTIONS,
-            "tools": [tool.name for tool in _TOOL_METADATA],
+            "tools": [tool.name for tool in _active_tool_metadata()],
+            "change_evidence": "git-patch" if legacy_patch_tools_enabled() else "intentumdiff-semantic-diff",
             "resources": [resource.uri for resource in _RESOURCE_METADATA],
             "prompts": [prompt.name for prompt in _PROMPT_METADATA],
         }
@@ -255,8 +289,11 @@ def _register_server_components(server, svc: MCPService) -> None:
             "Recommended flow:\n"
             "1. Call verlato_scan_unpublished_changes to inspect the candidate changes.\n"
             "2. Call verlato_get_draft_document or verlato_preview_release_notes to build the draft.\n"
-            "3. If needed, call verlato_update_review_state to refine item status or summary.\n"
-            "4. Call verlato_apply_draft only when you are ready to write the chosen target file."
+            "3. To understand or rewrite an item, call verlato_get_suggestion_item and "
+            "verlato_get_file_semantic_diff. Base summaries on the IntentumDiff semantic diff: describe meaningful "
+            "changes and never present moved code, refactorings or formatting as new behavior.\n"
+            "4. If needed, call verlato_update_review_state to refine item status or summary.\n"
+            "5. Call verlato_apply_draft only when you are ready to write the chosen target file."
         )
 
     @server.tool(
@@ -505,53 +542,96 @@ def _register_server_components(server, svc: MCPService) -> None:
 
     @server.tool(
         annotations={
-            "title": "Get File Patch",
+            "title": "Get File Semantic Diff",
             "readOnlyHint": True,
             "idempotentHint": True,
             "openWorldHint": False,
         },
-        tags={"verlato", "suggestions", "diff"},
+        tags={"verlato", "suggestions", "diff", "semantic"},
         version=__version__,
     )
-    def verlato_get_file_patch(
+    def verlato_get_file_semantic_diff(
         base: GitRef,
         item_id: ItemId,
         path: Annotated[str, "Changed file path."],
         head: GitRef = "HEAD",
-        offset: PatchOffset = 0,
-        limit: PatchLimit = 12000,
     ) -> dict[str, Any]:
-        """Return a bounded patch chunk for one file in one suggestion item."""
+        """Return the IntentumDiff semantic diff for one file in one suggestion item."""
 
-        return svc.get_file_patch(
-            base=base,
-            head=head,
-            item_id=item_id,
-            path=path,
-            offset=offset,
-            limit=limit,
-        )
+        return svc.get_file_semantic_diff(base=base, head=head, item_id=item_id, path=path)
 
     @server.tool(
         annotations={
-            "title": "Search Item Diff",
+            "title": "Search Semantic Diff",
             "readOnlyHint": True,
             "idempotentHint": True,
             "openWorldHint": False,
         },
-        tags={"verlato", "suggestions", "diff"},
+        tags={"verlato", "suggestions", "diff", "semantic"},
         version=__version__,
     )
-    def verlato_search_item_diff(
+    def verlato_search_semantic_diff(
         base: GitRef,
         item_id: ItemId,
-        query: SearchQuery,
+        query: Annotated[str, "Case-insensitive symbol or term to find in the semantic diff."],
         head: GitRef = "HEAD",
         limit: SearchLimit = 5,
     ) -> dict[str, Any]:
-        """Search patch text for one suggestion item and return compact snippets."""
+        """Search the IntentumDiff semantic diff of one suggestion item."""
 
-        return svc.search_item_diff(base=base, head=head, item_id=item_id, query=query, limit=limit)
+        return svc.search_semantic_diff(base=base, head=head, item_id=item_id, query=query, limit=limit)
+
+    if legacy_patch_tools_enabled():
+        # Legacy `git` diff engine only: there is no semantic diff, so agents get bounded patches.
+        @server.tool(
+            annotations={
+                "title": "Get File Patch",
+                "readOnlyHint": True,
+                "idempotentHint": True,
+                "openWorldHint": False,
+            },
+            tags={"verlato", "suggestions", "diff"},
+            version=__version__,
+        )
+        def verlato_get_file_patch(
+            base: GitRef,
+            item_id: ItemId,
+            path: Annotated[str, "Changed file path."],
+            head: GitRef = "HEAD",
+            offset: PatchOffset = 0,
+            limit: PatchLimit = 12000,
+        ) -> dict[str, Any]:
+            """Return a bounded patch chunk for one file in one suggestion item."""
+
+            return svc.get_file_patch(
+                base=base,
+                head=head,
+                item_id=item_id,
+                path=path,
+                offset=offset,
+                limit=limit,
+            )
+
+        @server.tool(
+            annotations={
+                "title": "Search Item Diff",
+                "readOnlyHint": True,
+                "idempotentHint": True,
+                "openWorldHint": False,
+            },
+            tags={"verlato", "suggestions", "diff"},
+            version=__version__,
+        )
+        def verlato_search_item_diff(
+            base: GitRef,
+            item_id: ItemId,
+            query: SearchQuery,
+            head: GitRef = "HEAD",
+            limit: SearchLimit = 5,
+        ) -> dict[str, Any]:
+            """Search patch text for one suggestion item and return compact snippets."""
+
+            return svc.search_item_diff(base=base, head=head, item_id=item_id, query=query, limit=limit)
 
     @server.tool(
         annotations={

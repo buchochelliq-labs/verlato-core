@@ -16,6 +16,12 @@ from verlato.core.model_privacy import (
     privacy_summary,
 )
 from verlato.core.models import ChangedFile, Commit, CommitIntent
+from verlato.core.semantic import (
+    CommitSemantics,
+    build_semantic_diff,
+    commit_semantic_payload,
+    semantic_diff_for_prompt,
+)
 from verlato.providers.base import ProviderRequest, VerlatoProvider
 
 COMMIT_INTENT_INFERENCE_CHOICES = {"off", "low-signal"}
@@ -515,6 +521,14 @@ def conventional_commit_draft_response_format() -> dict[str, Any]:
     return schema
 
 
+SEMANTIC_SOURCE_TEXT = (
+    ", and the IntentumDiff semantic diff (semantic_review and each file's semantic_diff: meaningful changes "
+    "with their enclosing symbols, behavior-preserving refactorings, moved code and ignored formatting). "
+    "Treat the semantic diff as the source of truth; never describe moved code, refactorings or formatting "
+    "as new behavior"
+)
+
+
 def build_commit_intent_prompt(
     commit: Commit,
     *,
@@ -524,7 +538,9 @@ def build_commit_intent_prompt(
 ) -> str:
     payload = evidence if evidence is not None else commit_intent_evidence(commit, include_patches=include_patches)
     source_text = "file paths, statuses, deterministic facts, and commit metadata"
-    if include_patches:
+    if payload.get("evidence_source") == "intentumdiff-semantic-diff":
+        source_text += SEMANTIC_SOURCE_TEXT
+    elif include_patches:
         source_text += ", including bounded patch excerpts"
     return (
         "Infer the conventional commit that should have been written for this exact commit.\n"
@@ -553,7 +569,9 @@ def build_conventional_commit_draft_prompt(
     source_text = "changed file paths, statuses, and deterministic facts extracted from the diff"
     if evidence_mode == "subject-hint":
         source_text = "authored subject, changed file paths, statuses, and deterministic facts extracted from the diff"
-    if include_patches:
+    if payload.get("evidence_source") == "intentumdiff-semantic-diff":
+        source_text += SEMANTIC_SOURCE_TEXT
+    elif include_patches:
         source_text += ", plus bounded patch excerpts"
     subject_instruction = (
         "The authored git commit message is intentionally not provided; infer from commit ID and diff evidence only.\n"
@@ -585,7 +603,9 @@ def build_diff_conventional_commit_prompt(
 ) -> str:
     payload = evidence if evidence is not None else commit_diff_intent_evidence(commit, include_patches=include_patches)
     source_text = "changed file paths, statuses, patch sizes, and deterministic diff metadata"
-    if include_patches:
+    if payload.get("evidence_source") == "intentumdiff-semantic-diff":
+        source_text += SEMANTIC_SOURCE_TEXT
+    elif include_patches:
         source_text += ", including bounded patch excerpts"
     return (
         "Derive the conventional commit that best describes this exact commit diff.\n"
@@ -601,41 +621,45 @@ def build_diff_conventional_commit_prompt(
 
 def commit_intent_evidence(commit: Commit, *, include_patches: bool = False) -> dict[str, Any]:
     raw_patch_chars = sum(len(file.patch or "") for file in commit.files)
-    return {
+    return _with_semantics(commit, {
         "schema": "verlato.commit-intent-evidence.v1",
         "sha": commit.sha,
         "subject": commit.message.splitlines()[0] if commit.message else "",
         "message": commit.message,
-        "files": [_file_payload(file, include_patch=include_patches) for file in commit.files[:MAX_COMMIT_INTENT_FILES]],
+        "files": _commit_file_payloads(commit, include_patches=include_patches),
         "files_total": len(commit.files),
         "raw_patch_chars_available": raw_patch_chars,
         "raw_patch_chars_sent": (
             sum(len((file.patch or "")[:MAX_COMMIT_INTENT_PATCH_CHARS]) for file in commit.files[:MAX_COMMIT_INTENT_FILES])
-            if include_patches
+            if include_patches and not _has_semantics(commit)
             else 0
         ),
-        "omitted_fields": [] if include_patches else list(OMITTED_COMMIT_PATCH_EVIDENCE),
-    }
+        "omitted_fields": (
+            [] if include_patches and not _has_semantics(commit) else list(OMITTED_COMMIT_PATCH_EVIDENCE)
+        ),
+    }, include_patches=include_patches)
 
 
 def commit_diff_intent_evidence(commit: Commit, *, include_patches: bool = False) -> dict[str, Any]:
     raw_patch_chars = sum(len(file.patch or "") for file in commit.files)
-    return {
+    return _with_semantics(commit, {
         "schema": "verlato.commit-diff-intent-evidence.v1",
         "sha": commit.sha,
         "previous_sha": commit.parent_sha,
         "initial_commit": commit.parent_sha is None,
-        "files": [_file_payload(file, include_patch=include_patches) for file in commit.files[:MAX_COMMIT_INTENT_FILES]],
+        "files": _commit_file_payloads(commit, include_patches=include_patches),
         "files_total": len(commit.files),
         "file_status_counts": _file_status_counts(commit.files),
         "raw_patch_chars_available": raw_patch_chars,
         "raw_patch_chars_sent": (
             sum(len((file.patch or "")[:MAX_COMMIT_INTENT_PATCH_CHARS]) for file in commit.files[:MAX_COMMIT_INTENT_FILES])
-            if include_patches
+            if include_patches and not _has_semantics(commit)
             else 0
         ),
-        "omitted_fields": [] if include_patches else list(OMITTED_COMMIT_PATCH_EVIDENCE),
-    }
+        "omitted_fields": (
+            [] if include_patches and not _has_semantics(commit) else list(OMITTED_COMMIT_PATCH_EVIDENCE)
+        ),
+    }, include_patches=include_patches)
 
 
 def conventional_commit_draft_evidence(
@@ -648,6 +672,7 @@ def conventional_commit_draft_evidence(
     raw_patch_chars = sum(len(file.patch or "") for file in commit.files)
     fact_files = _draft_fact_files(commit.files)
     files = _selected_draft_files(fact_files)
+    semantic = _has_semantics(commit)
     payload: dict[str, Any] = {
         "schema": "verlato.conventional-commit-draft-evidence.v1",
         "evidence_mode": evidence_mode,
@@ -655,10 +680,14 @@ def conventional_commit_draft_evidence(
         "previous_sha": commit.parent_sha,
         "initial_commit": commit.parent_sha is None,
         "authored_message_omitted": evidence_mode == "diff-only",
-        "files": [
-            _draft_file_payload(file, include_patch=include_patches and index < MAX_CONVENTIONAL_DRAFT_PATCH_FILES)
-            for index, file in enumerate(files)
-        ],
+        "files": (
+            _semantic_draft_file_payloads(commit, files, detailed=include_patches)
+            if semantic
+            else [
+                _draft_file_payload(file, include_patch=include_patches and index < MAX_CONVENTIONAL_DRAFT_PATCH_FILES)
+                for index, file in enumerate(files)
+            ]
+        ),
         "files_total": len(commit.files),
         "files_analyzed": len(fact_files),
         "files_included": len(files),
@@ -666,19 +695,138 @@ def conventional_commit_draft_evidence(
         "file_status_counts": _file_status_counts(fact_files),
         "files_by_area": _files_by_area(fact_files),
         "notable_paths": _notable_paths(fact_files),
-        "diff_facts": _diff_facts(fact_files),
+        "diff_facts": (
+            _semantic_diff_facts(commit, fact_files, detailed=include_patches) if semantic else _diff_facts(fact_files)
+        ),
         "raw_patch_chars_available": raw_patch_chars,
         "raw_patch_chars_sent": (
             sum(len((file.patch or "")[:MAX_CONVENTIONAL_DRAFT_PATCH_CHARS]) for file in commit.files[:MAX_CONVENTIONAL_DRAFT_PATCH_FILES])
-            if include_patches
+            if include_patches and not semantic
             else 0
         ),
-        "omitted_fields": [] if include_patches else list(OMITTED_COMMIT_PATCH_EVIDENCE),
+        "omitted_fields": [] if include_patches and not semantic else list(OMITTED_COMMIT_PATCH_EVIDENCE),
     }
     if evidence_mode == "subject-hint":
         payload["authored_subject"] = commit.message.splitlines()[0] if commit.message else ""
         payload["authored_message"] = commit.message
+    return _with_semantics(commit, payload, include_patches=include_patches)
+
+
+def _has_semantics(commit: Commit) -> bool:
+    return isinstance(getattr(commit, "semantics", None), CommitSemantics)
+
+
+def _with_semantics(commit: Commit, payload: dict[str, Any], *, include_patches: bool = False) -> dict[str, Any]:
+    """Attach IntentumDiff's per-commit semantic review when the commit carries one."""
+
+    semantic = commit_semantic_payload(commit)
+    if semantic is not None:
+        payload["semantic_review"] = semantic
+        payload["evidence_source"] = "intentumdiff-semantic-diff"
+        payload["semantic_diff_detail"] = "detailed" if include_patches else "structure"
     return payload
+
+
+def _semantic_records_by_path(commit: Commit, *, detailed: bool) -> dict[str, list[dict[str, Any]]]:
+    by_path: dict[str, list[dict[str, Any]]] = {}
+    for record in semantic_diff_for_prompt(build_semantic_diff([commit]), detailed=detailed):
+        by_path.setdefault(str(record["path"]), []).append(
+            {key: value for key, value in record.items() if key not in {"path", "commit"}}
+        )
+    return by_path
+
+
+def _commit_file_payloads(commit: Commit, *, include_patches: bool) -> list[dict[str, Any]]:
+    """Per-file evidence: the IntentumDiff semantic diff when available, else bounded patches."""
+
+    files = commit.files[:MAX_COMMIT_INTENT_FILES]
+    if not _has_semantics(commit):
+        return [_file_payload(file, include_patch=include_patches) for file in files]
+    by_path = _semantic_records_by_path(commit, detailed=include_patches)
+    return [
+        {
+            "path": file.path,
+            "status": file.status,
+            "patch_chars_available": len(file.patch or ""),
+            "patch_sent": False,
+            "semantic_diff": by_path.get(file.path, []),
+        }
+        for file in files
+    ]
+
+
+_CONFIG_LANGUAGES = {"json", "yaml", "toml", "ini", "xml", "properties", "terraform", "hcl"}
+
+
+def _semantic_draft_file_payloads(commit: Commit, files: list[ChangedFile], *, detailed: bool) -> list[dict[str, Any]]:
+    by_path = _semantic_records_by_path(commit, detailed=detailed)
+    digest = commit.semantics
+    symbols_by_path: dict[str, list[str]] = {}
+    for file_semantics in digest.files:
+        symbols_by_path[file_semantics.path] = [
+            symbol.name for symbol in file_semantics.symbols if symbol.change in {"added", "signature", "renamed"}
+        ]
+    return [
+        {
+            "path": file.path,
+            "area": infer_area(file.path),
+            "status": file.status,
+            "patch_chars_available": len(file.patch or ""),
+            "patch_sent": False,
+            "public_symbols": symbols_by_path.get(file.path, [])[:MAX_CONVENTIONAL_DRAFT_FILE_SYMBOLS],
+            "semantic_diff": by_path.get(file.path, []),
+        }
+        for file in files
+    ]
+
+
+def _semantic_diff_facts(commit: Commit, files: list[ChangedFile], *, detailed: bool) -> dict[str, Any]:
+    """Draft facts derived from IntentumDiff's review instead of regexes over raw patch lines."""
+
+    digest = commit.semantics
+    added_terms: list[str] = []
+    removed_terms: list[str] = []
+    public_symbols: list[str] = []
+    test_names: list[str] = []
+    config_keys: list[str] = []
+    changed_settings: list[dict[str, str]] = []
+    for file_semantics in digest.files:
+        is_test = "test" in file_semantics.path.lower()
+        for symbol in file_semantics.symbols:
+            if symbol.change in {"added", "signature", "renamed"}:
+                (test_names if is_test else public_symbols).append(
+                    symbol.name if is_test else f"{file_semantics.path}:{symbol.name}"
+                )
+        for entry in file_semantics.changes:
+            for semantic_edit in entry.get("edits", []):
+                name = semantic_edit.get("name") or entry.get("symbol")
+                if not name:
+                    continue
+                change = str(semantic_edit.get("change", ""))
+                if change == "ADDITION":
+                    added_terms.append(name)
+                elif change == "DELETION":
+                    removed_terms.append(name)
+                if file_semantics.language in _CONFIG_LANGUAGES and entry.get("group") == "meaningful":
+                    config_keys.append(name)
+                    setting = {"name": name, "change": change.lower()}
+                    if detailed and semantic_edit.get("detail"):
+                        setting["detail"] = str(semantic_edit["detail"])
+                    changed_settings.append(setting)
+    return {
+        "source": "intentumdiff",
+        "semantic_files": len(digest.files),
+        "changed_settings": changed_settings[:MAX_CONVENTIONAL_DRAFT_FACTS],
+        "added_terms": _unique_preserve_order(added_terms)[:MAX_CONVENTIONAL_DRAFT_FACTS],
+        "removed_terms": _unique_preserve_order(removed_terms)[:MAX_CONVENTIONAL_DRAFT_FACTS],
+        "public_symbols": _unique_preserve_order(public_symbols)[:MAX_CONVENTIONAL_DRAFT_FACTS],
+        "test_names": _unique_preserve_order(test_names)[:MAX_CONVENTIONAL_DRAFT_FACTS],
+        "config_keys": _unique_preserve_order(config_keys)[:MAX_CONVENTIONAL_DRAFT_FACTS],
+        "ui_actions": [],
+        "themes": _theme_facts(
+            files, added_terms=added_terms, removed_terms=removed_terms, changed_settings=changed_settings
+        ),
+    }
 
 
 def commit_intent_payload(intent: CommitIntent | None) -> dict[str, Any] | None:
@@ -858,7 +1006,9 @@ def _diff_facts(files: list[ChangedFile]) -> dict[str, Any]:
         "test_names": _unique_preserve_order(test_names)[:MAX_CONVENTIONAL_DRAFT_FACTS],
         "config_keys": _unique_preserve_order(config_keys)[:MAX_CONVENTIONAL_DRAFT_FACTS],
         "ui_actions": _unique_preserve_order(ui_actions)[:MAX_CONVENTIONAL_DRAFT_FACTS],
-        "themes": _theme_facts(files, added_terms=added_terms, removed_terms=removed_terms, changed_settings=changed_settings),
+        "themes": _theme_facts(
+            files, added_terms=added_terms, removed_terms=removed_terms, changed_settings=changed_settings
+        ),
     }
 
 

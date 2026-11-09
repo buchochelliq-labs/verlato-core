@@ -4,6 +4,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from typing import Any
 
 from verlato.core.change_summary import build_change_summary_payload, raw_patch_chars_available
 from verlato.core.changelog import VALID_CHANGE_KINDS, normalize_change_kind
@@ -26,6 +27,7 @@ from verlato.core.models import (
     changed_files_for_group,
     default_review_status,
 )
+from verlato.core.semantic import SemanticEvidence, render_semantic_diff
 from verlato.providers.base import ProviderRequest, VerlatoProvider
 
 MAX_PROMPT_CHANGED_FILES = 12
@@ -73,7 +75,7 @@ class PromptBudgetProfile:
 @dataclass(frozen=True)
 class SummaryPrompt:
     prompt: str
-    budget: dict[str, object]
+    budget: dict[str, Any]
 
 
 SUMMARY_PROMPT_PROFILE = PromptBudgetProfile(
@@ -197,7 +199,8 @@ class Classifier:
         pr = group.pr
         labels = [label.lower() for label in (pr.labels if pr else [])]
         changed_files = changed_files_for_group(group)
-        diff = self.diff_builder.build(changed_files)
+        diff = self.diff_builder.build(changed_files, commits=group.commits)
+        semantic = diff.semantic
 
         kind = "changed"
         semver = "patch"
@@ -268,6 +271,19 @@ class Classifier:
                 kind = status_kind
                 semver = self._semver_for_kind(kind)
 
+        semantic_decided = False
+        if semantic is not None:
+            kind, audience, semver, confidence, semantic_decided = self._apply_semantic_evidence(
+                semantic,
+                kind=kind,
+                audience=audience,
+                semver=semver,
+                confidence=confidence,
+                commit_signals=commit_signals,
+                authored_type=parsed[0].type if parsed else None,
+                label_kind=label_kind,
+            )
+
         general_files = diff.files_by_area.get("general", [])
         has_breaking_signal = kind == "breaking" or self._has_breaking_signal(group, labels)
         if has_breaking_signal:
@@ -297,6 +313,7 @@ class Classifier:
         if not parsed:
             confidence = max(confidence, 0.62)
             commit_signals.append("diff-fallback")
+        confidence = self._cap_for_semantic_review(semantic, kind, confidence)
 
         title = (pr.title if pr else group.commits[0].message.splitlines()[0]).strip()
         summary = diff.summary
@@ -315,9 +332,15 @@ class Classifier:
                 confidence=confidence,
                 commit_signals=commit_signals,
                 allow_classification_override=(
-                    not summary_only and not parsed and not has_security_signal and not (diff.docs_only or diff.tests_only)
+                    not summary_only
+                    and not parsed
+                    and not semantic_decided
+                    and not has_security_signal
+                    and not (diff.docs_only or diff.tests_only)
                 ),
             )
+            # A confident model summary or classification must not lift the review cap.
+            confidence = self._cap_for_semantic_review(semantic, kind, confidence)
 
         source = SourceRef(
             pr_number=pr.number if pr else None,
@@ -340,6 +363,8 @@ class Classifier:
                 "config_changes": diff.config_changes,
                 "representative_hunks": diff.representative_hunks,
                 "grouping_reason": group.grouping_reason,
+                "engine": "intentumdiff" if semantic is not None else "git",
+                "semantic": semantic.to_dict() if semantic is not None else None,
             },
         )
 
@@ -361,6 +386,67 @@ class Classifier:
             status=default_review_status(confidence),
         )
         return [item]
+
+    @staticmethod
+    def _cap_for_semantic_review(semantic: SemanticEvidence | None, kind: str, confidence: float) -> float:
+        """Removed/renamed/re-signatured public symbols or protected-config edits always deserve a
+        human look before publishing, whatever the commit message or a model claims."""
+
+        if semantic is not None and (semantic.api_break_candidates or semantic.guardrails) and kind != "breaking":
+            return min(confidence, 0.79)
+        return confidence
+
+    def _apply_semantic_evidence(
+        self,
+        semantic: SemanticEvidence,
+        *,
+        kind: str,
+        audience: str,
+        semver: str,
+        confidence: float,
+        commit_signals: list[str],
+        authored_type: str | None,
+        label_kind: str | None,
+    ) -> tuple[str, str, str, float, bool]:
+        """Fold IntentumDiff's semantic verdict into the deterministic classification.
+
+        Authored conventional commits and labels keep precedence; the semantic review decides
+        kind only on the diff-fallback path, where it replaces path/status guessing. Returns the
+        updated ``(kind, audience, semver, confidence, decided)``.
+        """
+
+        commit_signals.append(f"semantic:{semantic.verdict}")
+        if not semantic.complete:
+            commit_signals.append("semantic:partial")
+        decided = False
+        if authored_type is None and label_kind is None:
+            if semantic.verdict == "style-only" and semantic.complete:
+                kind, audience, semver = "internal", "internal", "none"
+                confidence = max(confidence, 0.88)
+                decided = True
+            elif semantic.verdict == "refactor-only" and semantic.complete:
+                kind, semver = "refactoring", "patch"
+                confidence = max(confidence, 0.82)
+                decided = True
+            elif semantic.verdict == "additive" and semantic.added_symbols:
+                kind, semver = "added", "minor"
+                confidence = max(confidence, 0.74)
+                decided = True
+            elif semantic.verdict in {"behavioral", "additive"}:
+                confidence = max(confidence, 0.7)
+        elif authored_type in {"feat", "fix", "perf"} and semantic.verdict == "style-only" and semantic.complete:
+            # The message claims a behavior change but IntentumDiff found only formatting.
+            commit_signals.append("semantic:conflict")
+            confidence = min(confidence, 0.7)
+        if decided:
+            commit_signals.append("semantic-classified")
+        if semantic.api_break_candidates:
+            commit_signals.append("semantic:api-break-candidate")
+        if semantic.guardrails:
+            commit_signals.append("semantic:guardrail")
+        if semantic.cross_file:
+            commit_signals.append("semantic:cross-file")
+        return kind, audience, semver, confidence, decided
 
     def _apply_provider_assists(
         self,
@@ -550,7 +636,18 @@ class Classifier:
         included_hunk_files = 0
         included_hunks = 0
         included_hunk_chars = 0
-        if include_hunks:
+        # With IntentumDiff evidence the model gets the semantic diff, never raw patch hunks.
+        # `include_hunks` (the privacy mode allows source content) then only decides whether
+        # IntentumDiff's change descriptions, which may contain literal values, are included.
+        semantic_records = list(getattr(diff, "semantic_diff", None) or [])
+        use_semantic_diff = getattr(diff, "semantic", None) is not None
+        semantic_detail = "detailed" if include_hunks else "structure"
+        semantic_text = ""
+        semantic_budget = max(profile.hunk_files * profile.hunks_per_file * profile.hunk_chars, 1200)
+        if use_semantic_diff:
+            semantic_text = render_semantic_diff(semantic_records, detailed=include_hunks, max_chars=semantic_budget)
+            hunk_text = semantic_text or "no reviewed changes"
+        elif include_hunks:
             for path, hunks in list(diff.representative_hunks.items())[:profile.hunk_files]:
                 included_hunk_files += 1
                 hunk_lines.append(f"{path}:")
@@ -564,6 +661,7 @@ class Classifier:
             hunk_text = "\n".join(hunk_lines) or "none"
         else:
             hunk_text = "omitted by privacy mode; use the deterministic change summary and file/status signals"
+        raw_hunks_sent = include_hunks and not use_semantic_diff
         pr_body_text = _truncate_prompt_text(pr_body.strip(), profile.pr_body_chars) or "none"
         diff_summary = _truncate_prompt_text(diff.summary, profile.diff_summary_chars)
         context_bits = []
@@ -609,7 +707,15 @@ class Classifier:
             f"PR body: {pr_body_text}\n"
             f"Changed files:\n{file_lines}\n"
             f"Diff summary: {diff_summary}\n"
-            f"Representative hunks:\n{hunk_text}"
+            + (
+                "Base the entry on the IntentumDiff semantic diff below. It lists, per file, the meaningful "
+                "changes (with the enclosing symbol), behavior-preserving refactorings and moved code, and "
+                "formatting that was ignored. Describe meaningful changes; never present moved code, "
+                "refactorings or formatting as new behavior.\n"
+                f"Semantic diff (IntentumDiff, {semantic_detail}):\n{hunk_text}"
+                if use_semantic_diff
+                else f"Representative hunks:\n{hunk_text}"
+            )
         )
         pr_body_chars_included = 0 if pr_body_text == "none" else len(pr_body_text)
         return SummaryPrompt(
@@ -639,9 +745,13 @@ class Classifier:
                 "hunk_chars_included": included_hunk_chars,
                 "hunk_chars_total": total_hunk_chars,
                 "hunk_chars_skipped": max(total_hunk_chars - included_hunk_chars, 0),
-                "raw_patch_text_included": include_hunks,
-                "raw_patch_chars_sent": included_hunk_chars if include_hunks else 0,
-                "omitted_fields": "" if include_hunks else ", ".join(OMITTED_PATCH_EVIDENCE),
+                "evidence_source": "intentumdiff-semantic-diff" if use_semantic_diff else "git-patch",
+                "semantic_diff_detail": semantic_detail if use_semantic_diff else None,
+                "semantic_diff_chars_included": len(semantic_text),
+                "semantic_diff_files": len(semantic_records),
+                "raw_patch_text_included": raw_hunks_sent,
+                "raw_patch_chars_sent": included_hunk_chars if raw_hunks_sent else 0,
+                "omitted_fields": "" if raw_hunks_sent else ", ".join(OMITTED_PATCH_EVIDENCE),
             },
         )
 

@@ -2,6 +2,29 @@
 
 Diff-first release notes. Understands your code changes. Writes your releases.
 
+Powered by [IntentumDiff](https://github.com/buchochelliq-labs/intentumdiff-python): every changeset is reviewed
+semantically, so the Control view shows whether a change is behavioral, additive, a refactoring/move, or formatting
+only, and which symbols were added, removed, renamed or re-signatured. Changesets with public API removals, protected
+config guardrails, or commit messages that contradict the semantic review are routed to **needs-review**.
+
+![Semantic review in the Control view](media/semantic-review.png)
+
+### Requirements
+
+- The Verlato CLI (`pip install -e .` from the repository root, Python 3.12+). It installs the IntentumDiff engine; to
+  install the engine alone run `pip install --pre intentumdiff-python`.
+- If the engine is missing, Verlato's error notification offers **Install IntentumDiff** or **Use Git Engine**.
+
+### Engine settings
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `verlato.diffEngine` | `intentumdiff` | `intentumdiff` semantic review, or `git` for legacy text-patch evidence |
+| `verlato.semanticParallelism` | `0` (auto) | Worker processes for commits that are not cached yet |
+| `verlato.semanticCrossFile` | `false` | Detect symbols moved/renamed across files (slower) |
+
+Run **Verlato: Show IntentumDiff Engine Status** to check the engine.
+
 ## Planned workflow
 
 1. Scan the current repository for unpublished changes.

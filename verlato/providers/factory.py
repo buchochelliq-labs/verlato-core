@@ -27,7 +27,8 @@ def build_provider(
     fallback_configs = [_provider_config_from_mapping(raw, defaults=config) for raw in config.fallbacks]
     if not fallback_configs:
         return primary
-    return FallbackProvider([primary, *[_build_single_provider(fallback, mode=None, suggest_model=suggest_model) for fallback in fallback_configs]])
+    fallbacks = [_build_single_provider(fallback, mode=None, suggest_model=suggest_model) for fallback in fallback_configs]
+    return FallbackProvider([primary, *fallbacks])
 
 
 def _build_single_provider(
@@ -81,7 +82,8 @@ def _build_single_provider(
             command=_resolve_plugin_command(config) or None,
             plugin_config=config.plugin_config,
             env_names=_resolve_plugin_env(config),
-            model=os.getenv("VERLATO_PLUGIN_MODEL") or (config.model if (config.name or "").lower() in {"plugin", "external-plugin", "model-plugin"} else ""),
+            model=os.getenv("VERLATO_PLUGIN_MODEL")
+            or (config.model if (config.name or "").lower() in {"plugin", "external-plugin", "model-plugin"} else ""),
             suggest_model=(
                 _normalize_optional_string(suggest_model)
                 if suggest_model is not None

@@ -1,7 +1,7 @@
 {
   "name": "verlato-vscode",
   "displayName": "Verlato",
-  "description": "Diff-first release notes. Understands your code changes. Writes your releases.",
+  "description": "Semantic release notes powered by IntentumDiff: review changesets, draft changelogs, and publish release notes.",
   "version": "0.0.1",
   "publisher": "verlato",
   "icon": "media/verlato-icon.png",
@@ -41,7 +41,8 @@
     "onCommand:verlato.changeModel",
     "onCommand:verlato.acceptItem",
     "onCommand:verlato.unhideItem",
-    "onCommand:verlato.resetItemSummary"
+    "onCommand:verlato.resetItemSummary",
+    "onCommand:verlato.showSemanticEngine"
   ],
   "extensionDependencies": [
     "vscode.git"
@@ -172,6 +173,10 @@
       {
         "command": "verlato.resetItemSummary",
         "title": "Verlato: Reset Item Summary"
+      },
+      {
+        "command": "verlato.showSemanticEngine",
+        "title": "Verlato: Show IntentumDiff Engine Status"
       }
     ],
     "configuration": {
@@ -190,6 +195,31 @@
             "cli"
           ],
           "description": "Use the built-in local stdio service for core editor flows when possible, or force direct CLI commands."
+        },
+        "verlato.diffEngine": {
+          "type": "string",
+          "default": "intentumdiff",
+          "enum": [
+            "intentumdiff",
+            "git"
+          ],
+          "enumDescriptions": [
+            "IntentumDiff semantic review: classifies every change as meaningful, refactoring, moved, or style-only and powers release-note evidence (requires `pip install --pre intentumdiff-python`).",
+            "Legacy text-patch evidence from git hunks and file paths only."
+          ],
+          "description": "Change-evidence engine that powers Verlato's release notes. IntentumDiff reviews each commit semantically; results are cached per commit."
+        },
+        "verlato.semanticParallelism": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 16,
+          "description": "Worker processes for IntentumDiff commit reviews that are not cached yet. 0 picks a default from the CPU count."
+        },
+        "verlato.semanticCrossFile": {
+          "type": "boolean",
+          "default": false,
+          "description": "Ask IntentumDiff to detect symbols moved or renamed across files. Slower; large files may be skipped when they exceed the parser fuel budget."
         },
         "verlato.modelProvider": {
           "type": "string",

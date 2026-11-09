@@ -1,0 +1,22 @@
+# Verlato's Rust implementation. The `verlato` crate (crates/verlato) is replacing the
+# Python package command by command; see docs/RUST_MIGRATION.md.
+[workspace]
+members = ["crates/verlato"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+publish = false
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+strip = true
+
+# The IntentumDiff engine's build graph needs its first-party patched crates; patch sections
+# only apply at the consuming workspace root, so they are repeated here (mirrors
+# intentumdiff-core/crates/cli/Cargo.toml at the pinned revision).
+[patch.crates-io]
+quote = { git = "https://github.com/buchochelliq-labs/intentumdiff-core", rev = "7ae58e9237e0be07ddf919b6d7a7cbc8a1333983" }
+zmij = { git = "https://github.com/buchochelliq-labs/intentumdiff-core", rev = "7ae58e9237e0be07ddf919b6d7a7cbc8a1333983" }

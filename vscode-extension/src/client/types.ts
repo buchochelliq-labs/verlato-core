@@ -31,6 +31,64 @@ export interface DraftItem {
   edited_summary: string | null;
   summary_provenance?: SummaryProvenance | null;
   hidden: boolean;
+  /** IntentumDiff semantic review of this changeset; absent with the legacy git engine. */
+  semantic?: SemanticEvidence | null;
+  diff_engine?: "intentumdiff" | "git" | string;
+}
+
+export type SemanticVerdict = "style-only" | "refactor-only" | "additive" | "behavioral" | "unreviewed";
+
+export interface SemanticGuardrail {
+  rule_id: string;
+  severity: string;
+  file: string;
+  semantic_path?: string;
+  message?: string;
+}
+
+export interface SemanticCrossFileChange {
+  change_type: string;
+  symbol_name: string;
+  symbol_kind?: string;
+  old_file: string;
+  new_file: string;
+  confidence?: number;
+}
+
+export interface SemanticEvidence {
+  engine: "intentumdiff" | string;
+  engine_version: string;
+  verdict: SemanticVerdict | string;
+  complete: boolean;
+  files_reviewed: number;
+  files_unreviewed: number;
+  group_counts: Partial<Record<"MEANINGFUL_CHANGE" | "REFACTORING" | "MOVED_CODE" | "IGNORED_STYLE" | "NOISE_SUPPRESSED", number>>;
+  languages: string[];
+  style_only_files: string[];
+  refactor_only_files: string[];
+  meaningful_files: string[];
+  added_symbols: string[];
+  removed_symbols: string[];
+  renamed_symbols: string[];
+  signature_changes: string[];
+  refactorings: string[];
+  cross_file: SemanticCrossFileChange[];
+  guardrails: SemanticGuardrail[];
+  unreviewed: { path: string; kind: string; reason: string }[];
+  errors: string[];
+  notes?: string[];
+  summary: string;
+}
+
+export interface SemanticEngineStatus {
+  engine: "intentumdiff" | "git" | string;
+  available: boolean;
+  version: string | null;
+  error: string | null;
+  intentumdiff_version?: string | null;
+  configured?: string;
+  semantic_cache_path?: string;
+  semantic_cross_file?: boolean;
 }
 
 export interface DerivedConventionalCommit {
