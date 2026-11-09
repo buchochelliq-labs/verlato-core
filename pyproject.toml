@@ -37,7 +37,7 @@ include = ["verlato*"]
 pythonpath = ["."]
 
 [tool.ruff]
-line-length = 120
+line-length = 140
 target-version = "py310"
 
 [tool.ruff.lint]
@@ -51,5 +51,5 @@ warn_redundant_casts = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["intentumdiff", "intentumdiff.*"]
+module = ["intentumdiff", "intentumdiff.*", "fastmcp", "fastmcp.*"]
 ignore_missing_imports = true

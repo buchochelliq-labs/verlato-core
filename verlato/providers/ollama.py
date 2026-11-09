@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from http import client
+from typing import Any
 from urllib import error, request
 
 from verlato.providers.base import ProviderRequest, ProviderResponse, VerlatoProvider, default_system_prompt
@@ -83,7 +84,7 @@ class OllamaProvider(VerlatoProvider):
             f"prompt_chars={len(request_data.prompt)} evidence_keys={len(request_data.evidence)} "
             f"timeout_seconds={self.timeout_seconds:g} stream={self.stream} keep_alive={self.keep_alive or 'default'}"
         )
-        body: dict[str, object] = {
+        body: dict[str, Any] = {
             "model": model,
             "stream": self.stream,
             "options": self._options_for_task(task, request_data=request_data),
@@ -168,15 +169,16 @@ class OllamaProvider(VerlatoProvider):
 
     def _post_json_with_tools(
         self,
-        body: dict[str, object],
+        body: dict[str, Any],
         *,
         request_data: ProviderRequest,
         task: str,
-    ) -> dict[str, object]:
-        messages = list(body.get("messages") if isinstance(body.get("messages"), list) else [])
+    ) -> dict[str, Any]:
+        raw_messages = body.get("messages")
+        messages = list(raw_messages) if isinstance(raw_messages, list) else []
         tool_names: list[str] = []
         rounds = 0
-        data: dict[str, object] = {}
+        data: dict[str, Any] = {}
         while True:
             body["messages"] = messages
             body["stream"] = False
@@ -217,8 +219,8 @@ class OllamaProvider(VerlatoProvider):
         system_prompt: str,
         request_data: ProviderRequest,
         model: str,
-    ) -> dict[str, object]:
-        body: dict[str, object] = {
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
             "model": model,
             "stream": self.stream,
             "options": self._options_for_task(task, request_data=request_data),
@@ -245,7 +247,7 @@ class OllamaProvider(VerlatoProvider):
     def effective_suggest_model(self) -> str:
         return self.model_for_task("suggest")
 
-    def _post_json(self, endpoint: str, body: dict[str, object]) -> dict[str, object]:
+    def _post_json(self, endpoint: str, body: dict[str, Any]) -> dict[str, Any]:
         payload = json.dumps(body).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
@@ -257,7 +259,7 @@ class OllamaProvider(VerlatoProvider):
             raise json.JSONDecodeError("expected JSON object", str(data), 0)
         return data
 
-    def _post_streaming_json(self, endpoint: str, body: dict[str, object], *, task: str) -> dict[str, object]:
+    def _post_streaming_json(self, endpoint: str, body: dict[str, Any], *, task: str) -> dict[str, Any]:
         payload = json.dumps(body).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
@@ -265,7 +267,7 @@ class OllamaProvider(VerlatoProvider):
         req = request.Request(endpoint, data=payload, headers=headers, method="POST")
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
-        final_data: dict[str, object] = {}
+        final_data: dict[str, Any] = {}
         chunk_count = 0
         with request.urlopen(req, timeout=self.timeout_seconds) as resp:
             for raw_line in resp:
@@ -311,8 +313,8 @@ class OllamaProvider(VerlatoProvider):
             return f"{self.endpoint.rstrip('/')[:-len('/api/chat')]}/api/generate"
         return self.endpoint
 
-    def _options_for_task(self, task: str, *, request_data: ProviderRequest | None = None) -> dict[str, object]:
-        options: dict[str, object] = {"temperature": 0.1}
+    def _options_for_task(self, task: str, *, request_data: ProviderRequest | None = None) -> dict[str, Any]:
+        options: dict[str, Any] = {"temperature": 0.1}
         if self.num_ctx is not None:
             options["num_ctx"] = self.num_ctx
         num_predict = self.num_predict
@@ -330,7 +332,7 @@ class OllamaProvider(VerlatoProvider):
         return options
 
     @staticmethod
-    def _response_metadata(data: dict[str, object]) -> dict[str, object]:
+    def _response_metadata(data: dict[str, Any]) -> dict[str, Any]:
         keys = [
             "total_duration",
             "load_duration",
@@ -347,7 +349,7 @@ class OllamaProvider(VerlatoProvider):
         return metadata
 
     @staticmethod
-    def _response_reasoning(data: dict[str, object]) -> str:
+    def _response_reasoning(data: dict[str, Any]) -> str:
         message = data.get("message")
         candidates: list[object] = []
         if isinstance(message, dict):
@@ -360,7 +362,7 @@ class OllamaProvider(VerlatoProvider):
         return "\n".join(str(candidate).strip() for candidate in candidates if str(candidate).strip())
 
     @staticmethod
-    def _message_reasoning(message: dict[str, object]) -> str:
+    def _message_reasoning(message: dict[str, Any]) -> str:
         candidates = [
             message.get(key)
             for key in ("thinking", "reasoning", "reasoning_content")
@@ -466,14 +468,14 @@ def _resolve_bool_env(name: str, configured: bool | None) -> bool | None:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _tool_calls_from_response(data: dict[str, object]) -> list[dict[str, object]]:
+def _tool_calls_from_response(data: dict[str, Any]) -> list[dict[str, Any]]:
     message = data.get("message")
     if not isinstance(message, dict):
         return []
     raw_calls = message.get("tool_calls")
     if not isinstance(raw_calls, list):
         return []
-    calls: list[dict[str, object]] = []
+    calls: list[dict[str, Any]] = []
     for raw_call in raw_calls:
         if not isinstance(raw_call, dict):
             continue

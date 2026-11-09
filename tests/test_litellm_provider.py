@@ -28,7 +28,9 @@ def test_litellm_provider_sends_schema_and_records_audit(monkeypatch):
         captured["body"] = json.loads(req.data.decode("utf-8"))
         return _Response(
             {
-                "choices": [{"message": {"content": '{"items":[{"item_id":"ci_1","suggestions":["Clarifies diff-backed BYOM suggestions"]}]}'}}],
+                "choices": [
+                    {"message": {"content": '{"items":[{"item_id":"ci_1","suggestions":["Clarifies diff-backed BYOM suggestions"]}]}'}}
+                ],
                 "usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20},
             }
         )

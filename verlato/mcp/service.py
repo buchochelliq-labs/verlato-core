@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import os
 from dataclasses import asdict, dataclass
+from typing import Any
 
 from verlato import __version__
 from verlato.cli.main import (
     _annotate_semantics,
-    _build_adapter,
-    _diff_engine_info,
-    _can_send_raw_patches_for_config,
     _append_feedback_event,
+    _build_adapter,
     _build_suggestion_cache_store,
+    _can_send_raw_patches_for_config,
     _collect_groups,
+    _diff_engine_info,
     _update_draft_review,
     build_draft_document,
     run_scan,
@@ -21,12 +22,11 @@ from verlato.core.classifier import Classifier
 from verlato.core.collector import Collector
 from verlato.core.commit_intent import draft_conventional_commit
 from verlato.core.drafts import DraftDocument, DraftItem, DraftSection, DraftService, DraftTarget
-from verlato.core.suggestion_tools import SuggestionEvidenceToolProvider
 from verlato.core.model_privacy import can_send_raw_patches, resolve_model_privacy
 from verlato.core.semantic import resolve_diff_engine
+from verlato.core.suggestion_tools import SuggestionEvidenceToolProvider
 from verlato.providers.factory import build_provider
 from verlato.state.store import StateStore
-
 
 # Provider label for MCP clients: an external agent, never a local model.
 MCP_AGENT_PROVIDER = "mcp-agent"
@@ -414,7 +414,7 @@ class MCPService:
         model_provider: str | None,
         model_privacy: str | None,
         allow_remote_patches: bool,
-    ) -> dict[str, object]:
+    ) -> dict[str, Any]:
         config = load_config()
         privacy_mode = resolve_model_privacy(
             config.model_privacy,

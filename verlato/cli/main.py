@@ -8,11 +8,13 @@ import re
 import shutil
 import subprocess
 from collections import Counter
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 from time import perf_counter
+from typing import Any
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
@@ -21,16 +23,6 @@ from verlato.core.adapters import NullPullRequestAdapter, PullRequestAdapter, St
 from verlato.core.change_summary import build_change_summary_payload, raw_patch_chars_available
 from verlato.core.classifier import Classifier
 from verlato.core.collector import Collector
-from verlato.core.semantic import (
-    DIFF_ENGINE_CHOICES,
-    IntentumDiffEngine,
-    build_semantic_engine,
-    render_semantic_diff,
-    resolve_diff_engine,
-    semantic_diff_for_prompt,
-    semantic_engine_info,
-    semantic_prompt_payload,
-)
 from verlato.core.commit_intent import (
     commit_intent_payload,
     conventional_commit_message,
@@ -51,6 +43,16 @@ from verlato.core.model_privacy import (
 )
 from verlato.core.models import ChangeGroup, ChangeItem, Commit, changed_files_for_group
 from verlato.core.reconciler import Reconciler
+from verlato.core.semantic import (
+    DIFF_ENGINE_CHOICES,
+    IntentumDiffEngine,
+    build_semantic_engine,
+    render_semantic_diff,
+    resolve_diff_engine,
+    semantic_diff_for_prompt,
+    semantic_engine_info,
+    semantic_prompt_payload,
+)
 from verlato.core.suggestion_tools import SuggestionEvidenceToolProvider
 from verlato.github.adapter import GitHubApiAdapter
 from verlato.providers.base import ProviderRequest, ProviderResponse
@@ -91,23 +93,23 @@ class _SuggestionWork:
     group: ChangeGroup
     baseline_item: ChangeItem
     prompt: str
-    evidence: dict[str, object]
+    evidence: dict[str, Any]
     source_evidence: list[dict[str, str]]
     prompt_sha: str
-    prompt_budget: dict[str, object]
+    prompt_budget: dict[str, Any]
     cache_key: str
     strategy: str
     prompt_shape: str
-    full_diff_item: dict[str, object] | None
+    full_diff_item: dict[str, Any] | None
     full_diff_file_count: int
     full_diff_patch_chars: int
     full_diff_missing_patch_count: int
-    tools: list[dict[str, object]]
-    tool_executor: object | None
+    tools: list[dict[str, Any]]
+    tool_executor: Callable[[str, dict[str, Any]], Any] | None
     max_tool_rounds: int
     suggestion_count: int
     suggestion_tone: str
-    suggestion_style: dict[str, object]
+    suggestion_style: dict[str, Any]
     effective_model_provider: str | None
     evidence_ms: int
     prompt_ms: int
@@ -117,7 +119,7 @@ class _SuggestionWork:
 @dataclass
 class _SuggestionResult:
     order: int
-    item: dict[str, object]
+    item: dict[str, Any]
     model_ms: int
     parse_ms: int
     aggregate_model_ms: int = 0
@@ -437,7 +439,7 @@ def _annotate_semantics(commits: list[Commit]) -> None:
         engine.annotate(commits, progress=_semantic_progress)
 
 
-def _diff_engine_info() -> dict[str, object]:
+def _diff_engine_info() -> dict[str, Any]:
     config = _load_config()
     engine = resolve_diff_engine(config.diff_engine)
     info = semantic_engine_info(engine)
@@ -484,7 +486,7 @@ def _trace_progress(
 ) -> None:
     if not _trace_progress_enabled():
         return
-    event: dict[str, object] = {
+    event: dict[str, Any] = {
         "event": "progress",
         "stage": stage,
         "label": label,
@@ -504,7 +506,7 @@ def _trace_progress(
 def _trace_suggestion_event(event: str, **attributes: object) -> None:
     if not _trace_progress_enabled():
         return
-    payload: dict[str, object] = {"event": event}
+    payload: dict[str, Any] = {"event": event}
     payload.update({key: value for key, value in attributes.items() if value is not None})
     print_stderr_line("[verlato:suggestion] json " + json.dumps(payload, sort_keys=True))
 
@@ -945,7 +947,7 @@ def _provider_effective_model(provider: object, task: str) -> str:
     return str(raw_model).strip() if raw_model is not None else ""
 
 
-def _provider_model_context(provider: object, provider_mode: str | None) -> dict[str, object]:
+def _provider_model_context(provider: object, provider_mode: str | None) -> dict[str, Any]:
     normalized_mode = (provider_mode or "").strip().lower()
     if normalized_mode not in {"ollama", "local", "litellm", "plugin", "external-plugin"}:
         return {}
@@ -959,7 +961,7 @@ def _provider_model_context(provider: object, provider_mode: str | None) -> dict
     }
 
 
-def _configured_ollama_model_context(config: ProviderConfig, *, suggest_model: str | None) -> dict[str, object]:
+def _configured_ollama_model_context(config: ProviderConfig, *, suggest_model: str | None) -> dict[str, Any]:
     model = os.getenv("VERLATO_OLLAMA_MODEL") or config.model or "gemma4:latest"
     resolved_suggest_model = _normalized_suggest_model(
         suggest_model
@@ -1029,6 +1031,12 @@ def _latest_published_version() -> str | None:
         return None
     # Preserve recency by taking the last published marker observed in state history.
     return published_versions[-1]
+
+
+def _as_dict(value: object) -> dict[str, Any]:
+    """`value` when it is a JSON object, else an empty dict (typed for nested payload reads)."""
+
+    return value if isinstance(value, dict) else {}
 
 
 def _load_config() -> VerlatoConfig:
@@ -1196,7 +1204,7 @@ def _parse_bool(value: object, *, default: bool = False) -> bool:
     return default
 
 
-def _resolve_suggestion_style(config: VerlatoConfig) -> dict[str, object]:
+def _resolve_suggestion_style(config: VerlatoConfig) -> dict[str, Any]:
     guidance = os.getenv("VERLATO_STYLE_GUIDANCE") or config.suggestion_style.guidance
     vocabulary = _env_list("VERLATO_PROJECT_VOCABULARY") or config.suggestion_style.project_vocabulary
     banned = _env_list("VERLATO_BANNED_PHRASES") or config.suggestion_style.banned_phrases
@@ -1226,8 +1234,8 @@ def _elapsed_ms(start: float) -> int:
     return max(0, int(round((perf_counter() - start) * 1000)))
 
 
-def _normalized_provider_timings(metadata: dict[str, object], model_ms: int) -> dict[str, object]:
-    timings: dict[str, object] = {}
+def _normalized_provider_timings(metadata: dict[str, Any], model_ms: int) -> dict[str, Any]:
+    timings: dict[str, Any] = {}
     duration_fields = {
         "total_duration": "ollama_total_ms",
         "load_duration": "load_ms",
@@ -1266,7 +1274,7 @@ def _run_ollama_doctor(
     warmup: bool = False,
     adaptive_recommendations: bool = False,
     suggest_model: str | None = None,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     config = _load_config()
     suggestion_parallelism = _resolve_suggestion_parallelism(config.suggestion_parallelism)
     suggestion_prompt_profile = _resolve_suggestion_prompt_profile(config.suggestion_prompt_profile)
@@ -1330,7 +1338,7 @@ def _run_ollama_doctor(
     return result
 
 
-def _ollama_doctor_config(provider: object, request: ProviderRequest, suggestion_parallelism: int) -> dict[str, object]:
+def _ollama_doctor_config(provider: object, request: ProviderRequest, suggestion_parallelism: int) -> dict[str, Any]:
     options = {}
     option_builder = getattr(provider, "_options_for_task", None)
     if callable(option_builder):
@@ -1358,7 +1366,7 @@ def _ollama_doctor_config(provider: object, request: ProviderRequest, suggestion
     }
 
 
-def _collect_ollama_runtime(provider: object, config_snapshot: dict[str, object]) -> dict[str, object]:
+def _collect_ollama_runtime(provider: object, config_snapshot: dict[str, Any]) -> dict[str, Any]:
     api_ps = _collect_ollama_api_ps(provider)
     cli_ps = _collect_ollama_cli_ps()
     selected_model = _select_ollama_runtime_model(
@@ -1373,7 +1381,7 @@ def _collect_ollama_runtime(provider: object, config_snapshot: dict[str, object]
     }
 
 
-def _collect_ollama_api_ps(provider: object) -> dict[str, object]:
+def _collect_ollama_api_ps(provider: object) -> dict[str, Any]:
     endpoint = getattr(provider, "endpoint", None)
     url = _ollama_api_ps_url(endpoint)
     if not url:
@@ -1392,7 +1400,7 @@ def _collect_ollama_api_ps(provider: object) -> dict[str, object]:
     }
 
 
-def _collect_ollama_cli_ps() -> dict[str, object]:
+def _collect_ollama_cli_ps() -> dict[str, Any]:
     executable = shutil.which("ollama")
     if not executable:
         return {"ok": False, "available": False, "rows": []}
@@ -1408,7 +1416,7 @@ def _collect_ollama_cli_ps() -> dict[str, object]:
         return {"ok": False, "available": True, "rows": [], "error": str(exc)}
     stdout = result.stdout.strip()
     stderr = result.stderr.strip()
-    payload: dict[str, object] = {
+    payload: dict[str, Any] = {
         "ok": result.returncode == 0,
         "available": True,
         "returncode": result.returncode,
@@ -1439,7 +1447,7 @@ def _ollama_base_url(endpoint: object) -> str | None:
     return normalized
 
 
-def _get_json(url: str, *, timeout_seconds: float) -> dict[str, object]:
+def _get_json(url: str, *, timeout_seconds: float) -> dict[str, Any]:
     req = urlrequest.Request(url, headers={"Accept": "application/json"}, method="GET")
     with urlrequest.urlopen(req, timeout=timeout_seconds) as resp:
         data = json.loads(resp.read().decode("utf-8"))
@@ -1472,9 +1480,9 @@ def _normalize_ollama_ps_header(value: str) -> str:
 def _select_ollama_runtime_model(
     *,
     configured_model: str,
-    api_ps: dict[str, object],
-    cli_ps: dict[str, object],
-) -> dict[str, object]:
+    api_ps: dict[str, Any],
+    cli_ps: dict[str, Any],
+) -> dict[str, Any]:
     models = api_ps.get("models") if api_ps.get("ok") is True else []
     if isinstance(models, list):
         for model in models:
@@ -1488,7 +1496,7 @@ def _select_ollama_runtime_model(
     return {"name": configured_model, "model": configured_model, "loaded": False if api_ps.get("ok") is True else None}
 
 
-def _ollama_model_matches(configured_model: str, candidate: dict[str, object]) -> bool:
+def _ollama_model_matches(configured_model: str, candidate: dict[str, Any]) -> bool:
     aliases = _ollama_model_aliases(configured_model)
     candidate_names = [
         str(candidate.get("name") or ""),
@@ -1511,7 +1519,7 @@ def _normalize_model_name(model: str) -> str:
     return model.strip().lower()
 
 
-def _ollama_cli_processor_for_model(configured_model: str, cli_ps: dict[str, object]) -> str | None:
+def _ollama_cli_processor_for_model(configured_model: str, cli_ps: dict[str, Any]) -> str | None:
     rows = cli_ps.get("rows")
     if not isinstance(rows, list):
         return None
@@ -1535,7 +1543,7 @@ def _run_ollama_doctor_probe(
     *,
     name: str,
     purpose: str = "measure",
-) -> dict[str, object]:
+) -> dict[str, Any]:
     started = perf_counter()
     try:
         response = provider.summarize(request)
@@ -1589,7 +1597,7 @@ def _run_model_doctor(
     model_provider: str | None = None,
     suggest_model: str | None = None,
     timeout_seconds: float | None = None,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     config = _load_config()
     provider_mode = model_provider or _resolve_suggest_model_provider(None) or config.provider.name
     provider = _build_provider_for_suggestion(config.provider, mode=provider_mode, suggest_model=suggest_model)
@@ -1673,7 +1681,7 @@ def _doctor_suggestion_work(
     item_id: str,
     provider_mode: str,
     suggestion_tone: str,
-    suggestion_style: dict[str, object],
+    suggestion_style: dict[str, Any],
 ) -> _SuggestionWork:
     from verlato.core.models import ChangeItem, Classification, Content, Evidence, SourceRef
 
@@ -1701,7 +1709,9 @@ def _doctor_suggestion_work(
         },
         "labels": [],
         "pr": None,
-        "commits": [{"sha": "doctor", "subject": "docs: tune release note copy", "message": "docs: tune release note copy", "author": "Verlato"}],
+        "commits": [
+            {"sha": "doctor", "subject": "docs: tune release note copy", "message": "docs: tune release note copy", "author": "Verlato"}
+        ],
         "files": [
             {
                 "path": "docs/release-notes.md",
@@ -1758,12 +1768,12 @@ def _doctor_suggestion_work(
 
 
 def _summarize_ollama_doctor(
-    probes: list[dict[str, object]],
-    config_snapshot: dict[str, object],
+    probes: list[dict[str, Any]],
+    config_snapshot: dict[str, Any],
     *,
-    runtime: dict[str, object] | None = None,
+    runtime: dict[str, Any] | None = None,
     warmup_requested: bool = False,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     runtime = runtime or {}
     runtime_diagnostics = _ollama_runtime_diagnostics(runtime, config_snapshot)
     runtime_recommendations = _ollama_runtime_recommendations(runtime, config_snapshot)
@@ -1821,7 +1831,7 @@ def _summarize_ollama_doctor(
     }
 
 
-def _ollama_doctor_bottleneck(probes: list[dict[str, object]]) -> tuple[str, str]:
+def _ollama_doctor_bottleneck(probes: list[dict[str, Any]]) -> tuple[str, str]:
     max_values = {
         "queue": _max_probe_timing(probes, "queue_ms"),
         "load": _max_probe_timing(probes, "load_ms"),
@@ -1845,7 +1855,7 @@ def _ollama_doctor_bottleneck(probes: list[dict[str, object]]) -> tuple[str, str
 
 def _ollama_doctor_recommendations(
     bottleneck: str,
-    config_snapshot: dict[str, object],
+    config_snapshot: dict[str, Any],
     *,
     warmup_requested: bool = False,
 ) -> list[str]:
@@ -1889,10 +1899,10 @@ def _ollama_doctor_recommendations(
 
 def _ollama_doctor_recommended_settings(
     bottleneck: str,
-    config_snapshot: dict[str, object],
-) -> dict[str, object]:
+    config_snapshot: dict[str, Any],
+) -> dict[str, Any]:
     parallelism = config_snapshot.get("suggestion_parallelism")
-    settings: dict[str, object] = {}
+    settings: dict[str, Any] = {}
     if bottleneck == "queue" and isinstance(parallelism, int) and parallelism > 1:
         settings["suggestion_parallelism"] = 1
     suggest_cap = config_snapshot.get("suggest_num_predict_effective")
@@ -1903,7 +1913,7 @@ def _ollama_doctor_recommended_settings(
     return settings
 
 
-def _ollama_warmup_diagnostic(probe: dict[str, object] | None) -> str:
+def _ollama_warmup_diagnostic(probe: dict[str, Any] | None) -> str:
     if not probe:
         return "Warmup was requested but no warmup probe was recorded."
     if probe.get("ok") is not True:
@@ -1916,7 +1926,7 @@ def _ollama_warmup_diagnostic(probe: dict[str, object] | None) -> str:
     return f"Warmup completed in {elapsed_ms}ms."
 
 
-def _ollama_context_diagnostic(config_snapshot: dict[str, object]) -> str | None:
+def _ollama_context_diagnostic(config_snapshot: dict[str, Any]) -> str | None:
     num_ctx = config_snapshot.get("num_ctx")
     if isinstance(num_ctx, int) and num_ctx >= 8192:
         return f"Configured num_ctx is {num_ctx}; large contexts increase memory use and can limit parallel requests."
@@ -1929,17 +1939,17 @@ def _ollama_parallelism_recommendation(parallelism: object) -> str:
     return "Keep Verlato suggestion parallelism at 1 unless Ollama is configured for server-side parallelism."
 
 
-def _ollama_context_recommendation(config_snapshot: dict[str, object]) -> str:
+def _ollama_context_recommendation(config_snapshot: dict[str, Any]) -> str:
     num_ctx = config_snapshot.get("num_ctx")
     if isinstance(num_ctx, int) and num_ctx >= 8192:
         return f"Configured num_ctx is {num_ctx}; lower it if suggestion prompts do not need that much context."
     return "Avoid oversized OLLAMA_CONTEXT_LENGTH or VERLATO_OLLAMA_NUM_CTX values until prompt eval is healthy."
 
 
-def _ollama_runtime_diagnostics(runtime: dict[str, object], config_snapshot: dict[str, object]) -> list[str]:
+def _ollama_runtime_diagnostics(runtime: dict[str, Any], config_snapshot: dict[str, Any]) -> list[str]:
     diagnostics: list[str] = []
-    api_ps = runtime.get("api_ps") if isinstance(runtime.get("api_ps"), dict) else {}
-    selected = runtime.get("selected_model") if isinstance(runtime.get("selected_model"), dict) else {}
+    api_ps = _as_dict(runtime.get("api_ps"))
+    selected = _as_dict(runtime.get("selected_model"))
     if api_ps.get("ok") is not True:
         diagnostics.append(f"Ollama runtime state unavailable from /api/ps: {api_ps.get('error') or 'unknown error'}.")
         return diagnostics
@@ -1969,10 +1979,10 @@ def _ollama_runtime_diagnostics(runtime: dict[str, object], config_snapshot: dic
     return diagnostics
 
 
-def _ollama_runtime_recommendations(runtime: dict[str, object], config_snapshot: dict[str, object]) -> list[str]:
+def _ollama_runtime_recommendations(runtime: dict[str, Any], config_snapshot: dict[str, Any]) -> list[str]:
     recommendations: list[str] = []
-    api_ps = runtime.get("api_ps") if isinstance(runtime.get("api_ps"), dict) else {}
-    selected = runtime.get("selected_model") if isinstance(runtime.get("selected_model"), dict) else {}
+    api_ps = _as_dict(runtime.get("api_ps"))
+    selected = _as_dict(runtime.get("selected_model"))
     if api_ps.get("ok") is not True:
         return ["Check Ollama /api/ps or ollama ps when timing telemetry is inconclusive."]
     if selected.get("loaded") is False:
@@ -1986,7 +1996,8 @@ def _ollama_runtime_recommendations(runtime: dict[str, object], config_snapshot:
     parallelism = config_snapshot.get("suggestion_parallelism")
     if context_length is not None and context_length >= 8192 and isinstance(parallelism, int) and parallelism > 1:
         recommendations.append(
-            "Lower suggestionParallelism to 1 or reduce OLLAMA_CONTEXT_LENGTH/VERLATO_OLLAMA_NUM_CTX before enabling server-side parallelism."
+            "Lower suggestionParallelism to 1 or reduce OLLAMA_CONTEXT_LENGTH/VERLATO_OLLAMA_NUM_CTX "
+            "before enabling server-side parallelism."
         )
 
     size_vram = _optional_int(selected.get("size_vram"))
@@ -2021,7 +2032,7 @@ def _unique_strings(values: list[str]) -> list[str]:
     return unique
 
 
-def _max_probe_timing(probes: list[dict[str, object]], key: str) -> int:
+def _max_probe_timing(probes: list[dict[str, Any]], key: str) -> int:
     values = []
     for probe in probes:
         timings = probe.get("timings")
@@ -2047,7 +2058,7 @@ def _suggestion_adaptive_current_settings(
     suggestion_batch_size: int,
     cache_warming: bool | None,
     suggestion_strategy: str | None = None,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     return {
         "provider": provider,
         "prompt_profile": prompt_profile,
@@ -2061,18 +2072,18 @@ def _suggestion_adaptive_current_settings(
 
 def _build_suggestion_adaptive_recommendations(
     *,
-    current: dict[str, object],
-    timing_sources: list[dict[str, object]],
+    current: dict[str, Any],
+    timing_sources: list[dict[str, Any]],
     feedback_events: list[dict],
     cache_hit_count: int,
     item_count: int,
     prompt_chars: int,
     source: str,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     timing_signals = _adaptive_timing_signals(timing_sources)
     feedback_signals = _adaptive_feedback_signals(feedback_events)
     cache_hit_rate = round(cache_hit_count / item_count, 3) if item_count else None
-    signals: dict[str, object] = {
+    signals: dict[str, Any] = {
         "source": source,
         "item_count": item_count,
         "prompt_chars": prompt_chars,
@@ -2091,7 +2102,7 @@ def _build_suggestion_adaptive_recommendations(
     }
 
 
-def _adaptive_timing_signals(sources: list[dict[str, object]]) -> dict[str, object]:
+def _adaptive_timing_signals(sources: list[dict[str, Any]]) -> dict[str, Any]:
     totals = {
         "model_ms": 0,
         "queue_ms": 0,
@@ -2135,7 +2146,7 @@ def _adaptive_timing_signals(sources: list[dict[str, object]]) -> dict[str, obje
     }
 
 
-def _adaptive_feedback_signals(events: list[dict]) -> dict[str, object]:
+def _adaptive_feedback_signals(events: list[dict]) -> dict[str, Any]:
     safe_events = [event for event in events if isinstance(event, dict)]
     event_counts = Counter(str(event.get("event") or "unknown") for event in safe_events)
     positive_names = {
@@ -2171,8 +2182,8 @@ def _adaptive_source_feedback(
     events: list[dict],
     positive_names: set[str],
     negative_names: set[str],
-) -> dict[str, dict[str, object]]:
-    sources = {
+) -> dict[str, dict[str, Any]]:
+    sources: dict[str, dict[str, Any]] = {
         "model-suggestion": {
             "event_count": 0,
             "positive_count": 0,
@@ -2180,7 +2191,7 @@ def _adaptive_source_feedback(
         },
     }
     for event in events:
-        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        metadata = _as_dict(event.get("metadata"))
         source = str(metadata.get("source") or "")
         if source not in sources:
             continue
@@ -2201,12 +2212,12 @@ def _adaptive_source_feedback(
     return sources
 
 
-def _adaptive_recommendation_items(current: dict[str, object], signals: dict[str, object]) -> list[dict[str, object]]:
-    recommendations: list[dict[str, object]] = []
+def _adaptive_recommendation_items(current: dict[str, Any], signals: dict[str, Any]) -> list[dict[str, Any]]:
+    recommendations: list[dict[str, Any]] = []
     prompt_profile = str(current.get("prompt_profile") or "conservative")
     parallelism = current.get("suggestion_parallelism")
     suggestion_count = current.get("suggestion_count")
-    feedback = signals.get("feedback") if isinstance(signals.get("feedback"), dict) else {}
+    feedback = _as_dict(signals.get("feedback"))
     positive_count = _optional_int(feedback.get("positive_count")) or 0
     negative_count = _optional_int(feedback.get("negative_count")) or 0
     event_count = _optional_int(feedback.get("event_count")) or 0
@@ -2273,7 +2284,7 @@ def _adaptive_recommendation_items(current: dict[str, object], signals: dict[str
     queue_ms = _optional_int(signals.get("queue_ms")) or 0
     queue_share = _optional_float(signals.get("queue_share")) or 0.0
     if queue_ms >= 250 and queue_share >= 0.2:
-        suggested_config: dict[str, object] = {}
+        suggested_config: dict[str, Any] = {}
         if isinstance(parallelism, int) and parallelism > 1:
             suggested_config["suggestion_parallelism"] = 1
         recommendations.append(
@@ -2424,7 +2435,7 @@ def _update_draft_review(
     summary: str | None,
     reviewer: str | None,
     model_provider: str | None = None,
-    summary_provenance: dict[str, object] | None = None,
+    summary_provenance: dict[str, Any] | None = None,
     commit_intent_inference: str | None = None,
 ) -> ChangeItem:
     if status is None and summary is None and reviewer is None:
@@ -2531,7 +2542,11 @@ def _request_draft_model_input(
 
     if not any(signal.startswith("provider-summary:") for signal in candidate.evidence.commit_signals):
         provider_error = next(
-            (signal.removeprefix("provider-error:") for signal in candidate.evidence.commit_signals if signal.startswith("provider-error:")),
+            (
+                signal.removeprefix("provider-error:")
+                for signal in candidate.evidence.commit_signals
+                if signal.startswith("provider-error:")
+            ),
             None,
         )
         if provider_error:
@@ -2896,7 +2911,7 @@ def _preview_draft_model_suggestions(
         provider_mode=effective_model_provider or config.provider.name,
     )
 
-    items: list[dict[str, object]] = []
+    items: list[dict[str, Any]] = []
     completed_count = 0
     preparation_ms = 0
     prompt_chars = 0
@@ -2968,8 +2983,8 @@ def _preview_draft_model_suggestions(
         }
         source_evidence = _build_suggestion_source_evidence(diff, group, include_hunks=raw_patches_allowed)
         prompt_shape = _suggestion_prompt_shape(effective_suggestion_strategy)
-        full_diff_item: dict[str, object] | None = None
-        tools: list[dict[str, object]] = []
+        full_diff_item: dict[str, Any] | None = None
+        tools: list[dict[str, Any]] = []
         tool_executor = None
         max_tool_rounds = 0
         cache_key = ""
@@ -3232,14 +3247,14 @@ def _preview_draft_model_suggestions(
             order = batch_base_order + batch_offset
             work = prepare_work(order, group, baseline_item, batch_index)
             if preflight:
-                result = _preflight_suggestion_result(work)
-                batch_results[result.order] = result
-                record_result(result)
+                preflight_result = _preflight_suggestion_result(work)
+                batch_results[preflight_result.order] = preflight_result
+                record_result(preflight_result)
                 continue
-            result = cached_result_for_work(work)
-            if result is not None:
-                batch_results[result.order] = result
-                record_result(result)
+            cached_result = cached_result_for_work(work)
+            if cached_result is not None:
+                batch_results[cached_result.order] = cached_result
+                record_result(cached_result)
                 continue
             uncached_item_count += 1
             if effective_suggestion_strategy == "full-diff-json":
@@ -3268,14 +3283,14 @@ def _preview_draft_model_suggestions(
                 try:
                     chunk_results = _run_suggestion_work_chunk(provider, provider_classifier, chunk)
                 except _SuggestionWorkFailure as exc:
-                    for result in exc.completed_results:
-                        batch_results[result.order] = result
-                        record_result(result)
+                    for work_result in exc.completed_results:
+                        batch_results[work_result.order] = work_result
+                        record_result(work_result)
                     record_failure(exc.work, exc.exc)
-                    raise exc.exc
-                for result in chunk_results:
-                    batch_results[result.order] = result
-                    record_result(result)
+                    raise exc.exc from exc
+                for work_result in chunk_results:
+                    batch_results[work_result.order] = work_result
+                    record_result(work_result)
         else:
             workers = min(suggestion_parallelism, len(miss_chunks))
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="verlato-suggest") as executor:
@@ -3288,18 +3303,18 @@ def _preview_draft_model_suggestions(
                         try:
                             chunk_results = future.result()
                         except _SuggestionWorkFailure as exc:
-                            for result in exc.completed_results:
-                                batch_results[result.order] = result
-                                record_result(result)
+                            for work_result in exc.completed_results:
+                                batch_results[work_result.order] = work_result
+                                record_result(work_result)
                             record_failure(exc.work, exc.exc)
-                            raise exc.exc
+                            raise exc.exc from exc
                         except (Exception, SystemExit) as exc:
                             for work in future_to_chunk[future]:
                                 record_failure(work, exc)
                             raise
-                        for result in chunk_results:
-                            batch_results[result.order] = result
-                            record_result(result)
+                        for work_result in chunk_results:
+                            batch_results[work_result.order] = work_result
+                            record_result(work_result)
                 except BaseException:
                     for pending in future_to_chunk:
                         pending.cancel()
@@ -3395,7 +3410,11 @@ def _preview_draft_model_suggestions(
 
 def _provider_cache_model_id(provider: object, provider_mode: str) -> str:
     normalized_mode = (provider_mode or "configured").strip().lower()
-    raw_model = _provider_effective_model(provider, "suggest") if normalized_mode in {"ollama", "local"} else getattr(provider, "model", None)
+    raw_model = (
+        _provider_effective_model(provider, "suggest")
+        if normalized_mode in {"ollama", "local"}
+        else getattr(provider, "model", None)
+    )
     model = str(raw_model).strip() if raw_model is not None else ""
     if normalized_mode in {"ollama", "local"}:
         return f"ollama:{model or 'default'}"
@@ -3423,7 +3442,7 @@ def _suggestion_cache_key(
     provider_mode: str,
     model_id: str,
     tone: str,
-    style_profile: dict[str, object],
+    style_profile: dict[str, Any],
     suggestion_count: int,
     prompt_profile: str,
     strategy: str = "single",
@@ -3457,7 +3476,7 @@ def _stable_json_sha(value: object) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:12]
 
 
-def _suggestion_cache_stored_item(item: dict[str, object]) -> dict[str, object]:
+def _suggestion_cache_stored_item(item: dict[str, Any]) -> dict[str, Any]:
     transient = {
         "batch",
         "cache",
@@ -3489,7 +3508,11 @@ def _cached_suggestion_result(work: _SuggestionWork, cached: CachedSuggestion) -
         "item_id": work.baseline_item.id,
         "title": work.baseline_item.content.title,
         "current_summary": current_summary,
-        "provider": cached_item.get("provider") if isinstance(cached_item.get("provider"), str) else work.effective_model_provider or "configured",
+        "provider": (
+            cached_item.get("provider")
+            if isinstance(cached_item.get("provider"), str)
+            else work.effective_model_provider or "configured"
+        ),
         "prompt_sha": work.prompt_sha,
         "tone": work.suggestion_tone,
         "style_profile": work.suggestion_style,
@@ -3577,18 +3600,18 @@ def _preflight_suggestion_result(work: _SuggestionWork) -> _SuggestionResult:
 
 
 def _cached_suggestion_details(
-    cached_item: dict[str, object],
+    cached_item: dict[str, Any],
     suggestions: list[str],
     work: _SuggestionWork,
     current_summary: str,
-) -> list[dict[str, object]]:
+) -> list[dict[str, Any]]:
     raw_details = cached_item.get("suggestion_details")
     details_by_summary = {}
     if isinstance(raw_details, list):
         for detail in raw_details:
             if isinstance(detail, dict) and isinstance(detail.get("summary"), str):
                 details_by_summary[detail["summary"]] = detail
-    details: list[dict[str, object]] = []
+    details: list[dict[str, Any]] = []
     for suggestion in suggestions:
         detail = dict(details_by_summary.get(suggestion) or {})
         detail["summary"] = suggestion
@@ -3627,7 +3650,7 @@ def _run_suggestion_work_chunk(provider, provider_classifier: Classifier, works:
 
     results = list(outcome.results)
     if outcome.fallback_works:
-        fallback_results: list[_SuggestionResult] = []
+        fallback_results = []
         for work in outcome.fallback_works:
             try:
                 fallback_results.append(_run_suggestion_model_work(provider, provider_classifier, work))
@@ -3672,7 +3695,7 @@ def _run_full_diff_suggestion_work_chunk(
 
     results = list(outcome.results)
     if outcome.fallback_works:
-        fallback_results: list[_SuggestionResult] = []
+        fallback_results = []
         for work in outcome.fallback_works:
             try:
                 fallback_results.append(
@@ -4116,7 +4139,8 @@ def _build_full_diff_suggestion_batch_prompt(works: list[_SuggestionWork]) -> st
         f"{source_instruction}\n"
         "Return only JSON that matches the requested schema. Do not include Markdown fences or prose.\n"
         f"For each item, return exactly {works[0].suggestion_count} suggestion string(s) in the suggestions array.\n"
-        "Do not combine items, rename item ids, omit an item, or mention implementation details unless they matter to release-note readers.\n"
+        "Do not combine items, rename item ids, omit an item, or mention implementation details unless they matter to "
+        "release-note readers.\n"
         "If a file has no semantic_diff (and patch_available=false), treat that file as changed but do not invent "
         "unavailable details.\n"
         "Input JSON:\n"
@@ -4130,7 +4154,7 @@ def _build_tool_retrieval_suggestion_prompt(
     item: ChangeItem,
     suggestion_count: int,
     tone: str,
-    style_profile: dict[str, object],
+    style_profile: dict[str, Any],
 ) -> str:
     manifest = tool_provider.get_suggestion_item(item_id=item.id)
     payload = {
@@ -4168,7 +4192,7 @@ def _full_diff_batch_prompt_chars(works: list[_SuggestionWork]) -> int:
     return len(_build_full_diff_suggestion_batch_prompt(works))
 
 
-def _suggestion_batch_response_format(suggestion_count: int) -> dict[str, object]:
+def _suggestion_batch_response_format(suggestion_count: int) -> dict[str, Any]:
     return {
         "type": "object",
         "properties": {
@@ -4220,17 +4244,17 @@ def _build_suggestion_result_item(
     *,
     work: _SuggestionWork,
     response: ProviderResponse,
-    suggestion_details: list[dict[str, object]],
-    rejected_candidates: list[dict[str, object]],
+    suggestion_details: list[dict[str, Any]],
+    rejected_candidates: list[dict[str, Any]],
     model_ms: int,
     parse_ms: int,
-    provider_timings: dict[str, object],
+    provider_timings: dict[str, Any],
     provider_reasoning: str,
     batch_model_ms: int | None = None,
     batch_item_count: int | None = None,
     fallback_reason: str | None = None,
-) -> dict[str, object]:
-    timings: dict[str, object] = {
+) -> dict[str, Any]:
+    timings: dict[str, Any] = {
         "evidence_ms": work.evidence_ms,
         "prompt_ms": work.prompt_ms,
         "model_ms": model_ms,
@@ -4383,7 +4407,7 @@ def _run_suggestion_model_work(
     if not suggestion_details:
         raise SystemExit(f"No model suggestions were produced for draft item {baseline_item.id}.")
     suggestions = [detail["summary"] for detail in suggestion_details]
-    timings: dict[str, object] = {
+    timings: dict[str, Any] = {
         "evidence_ms": work.evidence_ms,
         "prompt_ms": work.prompt_ms,
         "model_ms": model_ms,
@@ -4468,7 +4492,7 @@ def _parse_suggestion_variants(
     trace_model: str | None = None,
     banned_phrases: list[str] | None = None,
     specificity_floor: float = 0.0,
-) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     normalized = (content or "").strip()
     if not normalized:
         _trace_model_suggestion_filter("raw-response", "empty", trace_title, trace_model)
@@ -4491,8 +4515,8 @@ def _parse_suggestion_variants(
         trace_model,
     )
     current_summary = item.edited_summary or item.content.summary
-    suggestions: list[dict[str, object]] = []
-    rejected_candidates: list[dict[str, object]] = []
+    suggestions: list[dict[str, Any]] = []
+    rejected_candidates: list[dict[str, Any]] = []
     classifier = Classifier()
     for line in lines:
         rejection_reason = classifier._summary_rejection_reason(line, item.content.title, group)
@@ -4618,9 +4642,9 @@ def _build_full_diff_suggestion_payload_item(
     diff,
     *,
     include_patches: bool,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     files = changed_files_for_group(group)
-    file_payloads: list[dict[str, object]] = []
+    file_payloads: list[dict[str, Any]] = []
     patch_chars_available = 0
     patch_chars_sent = 0
     missing_patch_count = 0
@@ -4628,7 +4652,7 @@ def _build_full_diff_suggestion_payload_item(
     if use_semantic_diff:
         # IntentumDiff evidence replaces raw patches; `include_patches` (privacy allows source
         # content) only decides whether the engine's change descriptions are included.
-        semantic_by_path: dict[str, list[dict[str, object]]] = {}
+        semantic_by_path: dict[str, list[dict[str, Any]]] = {}
         for record in semantic_diff_for_prompt(list(diff.semantic_diff), detailed=include_patches):
             semantic_by_path.setdefault(str(record["path"]), []).append(
                 {key: value for key, value in record.items() if key != "path"}
@@ -4713,8 +4737,8 @@ def _build_full_diff_suggestion_payload_item(
     }
 
 
-def _commit_payload_for_prompt(commit: Commit) -> dict[str, object]:
-    payload: dict[str, object] = {
+def _commit_payload_for_prompt(commit: Commit) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "sha": commit.sha,
         "subject": commit.message.splitlines()[0] if commit.message else "",
         "message": commit.message,
@@ -4729,7 +4753,7 @@ def _commit_payload_for_prompt(commit: Commit) -> dict[str, object]:
     return payload
 
 
-def _commit_boundaries_payload(commits: list[Commit]) -> dict[str, object]:
+def _commit_boundaries_payload(commits: list[Commit]) -> dict[str, Any]:
     if not commits:
         return {"first": None, "last": None}
     return {
@@ -4738,7 +4762,7 @@ def _commit_boundaries_payload(commits: list[Commit]) -> dict[str, object]:
     }
 
 
-def _commit_boundary_payload(commit: Commit) -> dict[str, object]:
+def _commit_boundary_payload(commit: Commit) -> dict[str, Any]:
     return {
         "sha": commit.sha,
         "subject": commit.message.splitlines()[0] if commit.message else "",
@@ -4861,7 +4885,7 @@ def _trace_model_call_result(task: str, title: str, model: str, confidence: floa
     )
 
 
-def _trace_model_response_detail(model: str, content: str, metadata: dict[str, object], reasoning: str = "") -> None:
+def _trace_model_response_detail(model: str, content: str, metadata: dict[str, Any], reasoning: str = "") -> None:
     if not _trace_model_enabled():
         return
     metadata_text = " ".join(f"{key}={value}" for key, value in sorted(metadata.items()))
@@ -4916,7 +4940,7 @@ def _trace_model_suggest_stage(stage: str, detail: str) -> None:
     _trace_model_line(f"[verlato:model] suggest stage={stage} {detail}", event=stage.replace("-", "_"))
 
 
-def _trace_model_prompt_budget(budget: dict[str, object]) -> None:
+def _trace_model_prompt_budget(budget: dict[str, Any]) -> None:
     if not _trace_model_enabled():
         return
     _trace_model_line(
@@ -4962,7 +4986,7 @@ def _trace_model_line(
     message: str,
     *,
     event: str,
-    attributes: dict[str, object] | None = None,
+    attributes: dict[str, Any] | None = None,
     payload: str | None = None,
 ) -> None:
     line = message if message.startswith("[verlato:model]") else f"[verlato:model] {message}"
@@ -4990,13 +5014,13 @@ def _write_model_debug_event(
     *,
     event: str,
     message: str,
-    attributes: dict[str, object] | None = None,
+    attributes: dict[str, Any] | None = None,
     payload: str | None = None,
 ) -> None:
     path = os.getenv("VERLATO_MODEL_LOG_PATH")
     if not path:
         return
-    record: dict[str, object] = {
+    record: dict[str, Any] = {
         "event": event,
         "message": message,
         "attributes": {key: value for key, value in (attributes or {}).items() if value is not None},
@@ -5014,7 +5038,7 @@ def _safe_model_payload(payload: str) -> tuple[str, bool]:
     return redact_model_payload(payload)
 
 
-def _parse_summary_provenance(raw: str | None) -> dict[str, object] | None:
+def _parse_summary_provenance(raw: str | None) -> dict[str, Any] | None:
     if not raw:
         return None
     try:
@@ -5026,7 +5050,7 @@ def _parse_summary_provenance(raw: str | None) -> dict[str, object] | None:
     return _normalize_summary_provenance(parsed)
 
 
-def _normalize_summary_provenance(provenance: dict[str, object]) -> dict[str, object]:
+def _normalize_summary_provenance(provenance: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(provenance)
     normalized["source"] = str(normalized.get("source") or "model-suggestion")
     normalized.setdefault("applied_at", date.today().isoformat())
@@ -5040,10 +5064,10 @@ def _summary_provenance(
     model: str | None,
     prompt_sha: str | None,
     tone: str | None,
-    style_profile: dict[str, object] | None,
-    response_metadata: dict[str, object] | None,
-) -> dict[str, object]:
-    provenance: dict[str, object] = {
+    style_profile: dict[str, Any] | None,
+    response_metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    provenance: dict[str, Any] = {
         "source": source,
         "applied_at": date.today().isoformat(),
     }
@@ -5080,7 +5104,7 @@ def _run_model_logs_export(
     if not source.exists():
         raise SystemExit(f"Model log file not found: {source}")
     event_filter = set(events or [])
-    records: list[dict[str, object]] = []
+    records: list[dict[str, Any]] = []
     for line_number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
             continue
@@ -5120,7 +5144,7 @@ def _run_model_logs_export(
 
 
 def _run_feedback_record(*, event: str, item_id: str, metadata_json: str | None) -> int:
-    metadata: dict[str, object] = {}
+    metadata: dict[str, Any] = {}
     if metadata_json:
         try:
             parsed = json.loads(metadata_json)
@@ -5169,7 +5193,7 @@ def _run_feedback_recommend() -> int:
     return 0
 
 
-def _build_feedback_recommendations(events: list[dict]) -> dict[str, object]:
+def _build_feedback_recommendations(events: list[dict]) -> dict[str, Any]:
     safe_events = [event for event in events if isinstance(event, dict)]
     event_counts = Counter(str(event.get("event") or "unknown") for event in safe_events)
     tone_counts: dict[str, Counter[str]] = {}
@@ -5182,7 +5206,7 @@ def _build_feedback_recommendations(events: list[dict]) -> dict[str, object]:
     }
 
     for event in safe_events:
-        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        metadata = _as_dict(event.get("metadata"))
         event_name = str(event.get("event") or "unknown")
         tone = metadata.get("tone")
         if isinstance(tone, str) and tone:
@@ -5191,7 +5215,7 @@ def _build_feedback_recommendations(events: list[dict]) -> dict[str, object]:
         if specificity is not None and event_name in {"suggestion_applied", "summary_edited"}:
             specificity_scores.append(specificity)
 
-    recommendations: list[dict[str, object]] = []
+    recommendations: list[dict[str, Any]] = []
     positive_count = event_counts["suggestion_applied"] + event_counts["summary_edited"]
     negative_count = sum(event_counts[name] for name in skipped_or_negative)
     regenerated_count = event_counts["suggestion_regenerated"]
@@ -5326,7 +5350,7 @@ def _feedback_best_tone(tone_counts: dict[str, Counter[str]]) -> tuple[str, int,
     return best[0], best[1], best[2]
 
 
-def _append_feedback_event(*, event: str, item_id: str, metadata: dict[str, object] | None = None) -> None:
+def _append_feedback_event(*, event: str, item_id: str, metadata: dict[str, Any] | None = None) -> None:
     store = _build_store()
     state = store.load()
     state.feedback_events.append(
@@ -5340,8 +5364,8 @@ def _append_feedback_event(*, event: str, item_id: str, metadata: dict[str, obje
     store.save(state)
 
 
-def _feedback_summary_metadata(summary: str, *, include_text: bool) -> dict[str, object]:
-    metadata: dict[str, object] = {
+def _feedback_summary_metadata(summary: str, *, include_text: bool) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
         "summary_chars": len(summary),
         "summary_sha": hashlib.sha256(summary.encode("utf-8")).hexdigest()[:12],
     }
@@ -5357,9 +5381,9 @@ def _feedback_include_text() -> bool:
     return _load_config().feedback_include_text
 
 
-def _normalize_model_log_record(raw: dict[str, object], *, line_number: int) -> dict[str, object]:
+def _normalize_model_log_record(raw: dict[str, Any], *, line_number: int) -> dict[str, Any]:
     if "EventName" in raw or "Body" in raw:
-        attributes = raw.get("Attributes") if isinstance(raw.get("Attributes"), dict) else {}
+        attributes = _as_dict(raw.get("Attributes"))
         body, body_redacted = _redact_export_string(str(raw.get("Body") or ""))
         safe_attributes, attributes_redacted = _redact_export_value(attributes)
         return {
@@ -5372,18 +5396,18 @@ def _normalize_model_log_record(raw: dict[str, object], *, line_number: int) -> 
             "event": str(raw.get("EventName") or "verlato.model.log"),
             "body": body,
             "attributes": _attributes_with_redaction(safe_attributes, body_redacted or attributes_redacted),
-            "resource": raw.get("Resource") if isinstance(raw.get("Resource"), dict) else {},
+            "resource": _as_dict(raw.get("Resource")),
             "instrumentation_scope": raw.get("InstrumentationScope")
             if isinstance(raw.get("InstrumentationScope"), dict)
             else {},
         }
 
-    attributes = raw.get("attributes") if isinstance(raw.get("attributes"), dict) else {}
+    attributes = _as_dict(raw.get("attributes"))
     message, message_redacted = _redact_export_string(str(raw.get("message") or ""))
     safe_attributes, attributes_redacted = _redact_export_value(attributes)
     payload = raw.get("payload")
     payload_redacted = False
-    normalized: dict[str, object] = {
+    normalized: dict[str, Any] = {
         "line_number": line_number,
         "raw_format": "cli",
         "event": str(raw.get("event") or "verlato.model.event"),
@@ -5413,12 +5437,12 @@ def _redact_export_value(value: object) -> tuple[object, bool]:
         return values, changed
     if isinstance(value, dict):
         changed = False
-        values: dict[str, object] = {}
+        mapping: dict[str, Any] = {}
         for key, item in value.items():
             safe_item, item_changed = _redact_export_value(item)
-            values[str(key)] = safe_item
+            mapping[str(key)] = safe_item
             changed = changed or item_changed
-        return values, changed
+        return mapping, changed
     return value, False
 
 
@@ -5428,13 +5452,13 @@ def _redact_export_string(value: str) -> tuple[str, bool]:
     return redact_model_payload(value)
 
 
-def _attributes_with_redaction(attributes: object, redacted: bool) -> dict[str, object]:
+def _attributes_with_redaction(attributes: object, redacted: bool) -> dict[str, Any]:
     safe = dict(attributes) if isinstance(attributes, dict) else {}
     safe["redacted"] = bool(safe.get("redacted")) or redacted
     return safe
 
 
-def _suggestions_preview(suggestions: list[dict[str, object]]) -> str:
+def _suggestions_preview(suggestions: list[dict[str, Any]]) -> str:
     if not suggestions:
         return "none"
     return "|".join(str(detail["summary"])[:80] for detail in suggestions[:3])
@@ -5450,7 +5474,7 @@ def _build_draft_model_prompt(
     commit_intent_inference: str | None = None,
     model_privacy: str | None = None,
     allow_remote_patches: bool = False,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     effective_model_provider = _resolve_suggest_model_provider(model_provider)
     config = _load_config()
     privacy_mode = resolve_model_privacy(
@@ -5539,7 +5563,7 @@ def _persist_review_update(
     status: str | None,
     summary: str | None,
     reviewer: str | None,
-    summary_provenance: dict[str, object] | None = None,
+    summary_provenance: dict[str, Any] | None = None,
 ) -> ChangeItem:
     store = _build_store()
     state = store.load()
@@ -6007,7 +6031,7 @@ def main(argv: list[str] | None = None) -> int:
                 total=1,
                 unit="target",
             )
-            result = DraftService(config=_load_config()).apply_document(
+            apply_result = DraftService(config=_load_config()).apply_document(
                 document=document,
                 target_name=args.target,
                 target_path=args.file,
@@ -6015,12 +6039,12 @@ def main(argv: list[str] | None = None) -> int:
             _trace_progress(
                 "draft_apply_writing",
                 "Wrote release notes",
-                detail=result.target,
+                detail=apply_result.target,
                 current=1,
                 total=1,
                 unit="target",
             )
-            print(json.dumps(result.to_dict(), indent=2))
+            print(json.dumps(apply_result.to_dict(), indent=2))
             return 0
 
     if args.command == "state" and args.state_command == "show":

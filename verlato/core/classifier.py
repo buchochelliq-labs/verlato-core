@@ -4,6 +4,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from typing import Any
 
 from verlato.core.change_summary import build_change_summary_payload, raw_patch_chars_available
 from verlato.core.changelog import VALID_CHANGE_KINDS, normalize_change_kind
@@ -74,7 +75,7 @@ class PromptBudgetProfile:
 @dataclass(frozen=True)
 class SummaryPrompt:
     prompt: str
-    budget: dict[str, object]
+    budget: dict[str, Any]
 
 
 SUMMARY_PROMPT_PROFILE = PromptBudgetProfile(

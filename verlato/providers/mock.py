@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from random import Random
+from typing import Any
 
 from verlato.providers.base import ProviderRequest, ProviderResponse, VerlatoProvider
 
@@ -87,7 +88,7 @@ def _summarize_from_evidence(evidence: dict | None) -> str:
 
     file_statuses = evidence.get("file_statuses")
     if isinstance(file_statuses, dict) and file_statuses:
-        statuses: dict[str, int] = {}
+        statuses = {}
         for status in file_statuses.values():
             normalized = str(status or "modified")
             statuses[normalized] = statuses.get(normalized, 0) + 1
@@ -161,7 +162,8 @@ def _draft_conventional_from_evidence(evidence: dict | None) -> dict[str, object
     file_payloads = [file for file in files if isinstance(file, dict)] if isinstance(files, list) else []
     file_paths = [str(file.get("path") or "") for file in file_payloads]
     joined_paths = " ".join(file_paths).lower()
-    facts = evidence.get("diff_facts") if isinstance(evidence.get("diff_facts"), dict) else {}
+    raw_facts = evidence.get("diff_facts")
+    facts: dict[str, Any] = raw_facts if isinstance(raw_facts, dict) else {}
     themes = [str(theme) for theme in facts.get("themes", [])] if isinstance(facts.get("themes"), list) else []
     raw_added_terms = facts.get("added_terms")
     raw_removed_terms = facts.get("removed_terms")

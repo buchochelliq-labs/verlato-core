@@ -2191,9 +2191,13 @@ def test_draft_suggest_cache_key_changes_with_count(monkeypatch, tmp_path: Path,
     monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: CountingProvider())
 
-    assert main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--count", "1", "--model-provider", "mock"]) == 0
+    assert main(
+        ["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--count", "1", "--model-provider", "mock"]
+    ) == 0
     capsys.readouterr()
-    assert main(["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--count", "2", "--model-provider", "mock"]) == 0
+    assert main(
+        ["draft", "suggest", "--base", "v1.0.0", "--id", target_item.id, "--preview", "--count", "2", "--model-provider", "mock"]
+    ) == 0
     second = json.loads(capsys.readouterr().out)
 
     assert calls["count"] == 2
@@ -2669,7 +2673,9 @@ def test_draft_suggest_surfaces_provider_errors(monkeypatch, tmp_path: Path):
             )
 
         def classify(self, request: ProviderRequest) -> ProviderResponse:
-            return ProviderResponse(content="[github-copilot-error] classify should not run", confidence=0.0, model="github-copilot:gpt-4o-mini")
+            return ProviderResponse(
+                content="[github-copilot-error] classify should not run", confidence=0.0, model="github-copilot:gpt-4o-mini"
+            )
 
     monkeypatch.setattr("verlato.cli.main._collect_groups", lambda base, head, **_kwargs: [group])
     monkeypatch.setattr("verlato.cli.main.build_provider", lambda config, mode=None: ErrorProvider())
@@ -3387,13 +3393,16 @@ def test_draft_suggest_batch_retries_missing_unusable_and_error_items(monkeypatc
 
     for case, (batch_content, expected_calls, expected_batched, expected_single) in cases.items():
         class FallbackProvider:
+            configured_batch_content = batch_content
+
             def __init__(self):
                 self.calls: list[ProviderRequest] = []
 
             def summarize(self, request: ProviderRequest) -> ProviderResponse:
                 self.calls.append(request)
                 if request.evidence.get("batch"):
-                    content = batch_content if isinstance(batch_content, str) else json.dumps(batch_content)
+                    configured = self.configured_batch_content
+                    content = configured if isinstance(configured, str) else json.dumps(configured)
                     return ProviderResponse(content=content, confidence=0.9, model="ollama:test-model")
                 return ProviderResponse(
                     content=f"Clarifies fallback release-note behavior for {request.evidence['item_id']} reviewers",

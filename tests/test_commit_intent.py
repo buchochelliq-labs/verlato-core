@@ -11,8 +11,8 @@ from verlato.core.commit_intent import (
     effective_conventional_commit,
     infer_commit_intents,
     is_low_signal_commit,
-    parse_conventional_commit_draft_response,
     parse_commit_intent_response,
+    parse_conventional_commit_draft_response,
 )
 from verlato.core.models import ChangedFile, Commit
 from verlato.providers.base import ProviderRequest, ProviderResponse, VerlatoProvider
@@ -334,7 +334,10 @@ def test_conventional_commit_draft_evidence_includes_subtle_privacy_facts():
             ChangedFile(
                 path="tests/test_config_and_drafts.py",
                 status="modified",
-                patch="+def test_draft_suggest_preflight_builds_sanitized_envelope_without_provider_call():\n+    assert raw_patch_chars_sent == 0\n",
+                patch=(
+                    "+def test_draft_suggest_preflight_builds_sanitized_envelope_without_provider_call():\n"
+                    "+    assert raw_patch_chars_sent == 0\n"
+                ),
             ),
         ],
     )

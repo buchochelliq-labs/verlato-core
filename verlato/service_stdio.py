@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import IO
+from typing import IO, Any
 
 from verlato.mcp.service import MCPService, ReleasePreviewRequest
 
@@ -205,7 +205,7 @@ def _optional_string_list(value: object) -> list[str] | None:
     return [str(item) for item in value if str(item).strip()]
 
 
-def _optional_int(value: object, default: int) -> int:
+def _optional_int(value: Any, default: int) -> int:
     if value is None:
         return default
     try:

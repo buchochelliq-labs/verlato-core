@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-import os
-import sys
 import json
+import os
 import re
+import sys
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
 
 OTEL_INFO_SEVERITY_NUMBER = 9
 OTEL_ERROR_SEVERITY_NUMBER = 17

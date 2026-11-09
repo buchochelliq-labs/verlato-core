@@ -443,7 +443,7 @@ def _required_string(arguments: dict[str, Any], key: str) -> str:
     return value
 
 
-def _coerce_int(value: object, *, default: int, minimum: int, maximum: int | None = None) -> int:
+def _coerce_int(value: Any, *, default: int, minimum: int, maximum: int | None = None) -> int:
     try:
         result = int(value) if value is not None else default
     except (TypeError, ValueError):
