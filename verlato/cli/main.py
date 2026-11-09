@@ -21,6 +21,13 @@ from verlato.core.adapters import NullPullRequestAdapter, PullRequestAdapter, St
 from verlato.core.change_summary import build_change_summary_payload, raw_patch_chars_available
 from verlato.core.classifier import Classifier
 from verlato.core.collector import Collector
+from verlato.core.semantic import (
+    DIFF_ENGINE_CHOICES,
+    IntentumDiffEngine,
+    build_semantic_engine,
+    resolve_diff_engine,
+    semantic_engine_info,
+)
 from verlato.core.commit_intent import (
     commit_intent_payload,
     conventional_commit_message,
@@ -166,6 +173,11 @@ class _SuggestionBatchFallback(Exception):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="verlato")
+    parser.add_argument(
+        "--diff-engine",
+        choices=list(DIFF_ENGINE_CHOICES),
+        help="Change-evidence engine: intentumdiff (semantic review, default) or git (legacy text patches).",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     for name in ("scan", "generate", "reconcile"):
@@ -301,6 +313,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--suggest-model",
         help="Use a specific Ollama model for the suggestion-style health probe.",
     )
+    doctor_sub.add_parser("engine", help="Report the IntentumDiff semantic engine status.")
     doctor_model = doctor_sub.add_parser("model")
     doctor_model.add_argument("--model-provider", choices=MODEL_PROVIDER_CHOICES, help="Override the configured model provider.")
     doctor_model.add_argument("--suggest-model", help="Use a specific model for the suggestion-style health probe.")
@@ -387,6 +400,60 @@ def _build_suggestion_cache_store(config: VerlatoConfig | None = None) -> Sugges
     path = os.getenv("VERLATO_SUGGESTION_CACHE_PATH", config.suggestion_cache_path)
     ttl_days = _resolve_suggestion_cache_ttl_days(config.suggestion_cache_ttl_days)
     return build_suggestion_cache_backend(backend=backend, path=path, ttl_days=ttl_days)
+
+
+def _build_semantic_engine(requested: str | None = None) -> IntentumDiffEngine | None:
+    """The IntentumDiff engine that powers Verlato's change evidence (None for legacy git)."""
+
+    config = _load_config()
+    engine = resolve_diff_engine(config.diff_engine, requested=requested)
+    return build_semantic_engine(
+        engine,
+        cache_path=config.semantic_cache_path,
+        parallelism=config.semantic_parallelism,
+        cross_file=config.semantic_cross_file,
+    )
+
+
+def _semantic_progress(current: int, total: int, sha: str) -> None:
+    _trace_progress(
+        "semantic_review",
+        "IntentumDiff semantic review",
+        detail=sha[:12],
+        current=current,
+        total=total,
+        unit="commit",
+    )
+
+
+def _annotate_semantics(commits: list[Commit]) -> None:
+    """Run IntentumDiff over an explicit commit selection (e.g. a single commit to draft)."""
+
+    engine = _build_semantic_engine()
+    if engine is not None and commits:
+        engine.annotate(commits, progress=_semantic_progress)
+
+
+def _diff_engine_info() -> dict[str, object]:
+    config = _load_config()
+    engine = resolve_diff_engine(config.diff_engine)
+    info = semantic_engine_info(engine)
+    info.update(
+        {
+            "configured": config.diff_engine,
+            "semantic_cache_path": os.getenv("VERLATO_SEMANTIC_CACHE_PATH", config.semantic_cache_path),
+            "semantic_cross_file": config.semantic_cross_file,
+        }
+    )
+    return info
+
+
+def _build_collector(*, semantic: bool = True, diff_engine: str | None = None) -> Collector:
+    return Collector(
+        pr_adapter=_build_adapter(),
+        semantic_engine=_build_semantic_engine(diff_engine) if semantic else None,
+        semantic_progress=_semantic_progress,
+    )
 
 
 def _build_adapter() -> PullRequestAdapter:
@@ -542,7 +609,7 @@ def _collect_groups(
     model_privacy: str | None = None,
     allow_remote_patches: bool = False,
 ):
-    collector = Collector(pr_adapter=_build_adapter())
+    collector = _build_collector()
     grouper = Grouper()
     _trace_progress("collecting_commits", "Collecting commits", detail=f"{base}..{head}")
     commits = collector.collect_commits(base, head)
@@ -5624,6 +5691,12 @@ def _run_clear_suggestion_cache() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if getattr(args, "diff_engine", None):
+        os.environ["VERLATO_DIFF_ENGINE"] = args.diff_engine
+
+    if args.command == "doctor" and args.doctor_command == "engine":
+        print(json.dumps(_diff_engine_info(), indent=2))
+        return 0
 
     if args.command == "scan":
         base, head = _resolve_range(args)

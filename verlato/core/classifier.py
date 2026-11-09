@@ -26,6 +26,7 @@ from verlato.core.models import (
     changed_files_for_group,
     default_review_status,
 )
+from verlato.core.semantic import SemanticEvidence
 from verlato.providers.base import ProviderRequest, VerlatoProvider
 
 MAX_PROMPT_CHANGED_FILES = 12
@@ -197,7 +198,8 @@ class Classifier:
         pr = group.pr
         labels = [label.lower() for label in (pr.labels if pr else [])]
         changed_files = changed_files_for_group(group)
-        diff = self.diff_builder.build(changed_files)
+        diff = self.diff_builder.build(changed_files, commits=group.commits)
+        semantic = diff.semantic
 
         kind = "changed"
         semver = "patch"
@@ -268,6 +270,19 @@ class Classifier:
                 kind = status_kind
                 semver = self._semver_for_kind(kind)
 
+        semantic_decided = False
+        if semantic is not None:
+            kind, audience, semver, confidence, semantic_decided = self._apply_semantic_evidence(
+                semantic,
+                kind=kind,
+                audience=audience,
+                semver=semver,
+                confidence=confidence,
+                commit_signals=commit_signals,
+                authored_type=parsed[0].type if parsed else None,
+                label_kind=label_kind,
+            )
+
         general_files = diff.files_by_area.get("general", [])
         has_breaking_signal = kind == "breaking" or self._has_breaking_signal(group, labels)
         if has_breaking_signal:
@@ -297,6 +312,10 @@ class Classifier:
         if not parsed:
             confidence = max(confidence, 0.62)
             commit_signals.append("diff-fallback")
+        if semantic is not None and (semantic.api_break_candidates or semantic.guardrails) and kind != "breaking":
+            # Removed/renamed/re-signatured public symbols or protected-config edits always
+            # deserve a human look before publishing, whatever the commit message claims.
+            confidence = min(confidence, 0.79)
 
         title = (pr.title if pr else group.commits[0].message.splitlines()[0]).strip()
         summary = diff.summary
@@ -315,7 +334,11 @@ class Classifier:
                 confidence=confidence,
                 commit_signals=commit_signals,
                 allow_classification_override=(
-                    not summary_only and not parsed and not has_security_signal and not (diff.docs_only or diff.tests_only)
+                    not summary_only
+                    and not parsed
+                    and not semantic_decided
+                    and not has_security_signal
+                    and not (diff.docs_only or diff.tests_only)
                 ),
             )
 
@@ -340,6 +363,8 @@ class Classifier:
                 "config_changes": diff.config_changes,
                 "representative_hunks": diff.representative_hunks,
                 "grouping_reason": group.grouping_reason,
+                "engine": "intentumdiff" if semantic is not None else "git",
+                "semantic": semantic.to_dict() if semantic is not None else None,
             },
         )
 
@@ -361,6 +386,58 @@ class Classifier:
             status=default_review_status(confidence),
         )
         return [item]
+
+    def _apply_semantic_evidence(
+        self,
+        semantic: SemanticEvidence,
+        *,
+        kind: str,
+        audience: str,
+        semver: str,
+        confidence: float,
+        commit_signals: list[str],
+        authored_type: str | None,
+        label_kind: str | None,
+    ) -> tuple[str, str, str, float, bool]:
+        """Fold IntentumDiff's semantic verdict into the deterministic classification.
+
+        Authored conventional commits and labels keep precedence; the semantic review decides
+        kind only on the diff-fallback path, where it replaces path/status guessing. Returns the
+        updated ``(kind, audience, semver, confidence, decided)``.
+        """
+
+        commit_signals.append(f"semantic:{semantic.verdict}")
+        if not semantic.complete:
+            commit_signals.append("semantic:partial")
+        decided = False
+        if authored_type is None and label_kind is None:
+            if semantic.verdict == "style-only" and semantic.complete:
+                kind, audience, semver = "internal", "internal", "none"
+                confidence = max(confidence, 0.88)
+                decided = True
+            elif semantic.verdict == "refactor-only" and semantic.complete:
+                kind, semver = "refactoring", "patch"
+                confidence = max(confidence, 0.82)
+                decided = True
+            elif semantic.verdict == "additive" and semantic.added_symbols:
+                kind, semver = "added", "minor"
+                confidence = max(confidence, 0.74)
+                decided = True
+            elif semantic.verdict in {"behavioral", "additive"}:
+                confidence = max(confidence, 0.7)
+        elif authored_type in {"feat", "fix", "perf"} and semantic.verdict == "style-only" and semantic.complete:
+            # The message claims a behavior change but IntentumDiff found only formatting.
+            commit_signals.append("semantic:conflict")
+            confidence = min(confidence, 0.7)
+        if decided:
+            commit_signals.append("semantic-classified")
+        if semantic.api_break_candidates:
+            commit_signals.append("semantic:api-break-candidate")
+        if semantic.guardrails:
+            commit_signals.append("semantic:guardrail")
+        if semantic.cross_file:
+            commit_signals.append("semantic:cross-file")
+        return kind, audience, semver, confidence, decided
 
     def _apply_provider_assists(
         self,

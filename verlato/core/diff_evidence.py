@@ -4,10 +4,17 @@ from collections import defaultdict
 
 from verlato.core.areas import infer_area, is_docs_path, is_test_path
 from verlato.core.models import ChangedFile, DiffEvidence
+from verlato.core.semantic import build_semantic_evidence
 
 
 class DiffEvidenceBuilder:
-    def build(self, files: list[ChangedFile]) -> DiffEvidence:
+    def build(self, files: list[ChangedFile], commits: list | None = None) -> DiffEvidence:
+        """Build change evidence for a group of changed files.
+
+        When ``commits`` carry IntentumDiff digests (see ``verlato.core.semantic``) the
+        evidence is led by the semantic review, restricted to these files; path/status
+        signals remain as supporting context.
+        """
         files_by_area: dict[str, list[str]] = defaultdict(list)
         file_statuses: dict[str, str] = {}
         api_changes: list[str] = []
@@ -43,6 +50,9 @@ class DiffEvidenceBuilder:
             config_changes,
             representative_hunks,
         )
+        semantic = build_semantic_evidence(commits or [], paths=[f.path for f in files]) if commits else None
+        if semantic is not None:
+            summary = f"{semantic.summary}; {summary}"
 
         return DiffEvidence(
             files_by_area=dict(files_by_area),
@@ -54,6 +64,7 @@ class DiffEvidenceBuilder:
             tests_only=tests_only,
             representative_hunks=representative_hunks,
             summary=summary,
+            semantic=semantic,
         )
 
     @staticmethod

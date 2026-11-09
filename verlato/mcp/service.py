@@ -5,7 +5,9 @@ from dataclasses import asdict, dataclass
 
 from verlato import __version__
 from verlato.cli.main import (
+    _annotate_semantics,
     _build_adapter,
+    _diff_engine_info,
     _can_send_raw_patches_for_config,
     _append_feedback_event,
     _build_suggestion_cache_store,
@@ -55,6 +57,7 @@ class MCPService:
         return {
             "status": "ok",
             "version": __version__,
+            "diff_engine": _diff_engine_info(),
             "state_path": config.state_path,
             "schema_version": state.schema_version,
             "tracked_items": len(state.items),
@@ -262,6 +265,7 @@ class MCPService:
         evidence_mode: str = "diff-only",
     ) -> dict:
         commit = self._find_commit(base=base, head=head, sha=sha)
+        _annotate_semantics([commit])
         context = self._conventional_draft_context(
             model_provider=model_provider,
             model_privacy=model_privacy,
@@ -291,6 +295,7 @@ class MCPService:
     ) -> dict:
         commits = Collector(pr_adapter=_build_adapter()).collect_commits(base, head)
         selected_commits, lookup_errors = self._select_commits(commits, shas)
+        _annotate_semantics(selected_commits)
         context = self._conventional_draft_context(
             model_provider=model_provider,
             model_privacy=model_privacy,

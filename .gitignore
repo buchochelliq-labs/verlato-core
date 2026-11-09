@@ -196,6 +196,8 @@ cython_debug/
 .verlato_memory.json
 .verlato_suggestion_cache.json
 .verlato_suggestion_cache.json.tmp
+.verlato_semantic_cache.json
+.verlato-semantic-*
 
 # Local installer/cache scratch
 .tmp/

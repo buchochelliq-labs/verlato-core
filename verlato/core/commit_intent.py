@@ -16,6 +16,7 @@ from verlato.core.model_privacy import (
     privacy_summary,
 )
 from verlato.core.models import ChangedFile, Commit, CommitIntent
+from verlato.core.semantic import commit_semantic_payload
 from verlato.providers.base import ProviderRequest, VerlatoProvider
 
 COMMIT_INTENT_INFERENCE_CHOICES = {"off", "low-signal"}
@@ -601,7 +602,7 @@ def build_diff_conventional_commit_prompt(
 
 def commit_intent_evidence(commit: Commit, *, include_patches: bool = False) -> dict[str, Any]:
     raw_patch_chars = sum(len(file.patch or "") for file in commit.files)
-    return {
+    return _with_semantics(commit, {
         "schema": "verlato.commit-intent-evidence.v1",
         "sha": commit.sha,
         "subject": commit.message.splitlines()[0] if commit.message else "",
@@ -615,12 +616,12 @@ def commit_intent_evidence(commit: Commit, *, include_patches: bool = False) -> 
             else 0
         ),
         "omitted_fields": [] if include_patches else list(OMITTED_COMMIT_PATCH_EVIDENCE),
-    }
+    })
 
 
 def commit_diff_intent_evidence(commit: Commit, *, include_patches: bool = False) -> dict[str, Any]:
     raw_patch_chars = sum(len(file.patch or "") for file in commit.files)
-    return {
+    return _with_semantics(commit, {
         "schema": "verlato.commit-diff-intent-evidence.v1",
         "sha": commit.sha,
         "previous_sha": commit.parent_sha,
@@ -635,7 +636,7 @@ def commit_diff_intent_evidence(commit: Commit, *, include_patches: bool = False
             else 0
         ),
         "omitted_fields": [] if include_patches else list(OMITTED_COMMIT_PATCH_EVIDENCE),
-    }
+    })
 
 
 def conventional_commit_draft_evidence(
@@ -678,6 +679,15 @@ def conventional_commit_draft_evidence(
     if evidence_mode == "subject-hint":
         payload["authored_subject"] = commit.message.splitlines()[0] if commit.message else ""
         payload["authored_message"] = commit.message
+    return _with_semantics(commit, payload)
+
+
+def _with_semantics(commit: Commit, payload: dict[str, Any]) -> dict[str, Any]:
+    """Attach IntentumDiff's per-commit semantic review when the commit carries one."""
+
+    semantic = commit_semantic_payload(commit)
+    if semantic is not None:
+        payload["semantic_review"] = semantic
     return payload
 
 

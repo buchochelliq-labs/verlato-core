@@ -1,8 +1,8 @@
 # Verlato
 
-Verlato is an MVP changelog intelligence layer over git history and pull requests.
+Verlato is a changelog intelligence layer over git history and pull requests, **powered by the [IntentumDiff](https://github.com/buchochelliq-labs/intentumdiff-python) semantic diff engine**.
 
-It is **PR-first by default**: the primary analysis unit is a pull request (or grouped change set), not an individual commit. Conventional commits are treated as a strong signal, but when commit messages are weak, Verlato falls back to **diff evidence** from changed files and representative hunks.
+It is **PR-first by default**: the primary analysis unit is a pull request (or grouped change set), not an individual commit. Conventional commits are treated as a strong signal, but when commit messages are weak, Verlato falls back to **semantic diff evidence**: IntentumDiff reviews every commit and tells Verlato whether a change is meaningful, a behavior-preserving refactoring or move, or formatting only, and which functions, methods and classes were added, removed, renamed or re-signatured.
 
 ## MVP capabilities
 
@@ -53,9 +53,47 @@ Each generated `ChangeItem` includes:
 - checksum version for safe schema evolution
 - area lineage (`lineage_releases`) to show prior releases for similar file areas
 
-## Diff intelligence (MVP)
+## Semantic evidence (IntentumDiff)
 
-`DiffEvidenceBuilder` produces compact release-note evidence for deterministic summaries and model-backed inference:
+Verlato's change evidence comes from IntentumDiff (`verlato/core/semantic.py`). For each collected commit the
+`Collector` asks IntentumDiff to review `parent..sha` and attaches a privacy-safe digest to the commit:
+
+- review-level change groups: **meaningful**, **refactoring**, **moved**, **ignored style**, **suppressed noise**
+- definition-level symbol changes: added, removed, renamed, and signature-changed functions/methods/classes
+- protected-config **guardrail** violations from the repository's `intentumdiff.yaml`
+- files IntentumDiff could not review, with the engine's reason (never silently dropped)
+- optional cross-file moves/renames (`semantic_cross_file`, off by default)
+
+Only structural metadata and definition names are kept; source bodies, literal values and IntentumDiff's raw change
+descriptions are never stored or sent to models. Digests are cached per commit in `.verlato_semantic_cache.json`
+(commits are immutable, so re-scans only review new commits), and uncached commits are reviewed in parallel worker
+processes.
+
+Each change group aggregates the digests of its commits (restricted to the group's files) into a verdict:
+
+| Verdict | Meaning | Effect when no conventional commit or label decides |
+|---|---|---|
+| `style-only` | formatting/noise only | `internal` / `none`, confidence 0.88 |
+| `refactor-only` | moves/refactorings, no meaningful edits | `refactoring` / `patch`, confidence 0.82 |
+| `additive` | only additions (new definitions) | `added` / `minor` when symbols were added |
+| `behavioral` | meaningful edits, removals or signature changes | `changed`, confidence 0.70 |
+| `unreviewed` | nothing could be reviewed | unchanged |
+
+Authored conventional commits and labels keep precedence. IntentumDiff adds review signals on top:
+`semantic:conflict` (e.g. `feat:` with formatting-only changes), `semantic:api-break-candidate` (public symbols removed,
+renamed or re-signatured outside tests) and `semantic:guardrail` force the item into `needs-review`. The semantic
+summary leads the deterministic summary and the model prompts, so local and remote models get real change semantics
+even under the default `metadata-only` privacy mode.
+
+Engine selection: `diff_engine` in `verlato.json`, `VERLATO_DIFF_ENGINE`, `verlato --diff-engine`, or the
+`verlato.diffEngine` VS Code setting. `intentumdiff` is the default; `git` keeps the legacy text-patch evidence below.
+`verlato doctor engine` reports the engine status. If IntentumDiff cannot be loaded, Verlato fails with an actionable
+error instead of silently falling back.
+
+### Path and patch evidence
+
+`DiffEvidenceBuilder` also keeps compact path/patch evidence, which supports the semantic review (and is the only
+evidence with `diff_engine: "git"`):
 
 - groups files by inferred area
 - records changed file statuses
@@ -75,6 +113,9 @@ Each generated `ChangeItem` includes:
 ```bash
 python -m pip install -e .
 ```
+
+Verlato requires Python 3.12+ and installs the IntentumDiff engine (`intentumdiff-python`, currently a pre-release)
+as a dependency. To install the engine on its own: `pip install --pre intentumdiff-python`.
 
 ## CLI usage
 
@@ -126,6 +167,10 @@ See `verlato.sample.json` for a minimal example.
 
 Environment variables:
 
+- `VERLATO_DIFF_ENGINE`: change-evidence engine: `intentumdiff` (default) or `git` (legacy text patches).
+- `VERLATO_SEMANTIC_CACHE_PATH`: IntentumDiff commit-digest cache (default `.verlato_semantic_cache.json`; `off` disables it).
+- `VERLATO_SEMANTIC_PARALLELISM`: worker processes for uncached commit reviews (default `min(4, cpu_count)`).
+- `VERLATO_SEMANTIC_CROSS_FILE`: set to `1` to enable IntentumDiff cross-file move/rename detection.
 - `VERLATO_STATE_PATH`: overrides local state file path.
 - `VERLATO_CONFIG_PATH`: overrides the repo config file path.
 - `VERLATO_PR_ADAPTER`: PR mapping mode: `standard-git` (default), `github`, or `none`.
@@ -324,5 +369,5 @@ python -m pytest
 
 1. Conventional commits are preferred when available.
 2. PR-level grouping is the default output unit.
-3. Vague commit messages trigger diff-based fallback evidence and summaries.
+3. Vague commit messages trigger IntentumDiff semantic evidence and summaries.
 4. Internal-only changes are separated from customer-facing changes when detectable.

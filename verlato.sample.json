@@ -1,5 +1,9 @@
 {
   "state_path": ".verlato_state.json",
+  "diff_engine": "intentumdiff",
+  "semantic_cache_path": ".verlato_semantic_cache.json",
+  "semantic_parallelism": null,
+  "semantic_cross_file": false,
   "suggestion_cache_backend": "json",
   "suggestion_cache_path": ".verlato_suggestion_cache.json",
   "suggestion_cache_ttl_days": 30,

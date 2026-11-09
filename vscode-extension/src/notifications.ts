@@ -6,7 +6,16 @@ export type NotificationAction =
   | "Review Suggestions"
   | "Open File"
   | "Preview"
-  | "Change Model";
+  | "Change Model"
+  | "Install IntentumDiff"
+  | "Use Git Engine";
+
+export const INTENTUMDIFF_INSTALL_COMMAND = "pip install --pre intentumdiff-python";
+
+/** True when a Verlato error says the IntentumDiff semantic engine could not be loaded. */
+export function isSemanticEngineUnavailable(message: string): boolean {
+  return /IntentumDiff/i.test(message) && /could not be loaded|not available|intentumdiff-python/i.test(message);
+}
 
 export async function showSuccessNotification(
   message: string,
@@ -22,7 +31,10 @@ export async function showErrorNotification(
   message: string,
   ...actions: NotificationAction[]
 ): Promise<NotificationAction | undefined> {
-  return vscode.window.showErrorMessage(message, ...actions);
+  const engineActions: NotificationAction[] = isSemanticEngineUnavailable(message)
+    ? ["Install IntentumDiff", "Use Git Engine"]
+    : [];
+  return vscode.window.showErrorMessage(message, ...engineActions, ...actions);
 }
 
 export async function handleNotificationAction(
@@ -46,5 +58,15 @@ export async function handleNotificationAction(
   }
   if (action === "Change Model") {
     await vscode.commands.executeCommand("verlato.changeModel");
+    return;
+  }
+  if (action === "Install IntentumDiff") {
+    const terminal = vscode.window.createTerminal("Verlato: IntentumDiff");
+    terminal.show();
+    terminal.sendText(INTENTUMDIFF_INSTALL_COMMAND, false);
+    return;
+  }
+  if (action === "Use Git Engine") {
+    await vscode.workspace.getConfiguration("verlato").update("diffEngine", "git", vscode.ConfigurationTarget.Workspace);
   }
 }

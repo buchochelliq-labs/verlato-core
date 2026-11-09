@@ -151,12 +151,38 @@ export function registerCommands(
         { modal: true },
       );
     }),
+    vscode.commands.registerCommand("verlato.showSemanticEngine", async () => {
+      await showSemanticEngineStatus(client);
+    }),
     vscode.commands.registerCommand("verlato.startMcpServer", async () => {
       await startMcpServer(mcpServer);
     }),
     vscode.commands.registerCommand("verlato.changeModel", async () => {
       await changeModelSettings(client, treeProvider);
     }),
+  );
+}
+
+async function showSemanticEngineStatus(client: VerlatoClient): Promise<void> {
+  const status = await client.getEngineStatus();
+  if (status.engine === "git") {
+    const action = await vscode.window.showInformationMessage(
+      "Verlato is using the legacy git text-patch engine. Switch to IntentumDiff for semantic release-note evidence.",
+      "Use IntentumDiff",
+    );
+    if (action === "Use IntentumDiff") {
+      await vscode.workspace.getConfiguration("verlato").update("diffEngine", "intentumdiff", vscode.ConfigurationTarget.Workspace);
+    }
+    return;
+  }
+  if (status.available) {
+    void vscode.window.showInformationMessage(
+      `Verlato is powered by IntentumDiff ${status.version ?? ""}. Commit reviews are cached in ${status.semantic_cache_path ?? ".verlato_semantic_cache.json"}.`,
+    );
+    return;
+  }
+  await handleNotificationAction(
+    await showErrorNotification(status.error ?? "The IntentumDiff engine is not available."),
   );
 }
 
