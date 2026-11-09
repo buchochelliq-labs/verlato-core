@@ -260,3 +260,17 @@ def test_draft_prompt_end_to_end_sends_semantic_diff(monkeypatch, tmp_path: Path
         assert "meaningful in greet: addition default_parameter punct" in prompt
         assert "@@" not in prompt and "+def greet" not in prompt
         assert ("30 -> 60" in prompt) is detailed
+
+
+def test_suggestion_parser_keeps_multi_line_entries():
+    from verlato.cli.main import _suggestion_candidates
+
+    entry = "**Pagination fix**\n- Fixes `paginate()` skipping the first item of every page.\n- Page counts are unchanged."
+    assert _suggestion_candidates(entry, 1) == [entry]
+    variants = "1. Adds CSV export.\n   Use `--csv` to write a report.\n2. Adds a CSV report option."
+    assert _suggestion_candidates(variants, 2) == [
+        "Adds CSV export.\n   Use `--csv` to write a report.",
+        "Adds a CSV report option.",
+    ]
+    assert _suggestion_candidates("1. Renames get_user to fetch_user.", 1) == ["Renames get_user to fetch_user."]
+    assert _suggestion_candidates("```\nAdds export.\n```", 1) == ["Adds export."]

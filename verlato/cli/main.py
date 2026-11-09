@@ -4482,6 +4482,47 @@ def _run_suggestion_model_work(
     )
 
 
+_NUMBERED_ITEM = re.compile(r"^\s*\d+[\.)]\s+")
+
+
+def _clean_suggestion_text(text: str) -> str:
+    """Normalize one candidate: drop code fences and wrapping quotes, keep Markdown structure."""
+
+    lines = [line.rstrip() for line in text.strip().splitlines() if not line.strip().startswith("```")]
+    cleaned = "\n".join(lines).strip()
+    return cleaned.strip("\"'").strip()
+
+
+def _suggestion_candidates(normalized: str, count: int) -> list[str]:
+    """Split a model response into release-note candidates.
+
+    The prompt asks for one complete entry (a paragraph or focused bullet points) when one
+    suggestion is requested, and for a numbered list of complete entries otherwise. Models that
+    answer with a numbered list anyway get each item treated as a candidate. Entries can span
+    several lines (bullets, wrapped text), so lines are never split into separate candidates.
+    """
+
+    entries: list[list[str]] = []
+    for raw in normalized.splitlines():
+        if _NUMBERED_ITEM.match(raw):
+            entries.append([_NUMBERED_ITEM.sub("", raw, count=1)])
+        elif entries:
+            entries[-1].append(raw)
+    if len(entries) == 1 and _NUMBERED_ITEM.match(normalized):
+        # A single numbered entry: drop the list marker.
+        cleaned = _clean_suggestion_text("\n".join(entries[0]))
+        return [cleaned] if cleaned else []
+    if len(entries) < 2:
+        # Not a list of variants: the response is one entry (or, when several suggestions were
+        # requested, blank-line separated paragraphs).
+        if count <= 1:
+            cleaned = _clean_suggestion_text(normalized)
+            return [cleaned] if cleaned else []
+        entries = [[block] for block in re.split(r"\n\s*\n", normalized) if block.strip()]
+    candidates = [_clean_suggestion_text("\n".join(entry)) for entry in entries]
+    return [candidate for candidate in candidates if candidate] or [_clean_suggestion_text(normalized)]
+
+
 def _parse_suggestion_variants(
     content: str,
     count: int,
@@ -4497,17 +4538,7 @@ def _parse_suggestion_variants(
     if not normalized:
         _trace_model_suggestion_filter("raw-response", "empty", trace_title, trace_model)
         return [], []
-    lines = []
-    for raw in normalized.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        line = re.sub(r"^\s*(?:[-*]|\d+[\.)])\s*", "", line).strip()
-        line = line.strip("\"'")
-        if line:
-            lines.append(line)
-    if not lines:
-        lines = [normalized]
+    lines = _suggestion_candidates(normalized, count)
     _trace_model_suggestion_filter(
         "parse",
         f"raw_lines={len(normalized.splitlines())} candidates={len(lines)} requested={count}",
