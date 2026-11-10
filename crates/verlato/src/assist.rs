@@ -1167,6 +1167,8 @@ pub struct ModelAssist {
     pub provider_mode: Option<String>,
     pub privacy: String,
     pub style: Style,
+    /// Only rewrite the summary, never the classification (`classify(..., summary_only=True)`).
+    pub summary_only: bool,
 }
 
 impl ModelAssist {

@@ -36,8 +36,8 @@ About 16k lines of Python (plus ~7k lines of tests):
 | Editor stdio service (deterministic methods) | `service_stdio.py`, parts of `mcp/service.py` | ~0.5k | **Ported**; other methods proxied |
 | Model providers: stub, mock, Ollama (incl. streaming), LiteLLM, GitHub Models, plugin, Codex/Claude CLI, fallback chains; request audits, privacy records, OTEL-style model logs | `providers/*`, `core/model_privacy.py` | ~2.4k | **Ported** (Ollama tool calling stays in Python with the suggestion strategies) |
 | Classifier model assists (summary rewrite, diff-fallback classification, change-summary payload) | parts of `core/classifier.py`, `core/change_summary.py` | ~0.6k | **Ported** |
-| Suggestions: prompt preview, single-strategy `--preview`/`--preflight`, JSON cache, scoring, traces | `cli/main.py` (parts), `state/suggestion_cache.py` (JSON), `core/change_summary.py` | ~2.5k | **Ported** |
-| Suggestions: batched strategies (paired, full-diff-json), tool retrieval, non-JSON (plugin-registered) cache backends, adaptive recommendations, applying a suggestion (`draft suggest` without `--preview`) | `cli/main.py` (parts), `core/suggestion_tools.py` | ~2k | Delegated |
+| Suggestions: prompt preview, single-strategy `--preview`/`--preflight`, applying a suggestion, JSON cache, scoring, traces | `cli/main.py` (parts), `state/suggestion_cache.py` (JSON), `core/change_summary.py` | ~2.5k | **Ported** |
+| Suggestions: batched strategies (paired, full-diff-json), tool retrieval, non-JSON (plugin-registered) cache backends, adaptive recommendations | `cli/main.py` (parts), `core/suggestion_tools.py` | ~2k | Delegated |
 | Commit intent inference and Conventional Commit drafting | `core/commit_intent.py` | ~1.1k | Delegated |
 | MCP server (FastMCP) | `mcp/server.py` | ~0.7k | Delegated |
 | GitHub API PR adapter | `github/adapter.py` | ~0.1k | Delegated |
@@ -55,6 +55,7 @@ scan | generate | reconcile          (with any model provider; see below)
 draft json | preview | apply | review (including --model-provider)
 draft prompt
 draft suggest --preview | --preflight (single strategy, JSON cache; see below)
+draft suggest --id (applies a model summary to review state)
 render
 state show | mark-published | clear-working
 feedback record
@@ -80,8 +81,9 @@ Mersenne Twister). A native command is still delegated for commit intent inferen
 `--strategy single`, or `auto`/`paired`/`full-diff-json`/`tool-retrieval` whenever the privacy
 mode doesn't let the provider see source content (the default `metadata-only`), because Python
 downgrades those to `single`. It is delegated for a strategy that stays batched or uses tool
-retrieval, a non-JSON cache backend, adaptive recommendations, and without `--preview`/`--preflight`
-(which applies the suggestion to review state). The parity suite compares outputs, cache files,
+retrieval, a non-JSON cache backend, and adaptive recommendations. `draft suggest --id` without
+`--preview` (asks the provider for one summary and records it as an edited, model-generated summary
+with provenance and a `suggestion_applied` feedback event) is native too. The parity suite compares outputs, cache files,
 recorded model requests and trace lines against Python for both engines, a recording plugin and a
 fake Ollama server.
 
@@ -166,8 +168,8 @@ evidence without depending on patch text.
    the same file format and lock, candidate parsing and filters, parallel workers, and the
    `[verlato:suggestion]`/`[verlato:model]`/progress traces). Next: the paired and full-diff-json
    batch strategies, tool retrieval (Ollama tool calling and `core/suggestion_tools.py`), the
-   registered non-JSON cache backends, adaptive recommendations and applying a suggestion to
-   review state.
+   registered non-JSON cache backends and adaptive recommendations. Applying a suggestion to
+   review state (`draft suggest --id`) is native.
 3. **Commit intents**: inference and Conventional Commit drafting (`commit conventional`).
 4. **MCP server** with the same tools/resources/prompts (e.g. `rmcp`), and the GitHub adapter.
 5. **Retire Python**: remove delegation, ship the extension with the native binary and parser

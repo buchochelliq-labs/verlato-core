@@ -202,7 +202,8 @@ pub fn classify(
             summary: summary.clone(),
             confidence: d.confidence,
         };
-        let allow_classification_override = parsed.is_empty()
+        let allow_classification_override = !model.summary_only
+            && parsed.is_empty()
             && !semantic_decided
             && !has_security
             && !(diff.docs_only || diff.tests_only);

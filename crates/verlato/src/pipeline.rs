@@ -160,6 +160,7 @@ impl Context {
                 request.allow_remote_patches,
             ),
             style: Style::from_config(raw),
+            summary_only: false,
         })
     }
 
@@ -415,6 +416,19 @@ impl Context {
             .ok_or_else(|| {
                 anyhow!("Could not find draft item {item_id} for range {base}..{head}")
             })?;
+        self.persist_review(candidate, status, summary, reviewer, summary_provenance)
+    }
+
+    /// Apply a review update to `candidate` in state (ports `_persist_review_update`): adds the
+    /// item if it is new, records summary provenance and the matching feedback event.
+    pub fn persist_review(
+        &self,
+        candidate: ChangeItem,
+        status: Option<&str>,
+        summary: Option<&str>,
+        reviewer: Option<&str>,
+        summary_provenance: Option<Map<String, Value>>,
+    ) -> Result<ChangeItem> {
         let store = self.store();
         let mut state = store.load()?;
         let index = match state

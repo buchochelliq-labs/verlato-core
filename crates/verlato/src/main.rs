@@ -416,7 +416,7 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
                 no_cache,
                 refresh_cache,
                 tone,
-                reviewer: _,
+                reviewer,
                 trace_suggestions,
                 model,
             } => {
@@ -456,9 +456,26 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
                     range.from_latest_tag,
                     range.from_latest_published,
                 )?;
-                json_out(&verlato::suggest::preview_suggestions(
-                    &ctx, &base, &head, &args,
-                )?)?;
+                if preview || args.preflight {
+                    json_out(&verlato::suggest::preview_suggestions(
+                        &ctx, &base, &head, &args,
+                    )?)?;
+                } else {
+                    if args.all_visible {
+                        anyhow::bail!("--all-visible requires --preview");
+                    }
+                    let Some(item_id) = args.item_id.as_deref() else {
+                        anyhow::bail!("Provide --id for draft suggest");
+                    };
+                    json_out(&verlato::suggest::apply_model_suggestion(
+                        &ctx,
+                        &base,
+                        &head,
+                        item_id,
+                        reviewer.as_deref(),
+                        &args.options,
+                    )?)?;
+                }
             }
             DraftCommand::Prompt {
                 range,

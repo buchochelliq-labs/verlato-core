@@ -410,9 +410,8 @@ fn resolve_settings(ctx: &Context, args: &SuggestArgs) -> Result<Settings> {
 /// Why `draft suggest` must run in Python for these arguments, if it must.
 pub fn python_reason(ctx: &Context, args: &SuggestArgs, preview: bool) -> Result<Option<String>> {
     if !preview && !args.preflight {
-        return Ok(Some(
-            "draft suggest without --preview persists review state".into(),
-        ));
+        // Applying a suggestion uses only the provider; strategies and caches don't apply.
+        return Ok(None);
     }
     let settings = resolve_settings(ctx, args)?;
     if settings.adaptive {
@@ -2390,4 +2389,67 @@ mod tests {
             "single"
         );
     }
+}
+
+/// `draft suggest` without `--preview` (ports `_request_draft_model_input`): ask the model for
+/// a summary of one item and record it in review state as an edited, model-generated summary.
+pub fn apply_model_suggestion(
+    ctx: &Context,
+    base: &str,
+    head: &str,
+    item_id: &str,
+    reviewer: Option<&str>,
+    options: &SuggestOptions,
+) -> Result<ChangeItem> {
+    let provider = resolve_suggest_model_provider(ctx, options.model_provider.as_deref());
+    let raw = &ctx.config.raw;
+    let privacy = resolve_model_privacy(
+        raw.get("model_privacy").and_then(Value::as_str),
+        options.privacy.as_deref(),
+        options.allow_remote_patches,
+    );
+    let (group, _) = find_group(ctx, base, head, item_id)?;
+    let style = Style::resolve(raw, options.tone.as_deref());
+    let assist = crate::assist::ModelAssist {
+        provider: crate::providers::build_provider(&ProviderConfig::from_raw(raw), Some(&provider)),
+        provider_mode: Some(provider.clone()),
+        privacy,
+        style: style.clone(),
+        summary_only: true,
+    };
+    let candidate = classify(&group, base, head, Some(&assist));
+    let signals = &candidate.evidence.commit_signals;
+    let Some(model) = signals
+        .iter()
+        .find_map(|s| s.strip_prefix("provider-summary:"))
+        .map(str::to_owned)
+    else {
+        if let Some(error) = signals
+            .iter()
+            .find_map(|s| s.strip_prefix("provider-error:"))
+        {
+            bail!("No model summary was produced for draft item {item_id}: {error}");
+        }
+        bail!(
+            "No model summary was produced for draft item {item_id}. \
+             Configure a local model provider or pass --model-provider ollama."
+        );
+    };
+    let mut provenance = serde_json::Map::new();
+    provenance.insert("source".into(), json!("model-generated"));
+    provenance.insert("applied_at".into(), json!(crate::drafts::today()));
+    if !provider.is_empty() {
+        provenance.insert("provider".into(), json!(provider));
+    }
+    provenance.insert("model".into(), json!(model));
+    provenance.insert("tone".into(), json!(style.tone));
+    provenance.insert("style_profile".into(), style.profile());
+    let summary = candidate.content.summary.clone();
+    ctx.persist_review(
+        candidate,
+        Some("edited"),
+        Some(&summary),
+        reviewer,
+        Some(provenance),
+    )
 }

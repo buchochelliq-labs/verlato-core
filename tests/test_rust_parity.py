@@ -785,3 +785,46 @@ def test_draft_suggest_batched_strategy_is_delegated(tmp_path: Path):
         )
         assert result.returncode != 0, args
         assert "not available in the Rust build yet" in result.stderr and reason in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("engine", ["git", "intentumdiff"])
+def test_draft_suggest_apply_matches(tmp_path: Path, engine: str):
+    """`draft suggest --id` (no preview) records the model summary in review state natively."""
+    py_repo, rs_repo, env = _suggest_setup(tmp_path, engine, "plugin", None)
+    compare = (lambda value: value) if engine == "git" else _strip_engine_identity
+    items = json.loads(_run(_python("scan", "--base", "v1.0.0"), py_repo, env))
+    logs = {name: tmp_path / f"apply-{name}.jsonl" for name in ("py", "rs")}
+    for item in items[:3]:
+        args = ("draft", "suggest", "--base", "v1.0.0", "--id", item["id"], "--reviewer", "alice", "--tone", "concise")
+        python_out = json.loads(_run(_python(*args), py_repo, {**env, "PARITY_LOG": str(logs["py"])}))
+        rust_out = json.loads(_run(_rust(*args), rs_repo, _native_only({**env, "PARITY_LOG": str(logs["rs"])})))
+        assert compare(rust_out) == compare(python_out), item["title"]
+        assert rust_out["status"] == "edited"
+        assert rust_out["summary_provenance"]["source"] == "model-generated"
+    assert compare(_read_log(logs["rs"])) == compare(_read_log(logs["py"]))
+    state_name = ".verlato_state.json"
+    assert compare(json.loads((rs_repo / state_name).read_text())) == compare(
+        json.loads((py_repo / state_name).read_text())
+    )
+
+
+def test_draft_suggest_apply_errors_match(tmp_path: Path):
+    py_repo, rs_repo, env = _suggest_setup(tmp_path, "git", "plugin", None)
+    empty_plugin = tmp_path / "empty_plugin.py"
+    empty_plugin.write_text(
+        "import json, sys\nrequest = json.load(sys.stdin)\n"
+        "print(json.dumps({'request_hash': request['request_hash'], 'content': ''}))\n"
+    )
+    env = {**env, "VERLATO_PLUGIN_COMMAND": f"{sys.executable} {empty_plugin}"}
+    item_id = json.loads(_run(_python("scan", "--base", "v1.0.0"), py_repo, env))[0]["id"]
+    for args in (
+        ("--id", item_id),
+        ("--all-visible",),
+        (),
+        ("--id", "ci_missing"),
+    ):
+        cmd = ("draft", "suggest", "--base", "v1.0.0", *args)
+        python = subprocess.run(_python(*cmd), cwd=py_repo, env=env, capture_output=True, text=True)
+        rust = subprocess.run(_rust(*cmd), cwd=rs_repo, env=_native_only(env), capture_output=True, text=True)
+        assert (rust.returncode != 0) == (python.returncode != 0) and rust.returncode != 0, args
+        assert python.stderr.strip().splitlines()[-1] in rust.stderr, (args, python.stderr, rust.stderr)
