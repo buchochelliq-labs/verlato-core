@@ -180,6 +180,7 @@ use std::time::Instant;
 use crate::assist::summary_rejection;
 use crate::models::ChangedFile;
 use crate::pipeline::trace_progress;
+use crate::providers::ToolExecutor;
 use crate::providers::{
     build_provider_with, effective_model, is_provider_error_marker, model_log, Provider,
     ProviderRequest, ProviderResponse,
@@ -187,6 +188,7 @@ use crate::providers::{
 use crate::pyjson::{self, py_len, splitlines};
 use crate::semantic::{render_semantic_diff, semantic_diff_for_prompt};
 use crate::suggestion_cache::JsonSuggestionCache;
+use crate::suggestion_tools::SuggestionTools;
 
 const SUGGESTION_STRATEGY_CHOICES: &[&str] = &[
     "auto",
@@ -197,7 +199,23 @@ const SUGGESTION_STRATEGY_CHOICES: &[&str] = &[
 ];
 const SUGGESTION_PROMPT_PROFILE_CHOICES: &[&str] = &["conservative", "lean", "minimal"];
 const MAX_SUGGESTION_PARALLELISM: i64 = 8;
+const MAX_SUGGESTION_BATCH_SIZE: i64 = 5;
 const SINGLE_SUGGESTION_PROMPT_SHAPE: &str = "single-prompt-v1";
+const PAIRED_SUGGESTION_PROMPT_SHAPE: &str = "paired-prepared-prompt-v1";
+const FULL_DIFF_SUGGESTION_PROMPT_SHAPE: &str = "full-diff-json-v1";
+const TOOL_RETRIEVAL_SUGGESTION_PROMPT_SHAPE: &str = "tool-retrieval-v1";
+const FULL_DIFF_BATCH_PROMPT_CHAR_GUARD: usize = 80_000;
+const SUGGESTION_TOOL_MAX_ROUNDS: usize = 4;
+
+/// `_suggestion_prompt_shape`.
+fn prompt_shape(strategy: &str) -> &'static str {
+    match strategy {
+        "tool-retrieval" => TOOL_RETRIEVAL_SUGGESTION_PROMPT_SHAPE,
+        "full-diff-json" => FULL_DIFF_SUGGESTION_PROMPT_SHAPE,
+        "paired" => PAIRED_SUGGESTION_PROMPT_SHAPE,
+        _ => SINGLE_SUGGESTION_PROMPT_SHAPE,
+    }
+}
 
 /// Options of `draft suggest`.
 #[derive(Debug, Clone, Default)]
@@ -206,6 +224,7 @@ pub struct SuggestArgs {
     pub all_visible: bool,
     pub count: Option<i64>,
     pub parallelism: Option<i64>,
+    pub batch_size: Option<i64>,
     pub strategy: Option<String>,
     pub prompt_profile: Option<String>,
     pub suggest_model: Option<String>,
@@ -313,6 +332,8 @@ struct Settings {
     style: Style,
     provider: String,
     strategy: String,
+    /// Items per structured model request (`effective_suggestion_batch_size`).
+    batch_size: i64,
     raw_patches_allowed: bool,
     cache_backend: String,
     cache_path: String,
@@ -388,6 +409,23 @@ fn resolve_settings(ctx: &Context, args: &SuggestArgs) -> Result<Settings> {
     let raw_patches_allowed =
         can_send_raw_patches_for_config(&provider_config, Some(&provider), &privacy);
     let strategy = effective_strategy(&strategy, &provider, &privacy, raw_patches_allowed);
+    let requested_batch_size = match args
+        .batch_size
+        .map(|b| b.to_string())
+        .or_else(|| std::env::var("VERLATO_SUGGESTION_BATCH_SIZE").ok())
+    {
+        Some(text) => text
+            .trim()
+            .parse()
+            .unwrap_or_else(|_| raw_int(raw, "suggestion_batch_size", 5)),
+        None => raw_int(raw, "suggestion_batch_size", 5),
+    }
+    .clamp(1, MAX_SUGGESTION_BATCH_SIZE);
+    let batch_size = match strategy.as_str() {
+        "single" | "tool-retrieval" => 1,
+        "paired" => requested_batch_size.min(2),
+        _ => requested_batch_size,
+    };
     let cache_backend = std::env::var("VERLATO_SUGGESTION_CACHE_BACKEND")
         .ok()
         .filter(|v| !v.is_empty())
@@ -422,6 +460,7 @@ fn resolve_settings(ctx: &Context, args: &SuggestArgs) -> Result<Settings> {
         style: Style::resolve(raw, args.options.tone.as_deref()),
         provider,
         strategy,
+        batch_size,
         raw_patches_allowed,
         cache_backend,
         cache_path,
@@ -429,29 +468,17 @@ fn resolve_settings(ctx: &Context, args: &SuggestArgs) -> Result<Settings> {
     })
 }
 
-/// Why `draft suggest` must run in Python for these arguments, if it must.
-pub fn python_reason(ctx: &Context, args: &SuggestArgs, preview: bool) -> Result<Option<String>> {
-    if !preview && !args.preflight {
-        // Applying a suggestion uses only the provider; strategies and caches don't apply.
-        return Ok(None);
+/// `build_suggestion_cache_backend`: `json` is the only backend a CLI process has. Python
+/// integrations can register more with `register_suggestion_cache_backend`, but only inside
+/// their own interpreter, so the Python CLI rejects any other name exactly like this.
+fn open_cache(settings: &Settings) -> Result<JsonSuggestionCache> {
+    if settings.cache_backend != "json" {
+        bail!(
+            "Unknown suggestion cache backend {}; available: json",
+            crate::mcp::py_repr_str(&settings.cache_backend)
+        );
     }
-    let settings = resolve_settings(ctx, args)?;
-    if settings.adaptive {
-        return Ok(Some("adaptive suggestion recommendations".into()));
-    }
-    if settings.strategy != "single" {
-        return Ok(Some(format!(
-            "the {} suggestion strategy",
-            settings.strategy
-        )));
-    }
-    if !args.no_cache && settings.cache_backend != "json" {
-        return Ok(Some(format!(
-            "the {} suggestion cache backend",
-            settings.cache_backend
-        )));
-    }
-    Ok(None)
+    JsonSuggestionCache::load(&settings.cache_path, settings.cache_ttl_days)
 }
 
 // -- traces -------------------------------------------------------------------
@@ -887,9 +914,14 @@ struct Work {
     prompt_sha: String,
     budget: Map<String, Value>,
     cache_key: String,
+    strategy: String,
+    full_diff_item: Value,
     file_count: usize,
     patch_chars: usize,
     missing_patch_count: usize,
+    tools: Vec<Value>,
+    tool_executor: Option<ToolExecutor>,
+    max_tool_rounds: usize,
     count: i64,
     style: Style,
     provider_label: String,
@@ -898,12 +930,51 @@ struct Work {
     started: Instant,
 }
 
+/// `_SuggestionResult`: one item plus the model-call counters it carries.
+#[derive(Default)]
 struct WorkResult {
     order: usize,
     item: Map<String, Value>,
     model_ms: i64,
     parse_ms: i64,
+    aggregate_model_ms: i64,
     model_call_count: i64,
+    batched_model_calls: i64,
+    single_model_calls: i64,
+    bulk_model_calls: i64,
+    fallback_single_calls: i64,
+    fallback_item_count: i64,
+    full_diff_prompt_chars: i64,
+}
+
+impl WorkResult {
+    fn new(order: usize, item: Map<String, Value>, model_ms: i64, parse_ms: i64) -> Self {
+        WorkResult {
+            order,
+            item,
+            model_ms,
+            parse_ms,
+            ..Default::default()
+        }
+    }
+
+    /// Credit a batch call that produced no result of its own to this (fallback) result.
+    fn absorb(&mut self, counters: &BatchCounters) {
+        self.aggregate_model_ms += counters.model_ms;
+        self.model_call_count += 1;
+        self.batched_model_calls += 1;
+        self.bulk_model_calls += counters.bulk;
+        self.full_diff_prompt_chars += counters.prompt_chars;
+    }
+}
+
+/// The cost of one batched model call (`_SuggestionBatchOutcome` / `_SuggestionBatchFallback`).
+struct BatchCounters {
+    model_ms: i64,
+    /// 1 for a full-diff-json (bulk) call.
+    bulk: i64,
+    /// The full-diff prompt size (0 for paired batches).
+    prompt_chars: i64,
 }
 
 impl Work {
@@ -935,7 +1006,7 @@ impl Work {
             "model_ms": model_ms,
             "parse_ms": parse_ms,
             "total_ms": elapsed_ms(self.started),
-            "strategy": "single",
+            "strategy": self.strategy,
             "file_count": self.file_count,
             "patch_chars": self.patch_chars,
             "missing_patch_count": self.missing_patch_count,
@@ -1024,33 +1095,137 @@ fn source_evidence(
     out
 }
 
-/// The counters `_build_full_diff_suggestion_payload_item` contributes on the single path:
-/// (file count, patch chars available, patch chars sent, missing patch count).
-fn full_diff_counters(
-    files: &[ChangedFile],
-    diff: &evidence::DiffEvidence,
-    include_patches: bool,
-) -> (usize, usize, usize, usize) {
-    let available: usize = files.iter().map(|f| py_len(&f.patch)).sum();
-    if diff.semantic.is_some() {
-        let records = semantic_diff_for_prompt(&diff.semantic_diff, include_patches);
-        let missing = files
-            .iter()
-            .filter(|f| {
-                !records
-                    .iter()
-                    .any(|r| r.get("path").and_then(Value::as_str) == Some(f.path.as_str()))
-            })
-            .count();
-        return (files.len(), available, 0, missing);
+/// `_commit_payload_for_prompt`.
+fn prompt_commit_payload(commit: &crate::models::Commit) -> Value {
+    let mut payload = Map::new();
+    payload.insert("sha".into(), json!(commit.sha));
+    payload.insert(
+        "subject".into(),
+        json!(splitlines(&commit.message).first().copied().unwrap_or("")),
+    );
+    payload.insert("message".into(), json!(commit.message));
+    payload.insert("author".into(), json!(commit.author));
+    payload.insert("previous_sha".into(), json!(commit.parent_sha));
+    payload.insert("initial_commit".into(), json!(commit.parent_sha.is_none()));
+    if let Some(intent) = &commit.inferred_intent {
+        payload.insert("inferred_conventional".into(), intent.payload());
     }
-    let missing = files.iter().filter(|f| f.patch.is_empty()).count();
-    (
-        files.len(),
-        available,
-        if include_patches { available } else { 0 },
-        missing,
-    )
+    if let Some(intent) = &commit.derived_intent {
+        payload.insert("derived_conventional".into(), intent.payload());
+    }
+    Value::Object(payload)
+}
+
+/// `_build_full_diff_suggestion_payload_item`: the item's full evidence as structured JSON (the
+/// IntentumDiff semantic diff per file, or raw patches for the legacy `git` engine).
+fn full_diff_item(
+    group: &ChangeGroup,
+    item: &ChangeItem,
+    diff: &evidence::DiffEvidence,
+    files: &[ChangedFile],
+    include_patches: bool,
+) -> Value {
+    let semantic = diff.semantic.is_some();
+    let mut by_path: std::collections::HashMap<String, Vec<Value>> =
+        std::collections::HashMap::new();
+    if semantic {
+        for record in semantic_diff_for_prompt(&diff.semantic_diff, include_patches) {
+            let path = record
+                .get("path")
+                .map(py_str)
+                .unwrap_or_else(|| "None".into());
+            let mut rest = record.as_object().cloned().unwrap_or_default();
+            rest.remove("path");
+            by_path.entry(path).or_default().push(Value::Object(rest));
+        }
+    }
+    let (mut available, mut sent, mut missing) = (0usize, 0usize, 0usize);
+    let mut payloads: Vec<Value> = Vec::new();
+    for file in files {
+        let chars = py_len(&file.patch);
+        available += chars;
+        if semantic {
+            let records = by_path.get(&file.path).cloned().unwrap_or_default();
+            if records.is_empty() {
+                missing += 1;
+            }
+            payloads.push(json!({
+                "path": file.path,
+                "status": file.status,
+                "semantic_diff_available": !records.is_empty(),
+                "semantic_diff": records,
+                "patch_chars_available": chars,
+                "patch_chars_sent": 0,
+                "patch_available": false,
+            }));
+            continue;
+        }
+        if file.patch.is_empty() {
+            missing += 1;
+        }
+        let mut payload = json!({
+            "path": file.path,
+            "status": file.status,
+            "patch_chars_available": chars,
+            "patch_chars_sent": if include_patches { chars } else { 0 },
+            "patch_available": !file.patch.is_empty(),
+            "patch_unavailable_reason": if file.patch.is_empty() { "missing-or-unavailable" } else { "" },
+        });
+        if include_patches {
+            payload["patch"] = json!(file.patch);
+            sent += chars;
+        }
+        payloads.push(payload);
+    }
+    let pr = group.pr.as_ref();
+    json!({
+        "item_id": item.id,
+        "title": item.content.title,
+        "current_summary": current_summary(item),
+        "change_summary": change_summary_payload(group, Some(item), diff, files),
+        "classification": {
+            "kind": item.classification.kind,
+            "area": item.classification.area,
+            "audience": item.classification.audience,
+            "semver": item.classification.semver,
+        },
+        "labels": pr.map(|p| p.labels.clone()).unwrap_or_default(),
+        "pr": pr.map(|p| json!({
+            "number": p.number,
+            "title": p.title,
+            "body": p.body,
+            "base_ref": p.base_ref,
+            "head_ref": p.head_ref,
+        })),
+        "commit_boundaries": crate::suggestion_tools::commit_boundaries(&group.commits),
+        "commits": group.commits.iter().map(prompt_commit_payload).collect::<Vec<_>>(),
+        "file_count": payloads.len(),
+        "files": payloads,
+        "patch_chars_available": available,
+        "patch_chars_sent": sent,
+        "patch_chars": sent,
+        "missing_patch_count": missing,
+        "evidence_source": if semantic { "intentumdiff-semantic-diff" } else { "git-patch" },
+        "semantic_diff_detail": if semantic {
+            json!(if include_patches { "detailed" } else { "structure" })
+        } else {
+            Value::Null
+        },
+        "semantic_review": diff.semantic.as_ref().map(crate::semantic::semantic_prompt_payload),
+        "omitted_fields": if include_patches && !semantic { json!([]) } else { json!(OMITTED_PATCH_EVIDENCE) },
+        "diff_summary": {
+            "summary": diff.summary,
+            "files_by_area": diff.files_by_area,
+            "file_statuses": diff.file_statuses,
+            "api_changes": diff.api_changes,
+            "migration_changes": diff.migration_changes,
+            "config_changes": diff.config_changes,
+        },
+    })
+}
+
+fn count_of(value: &Value, key: &str) -> usize {
+    value.get(key).and_then(Value::as_u64).unwrap_or(0) as usize
 }
 
 /// `_suggestion_cache_key`.
@@ -1063,6 +1238,7 @@ fn cache_key(
     style: &Style,
     count: i64,
     prompt_profile: &str,
+    strategy: &str,
     privacy: &str,
 ) -> String {
     let style_sha = sha12(&pyjson::dumps(
@@ -1076,8 +1252,8 @@ fn cache_key(
         "checksum": item.checksum,
         "current_summary_sha": sha12(&current_summary(item)),
         "prompt_sha": prompt_sha,
-        "strategy": "single",
-        "prompt_shape": SINGLE_SUGGESTION_PROMPT_SHAPE,
+        "strategy": strategy,
+        "prompt_shape": prompt_shape(strategy),
         "privacy_mode": privacy,
         "provider_mode": provider_mode,
         "model_id": model_id,
@@ -1234,20 +1410,231 @@ pub(crate) fn provider_timings(metadata: &Map<String, Value>, model_ms: i64) -> 
     timings
 }
 
-/// `_run_suggestion_model_work` for one item.
-fn run_model_work(provider: &dyn Provider, work: &Work) -> Result<WorkResult> {
-    let title = work.item.content.title.as_str();
+fn trace_call_start(title: &str, provider: &str) {
     if trace_model_enabled() {
         trace_model_line(
-            &format!(
-                "starting suggest provider={} title={title}",
-                work.provider_label
-            ),
+            &format!("starting suggest provider={provider} title={title}"),
             "request_started",
             None,
             None,
         );
     }
+}
+
+/// `_trace_model_call_result` and `_trace_model_response_detail` (plus payload previews).
+fn trace_response(title: &str, response: &ProviderResponse) {
+    if !trace_model_enabled() {
+        return;
+    }
+    trace_model_line(
+        &format!(
+            "[verlato:model] finished suggest model={} confidence={:.2} title={title}",
+            response.model, response.confidence
+        ),
+        "request_finished",
+        Some(Map::from_iter([
+            ("task".to_owned(), json!("suggest")),
+            ("model".to_owned(), json!(response.model)),
+            ("confidence".to_owned(), json!(response.confidence)),
+            ("title".to_owned(), json!(title)),
+        ])),
+        None,
+    );
+    let mut keys: Vec<&String> = response.metadata.keys().collect();
+    keys.sort();
+    let metadata_text = keys
+        .iter()
+        .map(|k| format!("{k}={}", py_str(&response.metadata[*k])))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let suffix = if metadata_text.is_empty() {
+        String::new()
+    } else {
+        format!(" {metadata_text}")
+    };
+    let mut attributes = Map::from_iter([
+        ("model".to_owned(), json!(response.model)),
+        ("content_chars".to_owned(), json!(py_len(&response.content))),
+        (
+            "reasoning_exposed".to_owned(),
+            json!(!response.reasoning.is_empty()),
+        ),
+        (
+            "reasoning_chars".to_owned(),
+            json!(py_len(&response.reasoning)),
+        ),
+    ]);
+    attributes.extend(response.metadata.clone());
+    trace_model_line(
+        &format!(
+            "[verlato:model] response-detail model={} content_chars={} reasoning_exposed={} reasoning_chars={}{suffix}",
+            response.model,
+            py_len(&response.content),
+            !response.reasoning.is_empty(),
+            py_len(&response.reasoning)
+        ),
+        "response_detail",
+        Some(attributes),
+        None,
+    );
+    trace_payload("response-preview", &response.content);
+    if env_is_one("VERLATO_TRACE_MODEL_REASONING") {
+        trace_payload("reasoning-preview", &response.reasoning);
+    }
+}
+
+/// `_trace_model_suggestion_decision`.
+fn trace_decision(title: &str, model: &str, parsed: &Parsed, requested: i64) {
+    if !trace_model_enabled() {
+        return;
+    }
+    let preview = if parsed.accepted.is_empty() {
+        "none".to_owned()
+    } else {
+        parsed
+            .accepted
+            .iter()
+            .take(3)
+            .map(|d| {
+                d["summary"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(80)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("|")
+    };
+    trace_model_line(
+        &format!(
+            "[verlato:model] decision suggestions parsed={} requested={requested} accepted={preview} rejected={} model={model} title={title}",
+            parsed.accepted.len(), parsed.rejected.len()
+        ),
+        "suggestion_decision",
+        Some(Map::from_iter([
+            ("title".to_owned(), json!(title)),
+            ("model".to_owned(), json!(model)),
+            ("parsed".to_owned(), json!(parsed.accepted.len())),
+            ("requested".to_owned(), json!(requested)),
+            ("accepted".to_owned(), json!(preview)),
+            ("rejected".to_owned(), json!(parsed.rejected.len())),
+        ])),
+        None,
+    );
+}
+
+fn response_progress(timings: &Map<String, Value>, model_ms: i64) -> Map<String, Value> {
+    Map::from_iter([
+        ("model_ms".to_owned(), json!(model_ms)),
+        (
+            "queue_ms".to_owned(),
+            timings.get("queue_ms").cloned().unwrap_or(Value::Null),
+        ),
+        (
+            "ollama_total_ms".to_owned(),
+            timings
+                .get("ollama_total_ms")
+                .cloned()
+                .unwrap_or(Value::Null),
+        ),
+        (
+            "prompt_eval_ms".to_owned(),
+            timings
+                .get("prompt_eval_ms")
+                .cloned()
+                .unwrap_or(Value::Null),
+        ),
+        (
+            "eval_ms".to_owned(),
+            timings.get("eval_ms").cloned().unwrap_or(Value::Null),
+        ),
+    ])
+}
+
+fn exposed_reasoning(response: &ProviderResponse) -> String {
+    if env_is_one("VERLATO_TRACE_MODEL_REASONING") {
+        response.reasoning.clone()
+    } else {
+        String::new()
+    }
+}
+
+/// How a single-item result was reached after a batched strategy failed.
+struct ItemContext<'a> {
+    batch_model_ms: Option<i64>,
+    batch_item_count: Option<usize>,
+    fallback_reason: Option<&'a str>,
+}
+
+/// `_build_suggestion_result_item` (also the item `_run_suggestion_model_work` builds).
+#[allow(clippy::too_many_arguments)]
+fn result_item(
+    work: &Work,
+    response: &ProviderResponse,
+    parsed: Parsed,
+    model_ms: i64,
+    parse_ms: i64,
+    provider_timings: Map<String, Value>,
+    reasoning: String,
+    context: &ItemContext,
+) -> Map<String, Value> {
+    let mut timings = work.base_timings(model_ms, parse_ms);
+    timings.extend(provider_timings);
+    if let Some(ms) = context.batch_model_ms {
+        timings.insert("batch_model_ms".into(), json!(ms));
+    }
+    if let Some(count) = context.batch_item_count {
+        timings.insert("batch_item_count".into(), json!(count));
+    }
+    if let Some(reason) = context.fallback_reason {
+        timings.insert("fallback_used_capped_evidence".into(), json!(true));
+        timings.insert("fallback_reason".into(), json!(reason));
+    }
+    let mut item = work.common_item();
+    let suggestions: Vec<Value> = parsed
+        .accepted
+        .iter()
+        .map(|d| d["summary"].clone())
+        .collect();
+    item.insert("provider".into(), json!(response.model));
+    item.insert(
+        "provider_metadata".into(),
+        Value::Object(response.metadata.clone()),
+    );
+    item.insert("provider_reasoning".into(), json!(reasoning));
+    item.insert(
+        "ai_response".into(),
+        json!({
+            "model": response.model,
+            "response_chars": py_len(&response.content),
+            "parse_result": if parsed.accepted.is_empty() { "rejected" } else { "accepted" },
+            "accepted_count": parsed.accepted.len(),
+            "rejected_count": parsed.rejected.len(),
+        }),
+    );
+    item.insert("suggestion_details".into(), json!(parsed.accepted));
+    item.insert("rejected_candidates".into(), json!(parsed.rejected));
+    item.insert("suggestions".into(), json!(suggestions));
+    item.insert("cache".into(), json!({"hit": false, "key": work.cache_key}));
+    item.insert("timings".into(), Value::Object(timings));
+    if let Some(reason) = context.fallback_reason {
+        item.insert(
+            "fallback".into(),
+            json!({"from_strategy": work.strategy, "reason": reason, "used_capped_evidence": true}),
+        );
+    }
+    item
+}
+
+/// `_run_suggestion_model_work` for one item.
+fn run_model_work(
+    provider: &dyn Provider,
+    work: &Work,
+    fallback_reason: Option<&str>,
+) -> Result<WorkResult> {
+    let title = work.item.content.title.as_str();
+    trace_call_start(title, &work.provider_label);
     trace_progress(
         "suggestion_model_request",
         &format!("Prompting model for {}", work.item.id),
@@ -1273,79 +1660,25 @@ fn run_model_work(provider: &dyn Provider, work: &Work) -> Result<WorkResult> {
                 work.evidence.get("request").cloned().unwrap_or(Value::Null),
             ),
         ]),
+        tools: work.tools.clone(),
+        tool_executor: work.tool_executor.clone(),
+        max_tool_rounds: work.max_tool_rounds,
     });
     let model_ms = elapsed_ms(model_start);
     let timings_extra = provider_timings(&response.metadata, model_ms);
-    if trace_model_enabled() {
-        trace_model_line(
-            &format!(
-                "[verlato:model] finished suggest model={} confidence={:.2} title={title}",
-                response.model, response.confidence
-            ),
-            "request_finished",
-            Some(Map::from_iter([
-                ("task".to_owned(), json!("suggest")),
-                ("model".to_owned(), json!(response.model)),
-                ("confidence".to_owned(), json!(response.confidence)),
-                ("title".to_owned(), json!(title)),
-            ])),
-            None,
-        );
-        let mut keys: Vec<&String> = response.metadata.keys().collect();
-        keys.sort();
-        let metadata_text = keys
-            .iter()
-            .map(|k| format!("{k}={}", py_str(&response.metadata[*k])))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let suffix = if metadata_text.is_empty() {
-            String::new()
-        } else {
-            format!(" {metadata_text}")
-        };
-        let mut attributes = Map::from_iter([
-            ("model".to_owned(), json!(response.model)),
-            ("content_chars".to_owned(), json!(py_len(&response.content))),
-            (
-                "reasoning_exposed".to_owned(),
-                json!(!response.reasoning.is_empty()),
-            ),
-            (
-                "reasoning_chars".to_owned(),
-                json!(py_len(&response.reasoning)),
-            ),
-        ]);
-        attributes.extend(response.metadata.clone());
-        trace_model_line(
-            &format!(
-                "[verlato:model] response-detail model={} content_chars={} reasoning_exposed={} reasoning_chars={}{suffix}",
-                response.model,
-                py_len(&response.content),
-                !response.reasoning.is_empty(),
-                py_len(&response.reasoning)
-            ),
-            "response_detail",
-            Some(attributes),
-            None,
-        );
-        trace_payload("response-preview", &response.content);
-        if env_is_one("VERLATO_TRACE_MODEL_REASONING") {
-            trace_payload("reasoning-preview", &response.reasoning);
-        }
+    trace_response(title, &response);
+    let mut progress = json!({"current": work.item_number, "total": work.total_targets, "unit": "item",
+        "item_id": work.item.id, "batch": work.batch, "batch_total": work.batch_total,
+        "elapsed_ms": elapsed_ms(work.started)});
+    if let Value::Object(map) = &mut progress {
+        map.extend(response_progress(&timings_extra, model_ms));
     }
     trace_progress(
         "suggestion_model_response",
         &format!("Reading model response for {}", work.item.id),
-        json!({"current": work.item_number, "total": work.total_targets, "unit": "item", "item_id": work.item.id,
-               "batch": work.batch, "batch_total": work.batch_total, "elapsed_ms": elapsed_ms(work.started), "model_ms": model_ms,
-               "queue_ms": timings_extra.get("queue_ms"), "ollama_total_ms": timings_extra.get("ollama_total_ms"),
-               "prompt_eval_ms": timings_extra.get("prompt_eval_ms"), "eval_ms": timings_extra.get("eval_ms")}),
+        progress,
     );
-    let reasoning = if env_is_one("VERLATO_TRACE_MODEL_REASONING") {
-        response.reasoning.clone()
-    } else {
-        String::new()
-    };
+    let reasoning = exposed_reasoning(&response);
     if is_provider_error_marker(&response.content, false) {
         bail!(
             "No model suggestions were produced for draft item {}: {}",
@@ -1356,84 +1689,494 @@ fn run_model_work(provider: &dyn Provider, work: &Work) -> Result<WorkResult> {
     let parse_start = Instant::now();
     let parsed = parse_suggestion_variants(&response.content, work, &response.model);
     let parse_ms = elapsed_ms(parse_start);
-    if trace_model_enabled() {
-        let preview = if parsed.accepted.is_empty() {
-            "none".to_owned()
-        } else {
-            parsed
-                .accepted
-                .iter()
-                .take(3)
-                .map(|d| {
-                    d["summary"]
-                        .as_str()
-                        .unwrap_or("")
-                        .chars()
-                        .take(80)
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("|")
-        };
-        trace_model_line(
-            &format!(
-                "[verlato:model] decision suggestions parsed={} requested={} accepted={preview} rejected={} model={} title={title}",
-                parsed.accepted.len(), work.count, parsed.rejected.len(), response.model
-            ),
-            "suggestion_decision",
-            Some(Map::from_iter([
-                ("title".to_owned(), json!(title)),
-                ("model".to_owned(), json!(response.model)),
-                ("parsed".to_owned(), json!(parsed.accepted.len())),
-                ("requested".to_owned(), json!(work.count)),
-                ("accepted".to_owned(), json!(preview)),
-                ("rejected".to_owned(), json!(parsed.rejected.len())),
-            ])),
-            None,
-        );
-    }
+    trace_decision(title, &response.model, &parsed, work.count);
     if parsed.accepted.is_empty() {
         bail!(
             "No model suggestions were produced for draft item {}.",
             work.item.id
         );
     }
-    let mut timings = work.base_timings(model_ms, parse_ms);
-    timings.extend(timings_extra);
-    let mut item = work.common_item();
-    let suggestions: Vec<Value> = parsed
-        .accepted
-        .iter()
-        .map(|d| d["summary"].clone())
-        .collect();
-    item.insert("provider".into(), json!(response.model));
-    item.insert(
-        "provider_metadata".into(),
-        Value::Object(response.metadata.clone()),
-    );
-    item.insert("provider_reasoning".into(), json!(reasoning));
-    item.insert(
-        "ai_response".into(),
-        json!({
-            "model": response.model,
-            "response_chars": py_len(&response.content),
-            "parse_result": "accepted",
-            "accepted_count": parsed.accepted.len(),
-            "rejected_count": parsed.rejected.len(),
-        }),
-    );
-    item.insert("suggestion_details".into(), json!(parsed.accepted));
-    item.insert("rejected_candidates".into(), json!(parsed.rejected));
-    item.insert("suggestions".into(), json!(suggestions));
-    item.insert("cache".into(), json!({"hit": false, "key": work.cache_key}));
-    item.insert("timings".into(), Value::Object(timings));
-    Ok(WorkResult {
-        order: work.order,
-        item,
+    let item = result_item(
+        work,
+        &response,
+        parsed,
         model_ms,
         parse_ms,
+        timings_extra,
+        reasoning,
+        &ItemContext {
+            batch_model_ms: None,
+            batch_item_count: None,
+            fallback_reason,
+        },
+    );
+    let fallback = i64::from(fallback_reason.is_some());
+    Ok(WorkResult {
+        aggregate_model_ms: model_ms,
         model_call_count: 1,
+        single_model_calls: 1,
+        fallback_single_calls: fallback,
+        fallback_item_count: fallback,
+        ..WorkResult::new(work.order, item, model_ms, parse_ms)
     })
+}
+
+// -- batched strategies --------------------------------------------------------
+
+/// `_build_suggestion_batch_prompt` (paired): each item's prepared single prompt.
+fn batch_prompt(works: &[&Work]) -> String {
+    let first = works[0];
+    let items: Vec<Value> = works
+        .iter()
+        .map(|w| {
+            json!({
+                "item_id": w.item.id,
+                "title": w.item.content.title,
+                "current_summary": current_summary(&w.item),
+                "prepared_prompt": w.prompt,
+            })
+        })
+        .collect();
+    let payload = json!({
+        "suggestion_count": first.count,
+        "tone": first.style.tone,
+        "style_profile": first.style.profile(),
+        "items": items,
+    });
+    format!(
+        "Generate release-note suggestion variants for each item independently.\n\
+         Return only JSON that matches the requested schema. Do not include Markdown fences or prose.\n\
+         For each item, return exactly {} suggestion string(s) in the suggestions array.\n\
+         Do not combine items, rename item ids, or omit an item.\n\
+         Input JSON:\n{}",
+        first.count,
+        pyjson::dumps_indented(&payload, 2)
+    )
+}
+
+/// `_build_full_diff_suggestion_batch_prompt`.
+fn full_diff_batch_prompt(works: &[&Work]) -> String {
+    let first = works[0];
+    let items: Vec<Value> = works.iter().map(|w| w.full_diff_item.clone()).collect();
+    let payload = json!({
+        "suggestion_count": first.count,
+        "tone": first.style.tone,
+        "style_profile": first.style.profile(),
+        "prompt_shape": FULL_DIFF_SUGGESTION_PROMPT_SHAPE,
+        "items": items,
+    });
+    let sent: usize = works.iter().map(|w| w.patch_chars).sum();
+    let semantic = works.iter().any(|w| {
+        w.full_diff_item.get("evidence_source") == Some(&json!("intentumdiff-semantic-diff"))
+    });
+    let (name, instruction) = if semantic {
+        (
+            "IntentumDiff semantic diff",
+            "Use each file's semantic_diff and the item's semantic_review as the primary source of truth. \
+             They list meaningful changes with their enclosing symbols, behavior-preserving refactorings, \
+             moved code and ignored formatting. Describe the meaningful changes; never present moved code, \
+             refactorings or formatting as new behavior. Do not infer behavior from titles alone.",
+        )
+    } else if sent > 0 {
+        (
+            "full diff evidence",
+            "Use the file patches as the primary source of truth. Do not infer behavior from titles alone.",
+        )
+    } else {
+        (
+            "privacy-filtered ChangeSummary evidence",
+            "Use the change_summary, commit metadata, file paths/statuses, and deterministic facts. \
+             Do not invent line-level behavior that is not present in the sanitized evidence.",
+        )
+    };
+    format!(
+        "Generate release-note suggestion variants from the {name}.\n{instruction}\n\
+         Return only JSON that matches the requested schema. Do not include Markdown fences or prose.\n\
+         For each item, return exactly {} suggestion string(s) in the suggestions array.\n\
+         Do not combine items, rename item ids, omit an item, or mention implementation details unless they matter to \
+         release-note readers.\n\
+         If a file has no semantic_diff (and patch_available=false), treat that file as changed but do not invent \
+         unavailable details.\n\
+         Input JSON:\n{}",
+        first.count,
+        pyjson::dumps_indented(&payload, 2)
+    )
+}
+
+/// `_build_tool_retrieval_suggestion_prompt`.
+fn tool_retrieval_prompt(manifest: &Value, count: i64, style: &Style) -> String {
+    let payload = json!({
+        "suggestion_count": count,
+        "tone": style.tone,
+        "style_profile": style.profile(),
+        "prompt_shape": TOOL_RETRIEVAL_SUGGESTION_PROMPT_SHAPE,
+        "item": manifest,
+    });
+    let instruction = if manifest.get("evidence_source")
+        == Some(&json!("intentumdiff-semantic-diff"))
+    {
+        "Start from the compact item manifest and its semantic_review, then call \
+         verlato_get_file_semantic_diff for the files you need (or verlato_search_semantic_diff for a \
+         symbol). The IntentumDiff semantic diff is the primary source of truth: describe meaningful \
+         changes, never present moved code, refactorings or formatting as new behavior, and do not infer \
+         behavior from titles alone.\n"
+    } else {
+        "Start from the compact item manifest, then call tools to inspect the specific patches needed. \
+         Prefer targeted file patches over reading every file. Use patches as the primary source of truth, \
+         and do not infer behavior from titles alone.\n"
+    };
+    format!(
+        "Generate release-note suggestion variants for this item using the available Verlato tools.\n\
+         {instruction}\
+         Return only the suggestion text. Do not include JSON, Markdown fences, tool names, or commentary.\n\
+         Return exactly {count} distinct complete release-note option(s), one per line.\n\
+         Compact input JSON:\n{}",
+        pyjson::dumps_indented(&payload, 2)
+    )
+}
+
+/// `_suggestion_batch_response_format`.
+fn batch_response_format(count: i64) -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "item_id": {"type": "string"},
+                        "suggestions": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 1,
+                            "maxItems": count,
+                        },
+                    },
+                    "required": ["item_id", "suggestions"],
+                },
+            }
+        },
+        "required": ["items"],
+    })
+}
+
+/// `_parse_suggestion_batch_json`: suggestions per item id, or `None` for unusable JSON.
+fn parse_batch_json(content: &str) -> Option<std::collections::HashMap<String, Vec<String>>> {
+    let parsed: Value = serde_json::from_str(content).ok()?;
+    let items = parsed.as_object()?.get("items")?.as_array()?;
+    let mut out = std::collections::HashMap::new();
+    for item in items {
+        let Some(item) = item.as_object() else {
+            continue;
+        };
+        let (Some(id), Some(raw)) = (
+            item.get("item_id").and_then(Value::as_str),
+            item.get("suggestions").and_then(Value::as_array),
+        ) else {
+            continue;
+        };
+        let suggestions: Vec<String> = raw
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if !suggestions.is_empty() {
+            out.insert(id.to_owned(), suggestions);
+        }
+    }
+    Some(out)
+}
+
+/// The outcome of one batched call: results, the works that need a single call, and whether
+/// the whole response was unusable (`_SuggestionBatchFallback`).
+struct BatchOutcome {
+    results: Vec<WorkResult>,
+    fallback: Vec<usize>,
+    unusable: bool,
+    counters: BatchCounters,
+}
+
+/// `_run_suggestion_batch_model_work` (paired) and `_run_full_diff_suggestion_batch_model_work`.
+fn run_batch_model_work(provider: &dyn Provider, works: &[&Work], full_diff: bool) -> BatchOutcome {
+    let first = works[0];
+    let last = works[works.len() - 1];
+    let ids: Vec<&str> = works.iter().map(|w| w.item.id.as_str()).collect();
+    let joined = ids.join(",");
+    let label = if full_diff {
+        format!("full-diff:{joined}")
+    } else {
+        format!("batch:{joined}")
+    };
+    trace_call_start(&label, &first.provider_label);
+    let max_elapsed = || {
+        works
+            .iter()
+            .map(|w| elapsed_ms(w.started))
+            .max()
+            .unwrap_or(0)
+    };
+    trace_progress(
+        "suggestion_model_request",
+        &if full_diff {
+            format!(
+                "Prompting model with full diff for {} suggestion item(s)",
+                works.len()
+            )
+        } else {
+            format!("Prompting model for {} suggestion items", works.len())
+        },
+        json!({"current": first.item_number, "total": first.total_targets, "unit": "item", "item_id": joined,
+               "batch": first.batch, "batch_total": first.batch_total, "batch_item_count": works.len(),
+               "elapsed_ms": max_elapsed()}),
+    );
+    let prompt = if full_diff {
+        full_diff_batch_prompt(works)
+    } else {
+        batch_prompt(works)
+    };
+    let prompt_chars = if full_diff { py_len(&prompt) } else { 0 };
+    trace_payload("prompt-preview", &prompt);
+    let privacy = first
+        .budget
+        .get("privacy_mode")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let available: usize = works
+        .iter()
+        .map(|w| {
+            count_of(
+                &Value::Object(w.budget.clone()),
+                "raw_patch_chars_available",
+            )
+        })
+        .sum();
+    let sent: usize = works.iter().map(|w| w.patch_chars).sum();
+    let mut evidence = json!({
+        "batch": true,
+        "item_ids": ids,
+        "item_count": works.len(),
+        "suggestion_count": first.count,
+        "privacy_mode": privacy,
+        "raw_patch_chars_available": available,
+        "raw_patch_chars_sent": sent,
+    });
+    if full_diff {
+        evidence["strategy"] = json!("full-diff-json");
+        evidence["prompt_shape"] = json!(FULL_DIFF_SUGGESTION_PROMPT_SHAPE);
+        evidence["full_diff_file_count"] = json!(works.iter().map(|w| w.file_count).sum::<usize>());
+        evidence["full_diff_patch_chars"] = json!(sent);
+        evidence["missing_patch_count"] =
+            json!(works.iter().map(|w| w.missing_patch_count).sum::<usize>());
+    }
+    let privacy_mode = privacy.as_str().unwrap_or("metadata-only").to_owned();
+    let request = model_request_record(
+        "suggest",
+        Some(&first.provider_label),
+        &privacy_mode,
+        &prompt,
+        &json!({"item_ids": ids, "item_count": works.len(), "strategy": first.strategy}),
+        available,
+        sent,
+        if sent > 0 {
+            &[]
+        } else {
+            OMITTED_PATCH_EVIDENCE
+        },
+        if sent > 0 {
+            &[]
+        } else {
+            &["metadata-only mode sends ChangeSummary instead of raw diff text"]
+        },
+    );
+    let model_start = Instant::now();
+    let response = provider.summarize(&ProviderRequest {
+        task: "suggest".into(),
+        prompt: prompt.clone(),
+        evidence,
+        response_format: batch_response_format(first.count),
+        metadata: Map::from_iter([
+            ("privacy_mode".to_owned(), privacy),
+            ("request".to_owned(), request),
+        ]),
+        ..Default::default()
+    });
+    let model_ms = elapsed_ms(model_start);
+    let timings_extra = provider_timings(&response.metadata, model_ms);
+    trace_response(&label, &response);
+    let mut progress = json!({"current": last.item_number, "total": last.total_targets, "unit": "item",
+        "item_id": joined, "batch": first.batch, "batch_total": first.batch_total, "elapsed_ms": max_elapsed()});
+    if let Value::Object(map) = &mut progress {
+        map.extend(response_progress(&timings_extra, model_ms));
+    }
+    trace_progress(
+        "suggestion_model_response",
+        &if full_diff {
+            format!(
+                "Reading full-diff response for {} suggestion item(s)",
+                works.len()
+            )
+        } else {
+            format!(
+                "Reading model response for {} suggestion items",
+                works.len()
+            )
+        },
+        progress,
+    );
+    let counters = BatchCounters {
+        model_ms,
+        bulk: i64::from(full_diff),
+        prompt_chars: prompt_chars as i64,
+    };
+    let parsed_items = if is_provider_error_marker(&response.content, false) {
+        None
+    } else {
+        parse_batch_json(&response.content)
+    };
+    let Some(parsed_items) = parsed_items else {
+        return BatchOutcome {
+            results: Vec::new(),
+            fallback: (0..works.len()).collect(),
+            unusable: true,
+            counters,
+        };
+    };
+    let reasoning = exposed_reasoning(&response);
+    let mut results: Vec<WorkResult> = Vec::new();
+    let mut fallback: Vec<usize> = Vec::new();
+    for (index, work) in works.iter().enumerate() {
+        let Some(raw) = parsed_items.get(&work.item.id) else {
+            fallback.push(index);
+            continue;
+        };
+        let parse_start = Instant::now();
+        let parsed = parse_suggestion_variants(&raw.join("\n"), work, &response.model);
+        let parse_ms = elapsed_ms(parse_start);
+        trace_decision(
+            &work.item.content.title,
+            &response.model,
+            &parsed,
+            work.count,
+        );
+        if parsed.accepted.is_empty() {
+            fallback.push(index);
+            continue;
+        }
+        let mut item = result_item(
+            work,
+            &response,
+            parsed,
+            model_ms,
+            parse_ms,
+            timings_extra.clone(),
+            reasoning.clone(),
+            &ItemContext {
+                batch_model_ms: Some(model_ms),
+                batch_item_count: Some(works.len()),
+                fallback_reason: None,
+            },
+        );
+        if full_diff {
+            if let Some(Value::Object(timings)) = item.get_mut("timings") {
+                timings.insert("batch_prompt_chars".into(), json!(prompt_chars));
+            }
+            item.insert(
+                "full_diff".into(),
+                json!({
+                    "prompt_shape": FULL_DIFF_SUGGESTION_PROMPT_SHAPE,
+                    "prompt_chars": prompt_chars,
+                    "file_count": work.file_count,
+                    "patch_chars": work.patch_chars,
+                    "missing_patch_count": work.missing_patch_count,
+                    "single_item_over_batch_guard": works.len() == 1 && prompt_chars > FULL_DIFF_BATCH_PROMPT_CHAR_GUARD,
+                }),
+            );
+        }
+        results.push(WorkResult::new(work.order, item, model_ms, parse_ms));
+    }
+    if let Some(first_result) = results.first_mut() {
+        first_result.aggregate_model_ms = model_ms;
+        first_result.model_call_count = 1;
+        first_result.batched_model_calls = 1;
+        first_result.bulk_model_calls = counters.bulk;
+        first_result.full_diff_prompt_chars = counters.prompt_chars;
+    } else if fallback.is_empty() {
+        fallback = (0..works.len()).collect();
+    }
+    BatchOutcome {
+        results,
+        fallback,
+        unusable: false,
+        counters,
+    }
+}
+
+/// A chunk that failed on one of its works, with the results it completed first
+/// (`_SuggestionWorkFailure`).
+struct ChunkFailure {
+    work: usize,
+    error: anyhow::Error,
+    completed: Vec<WorkResult>,
+}
+
+/// `_run_suggestion_work_chunk` / `_run_full_diff_suggestion_work_chunk`: one model call for
+/// the chunk (one item, a paired batch or a full-diff batch), single calls for what it missed.
+/// `chunk` holds indices into `works`.
+fn run_chunk(
+    provider: &dyn Provider,
+    works: &[Work],
+    chunk: &[usize],
+) -> std::result::Result<Vec<WorkResult>, ChunkFailure> {
+    let full_diff = works[chunk[0]].strategy == "full-diff-json";
+    if !full_diff && chunk.len() <= 1 {
+        return run_model_work(provider, &works[chunk[0]], None)
+            .map(|r| vec![r])
+            .map_err(|error| ChunkFailure {
+                work: chunk[0],
+                error,
+                completed: Vec::new(),
+            });
+    }
+    let members: Vec<&Work> = chunk.iter().map(|i| &works[*i]).collect();
+    let outcome = run_batch_model_work(provider, &members, full_diff);
+    let reason = match (full_diff, outcome.unusable) {
+        (false, _) => None,
+        (true, true) => Some("full-diff-json-unusable"),
+        (true, false) => Some("full-diff-json-item-unusable"),
+    };
+    let mut results = outcome.results;
+    let had_results = !results.is_empty();
+    let mut fallback_results: Vec<WorkResult> = Vec::new();
+    for index in &outcome.fallback {
+        let work_index = chunk[*index];
+        match run_model_work(provider, &works[work_index], reason) {
+            Ok(result) => fallback_results.push(result),
+            Err(error) => {
+                results.extend(fallback_results);
+                return Err(ChunkFailure {
+                    work: work_index,
+                    error,
+                    completed: results,
+                });
+            }
+        }
+    }
+    if !had_results {
+        let mut counters = outcome.counters;
+        if full_diff && outcome.unusable {
+            // Python credits the prompt size only when the JSON parsed but missed every item.
+            counters.prompt_chars = 0;
+        }
+        if let Some(first) = fallback_results.first_mut() {
+            first.absorb(&counters);
+        }
+    }
+    results.extend(fallback_results);
+    results.sort_by_key(|r| r.order);
+    Ok(results)
 }
 
 /// `_cached_suggestion_result`.
@@ -1523,13 +2266,7 @@ fn cached_result(
         json!({"hit": true, "key": work.cache_key, "age_seconds": cached.age_seconds}),
     );
     item.insert("timings".into(), Value::Object(work.base_timings(0, 0)));
-    Some(WorkResult {
-        order: work.order,
-        item,
-        model_ms: 0,
-        parse_ms: 0,
-        model_call_count: 0,
-    })
+    Some(WorkResult::new(work.order, item, 0, 0))
 }
 
 /// `_preflight_suggestion_result`.
@@ -1542,8 +2279,8 @@ fn preflight_result(work: &Work) -> WorkResult {
             "task": "suggest",
             "prompt": work.prompt,
             "evidence": work.evidence,
-            "tools": [],
-            "response_format": "suggestion text",
+            "tools": work.tools.iter().map(|t| t.get("function").and_then(|f| f.get("name")).cloned().unwrap_or(Value::Null)).collect::<Vec<_>>(),
+            "response_format": if work.strategy == "full-diff-json" { "suggestion batch JSON" } else { "suggestion text" },
         }),
     );
     item.insert("suggestion_details".into(), json!([]));
@@ -1551,13 +2288,7 @@ fn preflight_result(work: &Work) -> WorkResult {
     item.insert("suggestions".into(), json!([]));
     item.insert("preflight".into(), json!(true));
     item.insert("timings".into(), Value::Object(work.base_timings(0, 0)));
-    WorkResult {
-        order: work.order,
-        item,
-        model_ms: 0,
-        parse_ms: 0,
-        model_call_count: 0,
-    }
+    WorkResult::new(work.order, item, 0, 0)
 }
 
 /// `_suggestion_cache_stored_item`.
@@ -1588,8 +2319,297 @@ fn group_detail(group: &ChangeGroup) -> String {
         .unwrap_or_else(|| "changeset".into())
 }
 
-/// `draft suggest --preview` / `--preflight` for the single strategy (ports
-/// `_preview_draft_model_suggestions`).
+/// What every work item of a preview shares.
+struct Plan<'a> {
+    settings: &'a Settings,
+    provider_label: &'a str,
+    model_id: &'a str,
+    batch_total: usize,
+    total_targets: usize,
+}
+
+/// `prepare_work`: evidence, prompt, request audit and cache key of one target.
+fn prepare_work(
+    plan: &Plan,
+    order: usize,
+    group: &ChangeGroup,
+    item: &ChangeItem,
+    batch_index: usize,
+) -> Work {
+    let settings = plan.settings;
+    let (batch_total, total_targets) = (plan.batch_total, plan.total_targets);
+    let strategy = settings.strategy.as_str();
+    let item_number = order + 1;
+    let item_start = Instant::now();
+    trace_progress(
+        "suggestion_evidence",
+        &format!("Building suggestion evidence for {}", item.id),
+        json!({
+        "current": item_number, "total": total_targets, "unit": "item", "item_id": item.id,
+        "batch": batch_index, "batch_total": batch_total}),
+    );
+    let evidence_start = Instant::now();
+    let files = changed_files_for_group(group);
+    let diff = evidence::build(&files, Some(&group.commits));
+    let evidence_ms = elapsed_ms(evidence_start);
+    let hunk_count: usize = diff.representative_hunks.values().map(Vec::len).sum();
+    let file_count = diff.file_statuses.len();
+    trace_stage(
+        "evidence-built",
+        &format!("item_id={} files={file_count} hunks={hunk_count}", item.id),
+    );
+    trace_progress(
+        "suggestion_prompt",
+        &format!("Building model prompt for {}", item.id),
+        json!({
+        "current": item_number, "total": total_targets, "unit": "item", "item_id": item.id,
+        "batch": batch_index, "batch_total": batch_total, "elapsed_ms": elapsed_ms(item_start)}),
+    );
+    let prompt_start = Instant::now();
+    let raw_for_item = raw_patch_chars_available(&files);
+    let mut evidence_value = json!({
+        "title": item.content.title,
+        "item_id": item.id,
+        "suggestion_count": settings.count,
+        "tone": settings.style.tone,
+        "style_profile": settings.style.profile(),
+        "change_summary": change_summary_payload(group, Some(item), &diff, &files),
+        "file_count": file_count,
+        "hunk_count": hunk_count,
+        "privacy_mode": settings.privacy,
+        "raw_patch_chars_available": raw_for_item,
+        "raw_patch_chars_sent": 0,
+    });
+    let sources = source_evidence(&diff, group, settings.raw_patches_allowed);
+    let labels: Vec<String> = group
+        .pr
+        .as_ref()
+        .map(|pr| pr.labels.iter().map(|l| l.to_lowercase()).collect())
+        .unwrap_or_default();
+    let built = build_summary_prompt(&PromptInput {
+        title: &item.content.title,
+        labels: &labels,
+        pr_body: group.pr.as_ref().map(|p| p.body.as_str()).unwrap_or(""),
+        diff: &diff,
+        commits: &group.commits,
+        suggestion_count: settings.count as usize,
+        kind: Some(&item.classification.kind),
+        audience: Some(&item.classification.audience),
+        style: &settings.style,
+        profile: prompt_profile(&settings.prompt_profile),
+        // The semantic diff is compact, so every strategy gets the privacy-allowed detail level;
+        // raw hunks (legacy git engine only) stay limited to the single-item strategy.
+        include_hunks: settings.raw_patches_allowed
+            && (strategy == "single" || diff.semantic.is_some()),
+    });
+    let mut prompt = built.prompt;
+    let mut budget = built.budget;
+    let full_diff = full_diff_item(group, item, &diff, &files, settings.raw_patches_allowed);
+    let mut tools: Vec<Value> = Vec::new();
+    let mut tool_executor: Option<ToolExecutor> = None;
+    let mut max_tool_rounds = 0;
+    if strategy == "tool-retrieval" {
+        let provider = std::sync::Arc::new(SuggestionTools::from_groups(
+            vec![group.clone()],
+            vec![item.clone()],
+            settings.raw_patches_allowed,
+        ));
+        tools = provider.ollama_tools();
+        let manifest = provider
+            .get_suggestion_item(&item.id)
+            .unwrap_or_else(|_| json!({}));
+        let executor = provider.clone();
+        tool_executor = Some(ToolExecutor(std::sync::Arc::new(move |name, arguments| {
+            executor.call_tool(name, arguments)
+        })));
+        max_tool_rounds = SUGGESTION_TOOL_MAX_ROUNDS;
+        prompt = tool_retrieval_prompt(&manifest, settings.count, &settings.style);
+        budget.insert("prompt_chars".into(), json!(py_len(&prompt)));
+        budget.insert("tool_count".into(), json!(tools.len()));
+        budget.insert("max_tool_rounds".into(), json!(max_tool_rounds));
+    }
+    let (fd_files, fd_available, fd_sent, fd_missing) = (
+        count_of(&full_diff, "file_count"),
+        count_of(&full_diff, "patch_chars_available"),
+        count_of(&full_diff, "patch_chars_sent"),
+        count_of(&full_diff, "missing_patch_count"),
+    );
+    let sha_source = match strategy {
+        "full-diff-json" => pyjson::dumps(&full_diff, pyjson::COMPACT_SORTED_ASCII),
+        "tool-retrieval" => pyjson::dumps(
+            &json!({"prompt": prompt, "tools": tools, "manifest": full_diff}),
+            pyjson::COMPACT_SORTED_ASCII,
+        ),
+        _ => prompt.clone(),
+    };
+    let shape = prompt_shape(strategy);
+    for (key, value) in [
+        ("strategy", json!(strategy)),
+        ("prompt_shape", json!(shape)),
+        ("full_diff_file_count", json!(fd_files)),
+        ("full_diff_patch_chars_available", json!(fd_available)),
+        ("full_diff_patch_chars_sent", json!(fd_sent)),
+        ("full_diff_missing_patch_count", json!(fd_missing)),
+        ("privacy_mode", json!(settings.privacy)),
+        ("raw_patch_chars_available", json!(raw_for_item)),
+        ("raw_patch_chars_sent", json!(fd_sent)),
+        (
+            "omitted_fields",
+            if settings.raw_patches_allowed {
+                json!([])
+            } else {
+                json!(OMITTED_PATCH_EVIDENCE)
+            },
+        ),
+    ] {
+        budget.insert(key.into(), value);
+    }
+    evidence_value["strategy"] = json!(strategy);
+    evidence_value["raw_patch_chars_sent"] = json!(fd_sent);
+    let record_value = model_request_record(
+        "suggest-release-note",
+        Some(plan.provider_label),
+        &settings.privacy,
+        &prompt,
+        &evidence_value,
+        raw_for_item,
+        fd_sent,
+        if settings.raw_patches_allowed {
+            &[]
+        } else {
+            OMITTED_PATCH_EVIDENCE
+        },
+        if settings.raw_patches_allowed {
+            &[]
+        } else {
+            &["metadata-only mode sends ChangeSummary instead of raw diff text"]
+        },
+    );
+    evidence_value["request"] = record_value;
+    if !tools.is_empty() {
+        evidence_value["tool_count"] = json!(tools.len());
+        evidence_value["max_tool_rounds"] = json!(max_tool_rounds);
+    }
+    let prompt_sha = sha12(&sha_source);
+    let key = cache_key(
+        item,
+        &prompt_sha,
+        plan.provider_label,
+        plan.model_id,
+        &settings.style,
+        settings.count,
+        budget
+            .get("profile")
+            .and_then(Value::as_str)
+            .filter(|p| !p.is_empty())
+            .unwrap_or("suggestion-conservative"),
+        strategy,
+        &settings.privacy,
+    );
+    let prompt_ms = elapsed_ms(prompt_start);
+    let files_text: Vec<&str> = diff
+        .file_statuses
+        .keys()
+        .take(8)
+        .map(String::as_str)
+        .collect();
+    trace_stage(
+        "evidence-detail",
+        &format!(
+            "item_id={} files={} source_entries={}",
+            item.id,
+            if files_text.is_empty() {
+                "none".to_owned()
+            } else {
+                files_text.join(",")
+            },
+            sources.len()
+        ),
+    );
+    trace_stage(
+        "prompt-built",
+        &format!(
+            "item_id={} prompt_chars={} prompt_sha={prompt_sha}",
+            item.id,
+            py_len(&prompt)
+        ),
+    );
+    if trace_model_enabled() {
+        let get = |k: &str, d: Value| budget.get(k).cloned().unwrap_or(d);
+        let s = |v: Value| py_str(&v);
+        trace_model_line(
+            &format!(
+                "[verlato:model] prompt-budget profile={} chars={} files={}/{} commits={}/{} hunks={}/{} pr_body_chars={}/{} diff_summary_chars={}/{}",
+                s(get("profile", json!("summary"))), s(get("prompt_chars", json!(0))),
+                s(get("files_included", json!(0))), s(get("files_total", json!(0))),
+                s(get("commits_included", json!(0))), s(get("commits_total", json!(0))),
+                s(get("hunks_included", json!(0))), s(get("hunks_total", json!(0))),
+                s(get("pr_body_chars_included", json!(0))), s(get("pr_body_chars_total", json!(0))),
+                s(get("diff_summary_chars_included", json!(0))), s(get("diff_summary_chars_total", json!(0))),
+            ),
+            "prompt_budget",
+            Some(budget.clone()),
+            None,
+        );
+    }
+    if !prompt.is_empty() {
+        trace_payload("prompt-preview", &prompt);
+    }
+    Work {
+        order,
+        item_number,
+        batch: batch_index,
+        batch_total,
+        total_targets,
+        group: group.clone(),
+        item: item.clone(),
+        prompt,
+        evidence: evidence_value,
+        source_evidence: sources,
+        prompt_sha,
+        budget,
+        cache_key: key,
+        strategy: strategy.to_owned(),
+        full_diff_item: full_diff,
+        file_count: fd_files,
+        patch_chars: fd_sent,
+        missing_patch_count: fd_missing,
+        tools,
+        tool_executor,
+        max_tool_rounds,
+        count: settings.count,
+        style: settings.style.clone(),
+        provider_label: plan.provider_label.to_owned(),
+        evidence_ms,
+        prompt_ms,
+        started: item_start,
+    }
+}
+
+/// Running totals of a preview (the `performance` block).
+#[derive(Default)]
+struct Totals {
+    completed: usize,
+    preparation_ms: i64,
+    prompt_chars: usize,
+    full_diff_prompt_chars: i64,
+    file_count: usize,
+    patch_sent: usize,
+    raw_available: usize,
+    model_ms: i64,
+    parse_ms: i64,
+    uncached: i64,
+    calls: i64,
+    batched: i64,
+    single: i64,
+    bulk: i64,
+    fallback_single: i64,
+    fallback_items: i64,
+}
+
+/// `draft suggest --preview` / `--preflight` (ports `_preview_draft_model_suggestions`): every
+/// strategy (single, paired, full-diff-json, tool-retrieval), the JSON cache and adaptive
+/// recommendations.
 pub fn preview_suggestions(
     ctx: &Context,
     base: &str,
@@ -1609,14 +2629,12 @@ pub fn preview_suggestions(
     let cache_read = !args.no_cache && !args.refresh_cache;
     let cache_write = !args.no_cache;
     let mut cache = if cache_read || cache_write {
-        Some(JsonSuggestionCache::load(
-            &settings.cache_path,
-            settings.cache_ttl_days,
-        )?)
+        Some(open_cache(&settings)?)
     } else {
         None
     };
     let provider_label = settings.provider.clone();
+    let strategy = settings.strategy.clone();
     let mut model_context = if matches!(
         settings.provider.trim().to_lowercase().as_str(),
         "ollama" | "local"
@@ -1625,7 +2643,7 @@ pub fn preview_suggestions(
     } else {
         Map::new()
     };
-    let batch_size = 1;
+    let batch_size = settings.batch_size;
     let target_start = Instant::now();
     let groups = ctx.collect_groups(
         base,
@@ -1794,41 +2812,55 @@ pub fn preview_suggestions(
         ]));
         Value::Object(doc)
     };
-    #[allow(clippy::too_many_arguments)]
-    let performance = |preparation_ms: i64,
-                       prompt_chars: usize,
-                       file_count: usize,
-                       patch_chars: usize,
-                       raw_available: usize,
-                       model_ms: i64,
-                       parse_ms: i64,
-                       total_ms: i64,
-                       calls: i64,
-                       saved: i64| {
+    let performance = |totals: &Totals, total_ms: i64| {
         json!({
-            "strategy": "single",
+            "strategy": strategy,
             "parallelism": settings.parallelism,
             "target_selection_ms": target_selection_ms,
-            "preparation_ms": preparation_ms,
-            "prompt_chars": prompt_chars,
-            "full_diff_prompt_chars": 0,
-            "full_diff_file_count": file_count,
-            "full_diff_patch_chars": patch_chars,
-            "raw_patch_chars_available": raw_available,
-            "raw_patch_chars_sent": patch_chars,
+            "preparation_ms": totals.preparation_ms,
+            "prompt_chars": totals.prompt_chars,
+            "full_diff_prompt_chars": totals.full_diff_prompt_chars,
+            "full_diff_file_count": totals.file_count,
+            "full_diff_patch_chars": totals.patch_sent,
+            "raw_patch_chars_available": totals.raw_available,
+            "raw_patch_chars_sent": totals.patch_sent,
             "privacy_mode": settings.privacy,
-            "model_ms": model_ms,
-            "parse_ms": parse_ms,
+            "model_ms": totals.model_ms,
+            "parse_ms": totals.parse_ms,
             "total_ms": total_ms,
             "batch_size": batch_size,
-            "model_call_count": calls,
-            "batched_model_calls": 0,
-            "single_model_calls": calls,
-            "bulk_model_calls": 0,
-            "fallback_single_calls": 0,
-            "fallback_item_count": 0,
-            "model_calls_saved": saved,
+            "model_call_count": totals.calls,
+            "batched_model_calls": totals.batched,
+            "single_model_calls": totals.single,
+            "bulk_model_calls": totals.bulk,
+            "fallback_single_calls": totals.fallback_single,
+            "fallback_item_count": totals.fallback_items,
+            "model_calls_saved": (totals.uncached - totals.calls).max(0),
         })
+    };
+    let adaptive = |items: &[Value], prompt_chars: i64| -> Result<Value> {
+        let feedback = ctx.store().load()?.feedback_events;
+        let hits = items
+            .iter()
+            .filter(|i| i.get("cache").and_then(|c| c.get("hit")) == Some(&json!(true)))
+            .count();
+        Ok(crate::adaptive::build_recommendations(
+            crate::adaptive::current_settings(
+                &provider_label,
+                &settings.prompt_profile,
+                settings.count,
+                settings.parallelism,
+                batch_size,
+                Some(&strategy),
+                None,
+            ),
+            items,
+            &feedback,
+            hits as i64,
+            items.len() as i64,
+            prompt_chars,
+            "preview",
+        ))
     };
     trace_suggestion_event(
         "suggestion_preview_started",
@@ -1837,7 +2869,7 @@ pub fn preview_suggestions(
                 "preview".to_owned(),
                 result_doc(
                     &model_context,
-                    performance(0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+                    performance(&Totals::default(), 0),
                     0,
                     0,
                     vec![],
@@ -1858,13 +2890,17 @@ pub fn preview_suggestions(
         if let Some(cache) = cache.as_mut().filter(|c| c.dirty) {
             cache.save()?;
         }
-        return Ok(result_doc(
+        let mut doc = result_doc(
             &model_context,
-            performance(0, 0, 0, 0, 0, 0, 0, elapsed_ms(total_start), 0, 0),
+            performance(&Totals::default(), elapsed_ms(total_start)),
             0,
             0,
             vec![],
-        ));
+        );
+        if settings.adaptive {
+            doc["adaptive_recommendations"] = adaptive(&[], 0)?;
+        }
+        return Ok(doc);
     }
 
     let provider: Option<Box<dyn Provider>>;
@@ -1889,18 +2925,91 @@ pub fn preview_suggestions(
         model_id = provider_cache_model_id(built.as_ref(), &settings.provider);
         provider = Some(built);
     }
+    let plan = Plan {
+        settings: &settings,
+        provider_label: &provider_label,
+        model_id: &model_id,
+        batch_total,
+        total_targets,
+    };
 
     let mut items: Vec<Value> = Vec::new();
-    let (
-        mut completed,
-        mut preparation_ms,
-        mut prompt_chars,
-        mut file_count_total,
-        mut patch_sent_total,
-        mut raw_available_total,
-    ) = (0usize, 0i64, 0usize, 0usize, 0usize, 0usize);
-    let (mut model_ms_total, mut parse_ms_total, mut uncached, mut calls) =
-        (0i64, 0i64, 0i64, 0i64);
+    let mut totals = Totals::default();
+    let record =
+        |result: &WorkResult, cache: &mut Option<JsonSuggestionCache>, totals: &mut Totals| {
+            totals.completed += 1;
+            totals.model_ms += result.aggregate_model_ms;
+            totals.parse_ms += result.parse_ms;
+            totals.calls += result.model_call_count;
+            totals.batched += result.batched_model_calls;
+            totals.single += result.single_model_calls;
+            totals.bulk += result.bulk_model_calls;
+            totals.fallback_single += result.fallback_single_calls;
+            totals.fallback_items += result.fallback_item_count;
+            totals.full_diff_prompt_chars += result.full_diff_prompt_chars;
+            let timings = result.item.get("timings");
+            let item_id = result.item.get("item_id").cloned().unwrap_or(Value::Null);
+            let label = if result.item.get("preflight").is_some() {
+                format!(
+                    "Prepared suggestion preflight for {}",
+                    item_id.as_str().unwrap_or("")
+                )
+            } else {
+                format!(
+                    "Generated suggestion for {}",
+                    item_id.as_str().unwrap_or("")
+                )
+            };
+            trace_progress(
+                "suggestion_item_done",
+                &label,
+                json!({
+            "current": totals.completed, "total": total_targets, "unit": "item", "item_id": item_id,
+            "batch": result.item.get("batch"), "batch_total": batch_total,
+            "elapsed_ms": timings.and_then(|t| t.get("total_ms")), "model_ms": result.model_ms,
+            "queue_ms": timings.and_then(|t| t.get("queue_ms"))}),
+            );
+            let mut event_item = result.item.clone();
+            event_item.remove("batch");
+            trace_suggestion_event(
+                "suggestion_item_result",
+                Map::from_iter([
+                    ("order".to_owned(), json!(result.order)),
+                    ("item_id".to_owned(), item_id.clone()),
+                    ("current".to_owned(), json!(totals.completed)),
+                    ("total".to_owned(), json!(total_targets)),
+                    (
+                        "batch".to_owned(),
+                        result.item.get("batch").cloned().unwrap_or(Value::Null),
+                    ),
+                    ("batch_total".to_owned(), json!(batch_total)),
+                    ("item".to_owned(), Value::Object(event_item)),
+                ]),
+            );
+            if cache_write {
+                if let (Some(cache), Some(info)) = (cache.as_mut(), result.item.get("cache")) {
+                    if info.get("hit") == Some(&json!(false)) {
+                        if let Some(key) = info.get("key").and_then(Value::as_str) {
+                            cache.put(key, stored_item(&result.item));
+                        }
+                    }
+                }
+            }
+        };
+    let fail = |work: &Work, message: &str, completed: usize| {
+        trace_suggestion_event(
+            "suggestion_item_failed",
+            Map::from_iter([
+                ("order".to_owned(), json!(work.order)),
+                ("item_id".to_owned(), json!(work.item.id)),
+                ("message".to_owned(), json!(message)),
+                ("current".to_owned(), json!(completed)),
+                ("total".to_owned(), json!(total_targets)),
+                ("batch".to_owned(), json!(work.batch)),
+                ("batch_total".to_owned(), json!(batch_total)),
+            ]),
+        );
+    };
 
     for (batch_offset_index, batch) in batches.iter().enumerate() {
         let batch_index = batch_offset_index + 1;
@@ -1922,281 +3031,19 @@ pub fn preview_suggestions(
         }
         let base_order = items.len();
         let mut results: Vec<WorkResult> = Vec::new();
-        let mut misses: Vec<Work> = Vec::new();
-        let record = |result: &WorkResult,
-                      cache: &mut Option<JsonSuggestionCache>,
-                      completed: &mut usize,
-                      model_ms_total: &mut i64,
-                      parse_ms_total: &mut i64,
-                      calls: &mut i64| {
-            *completed += 1;
-            *model_ms_total += result.model_ms;
-            *parse_ms_total += result.parse_ms;
-            *calls += result.model_call_count;
-            let timings = result.item.get("timings");
-            let item_id = result.item.get("item_id").cloned().unwrap_or(Value::Null);
-            let label = if result.item.get("preflight").is_some() {
-                format!(
-                    "Prepared suggestion preflight for {}",
-                    item_id.as_str().unwrap_or("")
-                )
-            } else {
-                format!(
-                    "Generated suggestion for {}",
-                    item_id.as_str().unwrap_or("")
-                )
-            };
-            trace_progress(
-                "suggestion_item_done",
-                &label,
-                json!({
-                "current": *completed, "total": total_targets, "unit": "item", "item_id": item_id,
-                "batch": result.item.get("batch"), "batch_total": batch_total,
-                "elapsed_ms": timings.and_then(|t| t.get("total_ms")), "model_ms": result.model_ms,
-                "queue_ms": timings.and_then(|t| t.get("queue_ms"))}),
-            );
-            let mut event_item = result.item.clone();
-            event_item.remove("batch");
-            trace_suggestion_event(
-                "suggestion_item_result",
-                Map::from_iter([
-                    ("order".to_owned(), json!(result.order)),
-                    ("item_id".to_owned(), item_id.clone()),
-                    ("current".to_owned(), json!(*completed)),
-                    ("total".to_owned(), json!(total_targets)),
-                    (
-                        "batch".to_owned(),
-                        result.item.get("batch").cloned().unwrap_or(Value::Null),
-                    ),
-                    ("batch_total".to_owned(), json!(batch_total)),
-                    ("item".to_owned(), Value::Object(event_item)),
-                ]),
-            );
-            if cache_write {
-                if let (Some(cache), Some(info)) = (cache.as_mut(), result.item.get("cache")) {
-                    if info.get("hit") == Some(&json!(false)) {
-                        if let Some(key) = info.get("key").and_then(Value::as_str) {
-                            cache.put(key, stored_item(&result.item));
-                        }
-                    }
-                }
-            }
-        };
+        let mut works: Vec<Work> = Vec::new();
+        let mut chunks: Vec<Vec<usize>> = Vec::new();
+        let mut pending: Vec<usize> = Vec::new();
         for (offset, (group, item)) in batch.iter().enumerate() {
-            let order = base_order + offset;
-            let item_number = order + 1;
-            let item_start = Instant::now();
-            trace_progress(
-                "suggestion_evidence",
-                &format!("Building suggestion evidence for {}", item.id),
-                json!({
-                "current": item_number, "total": total_targets, "unit": "item", "item_id": item.id,
-                "batch": batch_index, "batch_total": batch_total}),
-            );
-            let evidence_start = Instant::now();
-            let files = changed_files_for_group(group);
-            let diff = evidence::build(&files, Some(&group.commits));
-            let evidence_ms = elapsed_ms(evidence_start);
-            let hunk_count: usize = diff.representative_hunks.values().map(Vec::len).sum();
-            let file_count = diff.file_statuses.len();
-            trace_stage(
-                "evidence-built",
-                &format!("item_id={} files={file_count} hunks={hunk_count}", item.id),
-            );
-            trace_progress(
-                "suggestion_prompt",
-                &format!("Building model prompt for {}", item.id),
-                json!({
-                "current": item_number, "total": total_targets, "unit": "item", "item_id": item.id,
-                "batch": batch_index, "batch_total": batch_total, "elapsed_ms": elapsed_ms(item_start)}),
-            );
-            let prompt_start = Instant::now();
-            let raw_for_item = raw_patch_chars_available(&files);
-            let mut evidence_value = json!({
-                "title": item.content.title,
-                "item_id": item.id,
-                "suggestion_count": settings.count,
-                "tone": settings.style.tone,
-                "style_profile": settings.style.profile(),
-                "change_summary": change_summary_payload(group, Some(item), &diff, &files),
-                "file_count": file_count,
-                "hunk_count": hunk_count,
-                "privacy_mode": settings.privacy,
-                "raw_patch_chars_available": raw_for_item,
-                "raw_patch_chars_sent": 0,
-            });
-            let sources = source_evidence(&diff, group, settings.raw_patches_allowed);
-            let labels: Vec<String> = group
-                .pr
-                .as_ref()
-                .map(|pr| pr.labels.iter().map(|l| l.to_lowercase()).collect())
-                .unwrap_or_default();
-            let built = build_summary_prompt(&PromptInput {
-                title: &item.content.title,
-                labels: &labels,
-                pr_body: group.pr.as_ref().map(|p| p.body.as_str()).unwrap_or(""),
-                diff: &diff,
-                commits: &group.commits,
-                suggestion_count: settings.count as usize,
-                kind: Some(&item.classification.kind),
-                audience: Some(&item.classification.audience),
-                style: &settings.style,
-                profile: prompt_profile(&settings.prompt_profile),
-                include_hunks: settings.raw_patches_allowed,
-            });
-            let prompt = built.prompt;
-            let mut budget = built.budget;
-            prompt_chars += budget
-                .get("prompt_chars")
-                .and_then(Value::as_u64)
-                .unwrap_or(py_len(&prompt) as u64) as usize;
-            let (fd_files, fd_available, fd_sent, fd_missing) =
-                full_diff_counters(&files, &diff, settings.raw_patches_allowed);
-            file_count_total += fd_files;
-            patch_sent_total += fd_sent;
-            raw_available_total += fd_available;
-            for (key, value) in [
-                ("strategy", json!("single")),
-                ("prompt_shape", json!(SINGLE_SUGGESTION_PROMPT_SHAPE)),
-                ("full_diff_file_count", json!(fd_files)),
-                ("full_diff_patch_chars_available", json!(fd_available)),
-                ("full_diff_patch_chars_sent", json!(fd_sent)),
-                ("full_diff_missing_patch_count", json!(fd_missing)),
-                ("privacy_mode", json!(settings.privacy)),
-                ("raw_patch_chars_available", json!(raw_for_item)),
-                ("raw_patch_chars_sent", json!(fd_sent)),
-                (
-                    "omitted_fields",
-                    if settings.raw_patches_allowed {
-                        json!([])
-                    } else {
-                        json!(OMITTED_PATCH_EVIDENCE)
-                    },
-                ),
-            ] {
-                budget.insert(key.into(), value);
-            }
-            evidence_value["strategy"] = json!("single");
-            evidence_value["raw_patch_chars_sent"] = json!(fd_sent);
-            let record_value = model_request_record(
-                "suggest-release-note",
-                Some(&provider_label),
-                &settings.privacy,
-                &prompt,
-                &evidence_value,
-                raw_for_item,
-                fd_sent,
-                if settings.raw_patches_allowed {
-                    &[]
-                } else {
-                    OMITTED_PATCH_EVIDENCE
-                },
-                if settings.raw_patches_allowed {
-                    &[]
-                } else {
-                    &["metadata-only mode sends ChangeSummary instead of raw diff text"]
-                },
-            );
-            evidence_value["request"] = record_value;
-            let prompt_sha = sha12(&prompt);
-            let key = cache_key(
-                item,
-                &prompt_sha,
-                &provider_label,
-                &model_id,
-                &settings.style,
-                settings.count,
-                budget
-                    .get("profile")
-                    .and_then(Value::as_str)
-                    .filter(|p| !p.is_empty())
-                    .unwrap_or("suggestion-conservative"),
-                &settings.privacy,
-            );
-            let prompt_ms = elapsed_ms(prompt_start);
-            preparation_ms += elapsed_ms(item_start);
-            let files_text: Vec<&str> = diff
-                .file_statuses
-                .keys()
-                .take(8)
-                .map(String::as_str)
-                .collect();
-            trace_stage(
-                "evidence-detail",
-                &format!(
-                    "item_id={} files={} source_entries={}",
-                    item.id,
-                    if files_text.is_empty() {
-                        "none".to_owned()
-                    } else {
-                        files_text.join(",")
-                    },
-                    sources.len()
-                ),
-            );
-            trace_stage(
-                "prompt-built",
-                &format!(
-                    "item_id={} prompt_chars={} prompt_sha={prompt_sha}",
-                    item.id,
-                    py_len(&prompt)
-                ),
-            );
-            if trace_model_enabled() {
-                let get = |k: &str, d: Value| budget.get(k).cloned().unwrap_or(d);
-                let s = |v: Value| py_str(&v);
-                trace_model_line(
-                    &format!(
-                        "[verlato:model] prompt-budget profile={} chars={} files={}/{} commits={}/{} hunks={}/{} pr_body_chars={}/{} diff_summary_chars={}/{}",
-                        s(get("profile", json!("summary"))), s(get("prompt_chars", json!(0))),
-                        s(get("files_included", json!(0))), s(get("files_total", json!(0))),
-                        s(get("commits_included", json!(0))), s(get("commits_total", json!(0))),
-                        s(get("hunks_included", json!(0))), s(get("hunks_total", json!(0))),
-                        s(get("pr_body_chars_included", json!(0))), s(get("pr_body_chars_total", json!(0))),
-                        s(get("diff_summary_chars_included", json!(0))), s(get("diff_summary_chars_total", json!(0))),
-                    ),
-                    "prompt_budget",
-                    Some(budget.clone()),
-                    None,
-                );
-            }
-            if !prompt.is_empty() {
-                trace_payload("prompt-preview", &prompt);
-            }
-            let work = Work {
-                order,
-                item_number,
-                batch: batch_index,
-                batch_total,
-                total_targets,
-                group: group.clone(),
-                item: item.clone(),
-                prompt,
-                evidence: evidence_value,
-                source_evidence: sources,
-                prompt_sha,
-                budget,
-                cache_key: key,
-                file_count: fd_files,
-                patch_chars: fd_sent,
-                missing_patch_count: fd_missing,
-                count: settings.count,
-                style: settings.style.clone(),
-                provider_label: provider_label.clone(),
-                evidence_ms,
-                prompt_ms,
-                started: item_start,
-            };
+            let work = prepare_work(&plan, base_order + offset, group, item, batch_index);
+            totals.preparation_ms += elapsed_ms(work.started);
+            totals.prompt_chars += count_of(&Value::Object(work.budget.clone()), "prompt_chars");
+            totals.file_count += work.file_count;
+            totals.patch_sent += work.patch_chars;
+            totals.raw_available += count_of(&work.full_diff_item, "patch_chars_available");
             if args.preflight {
                 let result = preflight_result(&work);
-                record(
-                    &result,
-                    &mut cache,
-                    &mut completed,
-                    &mut model_ms_total,
-                    &mut parse_ms_total,
-                    &mut calls,
-                );
+                record(&result, &mut cache, &mut totals);
                 results.push(result);
                 continue;
             }
@@ -2206,100 +3053,104 @@ pub fn preview_suggestions(
                     .and_then(|c| c.get(&work.cache_key))
                     .and_then(|cached| cached_result(&work, cached));
                 if let Some(result) = hit {
-                    record(
-                        &result,
-                        &mut cache,
-                        &mut completed,
-                        &mut model_ms_total,
-                        &mut parse_ms_total,
-                        &mut calls,
-                    );
+                    record(&result, &mut cache, &mut totals);
                     results.push(result);
                     continue;
                 }
             }
-            uncached += 1;
-            misses.push(work);
+            totals.uncached += 1;
+            works.push(work);
+            let index = works.len() - 1;
+            let limit = batch_size.max(1) as usize;
+            if strategy == "full-diff-json" && !pending.is_empty() {
+                let mut candidate: Vec<&Work> = pending.iter().map(|i| &works[*i]).collect();
+                candidate.push(&works[index]);
+                if candidate.len() > limit
+                    || py_len(&full_diff_batch_prompt(&candidate))
+                        > FULL_DIFF_BATCH_PROMPT_CHAR_GUARD
+                {
+                    chunks.push(std::mem::take(&mut pending));
+                }
+            }
+            pending.push(index);
+            if pending.len() >= limit {
+                chunks.push(std::mem::take(&mut pending));
+            }
+        }
+        if !pending.is_empty() {
+            chunks.push(pending);
         }
 
         if let Some(provider) = provider.as_deref() {
-            let fail = |work: &Work, message: &str, completed: usize| {
-                trace_suggestion_event(
-                    "suggestion_item_failed",
-                    Map::from_iter([
-                        ("order".to_owned(), json!(work.order)),
-                        ("item_id".to_owned(), json!(work.item.id)),
-                        ("message".to_owned(), json!(message)),
-                        ("current".to_owned(), json!(completed)),
-                        ("total".to_owned(), json!(total_targets)),
-                        ("batch".to_owned(), json!(work.batch)),
-                        ("batch_total".to_owned(), json!(batch_total)),
-                    ]),
-                );
-            };
-            if settings.parallelism <= 1 || misses.len() <= 1 {
-                for work in &misses {
-                    match run_model_work(provider, work) {
-                        Ok(result) => {
-                            record(
-                                &result,
-                                &mut cache,
-                                &mut completed,
-                                &mut model_ms_total,
-                                &mut parse_ms_total,
-                                &mut calls,
-                            );
-                            results.push(result);
+            if settings.parallelism <= 1 || chunks.len() <= 1 {
+                for chunk in &chunks {
+                    match run_chunk(provider, &works, chunk) {
+                        Ok(chunk_results) => {
+                            for result in chunk_results {
+                                record(&result, &mut cache, &mut totals);
+                                results.push(result);
+                            }
                         }
-                        Err(error) => {
-                            fail(work, &error.to_string(), completed);
-                            return Err(error);
+                        Err(failure) => {
+                            for result in failure.completed {
+                                record(&result, &mut cache, &mut totals);
+                            }
+                            fail(
+                                &works[failure.work],
+                                &failure.error.to_string(),
+                                totals.completed,
+                            );
+                            return Err(failure.error);
                         }
                     }
                 }
             } else {
-                let workers = (settings.parallelism as usize).min(misses.len());
+                let workers = (settings.parallelism as usize).min(chunks.len());
                 let next = std::sync::atomic::AtomicUsize::new(0);
                 let stop = std::sync::atomic::AtomicBool::new(false);
-                let (sender, receiver) = std::sync::mpsc::channel::<(usize, Result<WorkResult>)>();
+                type Outcome = std::result::Result<Vec<WorkResult>, ChunkFailure>;
+                let (sender, receiver) = std::sync::mpsc::channel::<Outcome>();
                 let mut failure: Option<anyhow::Error> = None;
                 std::thread::scope(|scope| {
                     for _ in 0..workers {
                         let sender = sender.clone();
-                        let (misses, next, stop) = (&misses, &next, &stop);
+                        let (chunks, works, next, stop) = (&chunks, &works, &next, &stop);
                         scope.spawn(move || loop {
                             if stop.load(std::sync::atomic::Ordering::SeqCst) {
                                 break;
                             }
                             let index = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                            let Some(work) = misses.get(index) else { break };
-                            let outcome = run_model_work(provider, work);
-                            if sender.send((index, outcome)).is_err() {
+                            let Some(chunk) = chunks.get(index) else {
+                                break;
+                            };
+                            if sender.send(run_chunk(provider, works, chunk)).is_err() {
                                 break;
                             }
                         });
                     }
                     drop(sender);
-                    for (index, outcome) in receiver.iter() {
+                    for outcome in receiver.iter() {
                         if failure.is_some() {
                             continue;
                         }
                         match outcome {
-                            Ok(result) => {
-                                record(
-                                    &result,
-                                    &mut cache,
-                                    &mut completed,
-                                    &mut model_ms_total,
-                                    &mut parse_ms_total,
-                                    &mut calls,
-                                );
-                                results.push(result);
+                            Ok(chunk_results) => {
+                                for result in chunk_results {
+                                    record(&result, &mut cache, &mut totals);
+                                    results.push(result);
+                                }
                             }
-                            Err(error) => {
-                                fail(&misses[index], &error.to_string(), completed);
+                            Err(chunk_failure) => {
+                                for result in chunk_failure.completed {
+                                    record(&result, &mut cache, &mut totals);
+                                }
+                                fail(
+                                    &works[chunk_failure.work],
+                                    &chunk_failure.error.to_string(),
+                                    totals.completed,
+                                );
                                 stop.store(true, std::sync::atomic::Ordering::SeqCst);
-                                failure = Some(error);
+                                failure = Some(chunk_failure.error);
                             }
                         }
                     }
@@ -2321,31 +3172,33 @@ pub fn preview_suggestions(
         cache.save()?;
     }
     let total_ms = elapsed_ms(total_start);
-    let saved = (uncached - calls).max(0);
     trace_progress(
         "suggestions_ready",
         "Generated suggestions",
         json!({
-        "current": items.len(), "total": total_targets, "unit": "item", "elapsed_ms": total_ms, "model_ms": model_ms_total}),
+        "current": items.len(), "total": total_targets, "unit": "item", "elapsed_ms": total_ms, "model_ms": totals.model_ms}),
     );
-    Ok(result_doc(
+    let prompt_chars_signal = if totals.full_diff_prompt_chars != 0 {
+        totals.full_diff_prompt_chars
+    } else {
+        totals.prompt_chars as i64
+    };
+    let adaptive_value = if settings.adaptive {
+        Some(adaptive(&items, prompt_chars_signal)?)
+    } else {
+        None
+    };
+    let mut doc = result_doc(
         &model_context,
-        performance(
-            preparation_ms,
-            prompt_chars,
-            file_count_total,
-            patch_sent_total,
-            raw_available_total,
-            model_ms_total,
-            parse_ms_total,
-            total_ms,
-            calls,
-            saved,
-        ),
-        raw_available_total,
-        patch_sent_total,
+        performance(&totals, total_ms),
+        totals.raw_available,
+        totals.patch_sent,
         items,
-    ))
+    );
+    if let Some(value) = adaptive_value {
+        doc["adaptive_recommendations"] = value;
+    }
+    Ok(doc)
 }
 
 #[cfg(test)]

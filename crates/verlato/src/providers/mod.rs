@@ -28,6 +28,23 @@ pub struct ProviderRequest {
     pub evidence: Value,
     pub response_format: Value,
     pub metadata: Map<String, Value>,
+    /// Ollama-format tool definitions the model may call (tool-retrieval suggestions).
+    pub tools: Vec<Value>,
+    /// Runs a tool call: `Ok(result)` or `Err(str(exception))`.
+    pub tool_executor: Option<ToolExecutor>,
+    pub max_tool_rounds: usize,
+}
+
+/// Executes one model tool call (Python `ProviderRequest.tool_executor`).
+#[derive(Clone)]
+pub struct ToolExecutor(
+    pub std::sync::Arc<dyn Fn(&str, &Map<String, Value>) -> Result<Value, String> + Send + Sync>,
+);
+
+impl std::fmt::Debug for ToolExecutor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ToolExecutor")
+    }
 }
 
 #[derive(Debug, Clone)]

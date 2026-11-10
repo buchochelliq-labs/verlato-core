@@ -1,5 +1,5 @@
-//! Local Ollama provider (ports `verlato/providers/ollama.py`, without tool calling, which
-//! only the Python suggestion strategies use).
+//! Local Ollama provider (ports `verlato/providers/ollama.py`), including the tool-calling
+//! loop of the tool-retrieval suggestion strategy.
 
 use serde_json::{json, Map, Value};
 use std::time::Duration;
@@ -100,8 +100,60 @@ fn py_str(value: &Value) -> String {
             Some(f) if !n.is_i64() && !n.is_u64() => pyjson::float_repr(f),
             _ => n.to_string(),
         },
-        other => other.to_string(),
+        other => py_repr(other),
     }
+}
+
+/// Python `repr` of JSON data (the tool names listed in the response trace).
+fn py_repr(value: &Value) -> String {
+    match value {
+        Value::String(s) => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'")),
+        Value::Array(items) => format!(
+            "[{}]",
+            items.iter().map(py_repr).collect::<Vec<_>>().join(", ")
+        ),
+        Value::Object(map) => format!(
+            "{{{}}}",
+            map.iter()
+                .map(|(k, v)| format!("'{k}': {}", py_repr(v)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        other => py_str(other),
+    }
+}
+
+/// `_tool_calls_from_response`: (name, arguments) of each well-formed tool call.
+fn tool_calls(data: &Value) -> Vec<(String, Map<String, Value>)> {
+    let Some(calls) = data
+        .get("message")
+        .and_then(Value::as_object)
+        .and_then(|m| m.get("tool_calls"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    calls
+        .iter()
+        .filter_map(|call| {
+            let function = call.get("function")?.as_object()?;
+            let name = function.get("name")?.as_str()?;
+            if name.trim().is_empty() {
+                return None;
+            }
+            let arguments = match function.get("arguments") {
+                Some(Value::String(text)) => {
+                    serde_json::from_str::<Value>(text).unwrap_or_else(|_| json!({}))
+                }
+                Some(other) => other.clone(),
+                None => Value::Null,
+            };
+            Some((
+                name.to_owned(),
+                arguments.as_object().cloned().unwrap_or_default(),
+            ))
+        })
+        .collect()
 }
 
 fn py_bool(value: bool) -> &'static str {
@@ -381,6 +433,88 @@ impl OllamaProvider {
         Ok(Value::Object(final_data))
     }
 
+    /// `_post_json_with_tools`: chat until the model stops calling tools or the round budget
+    /// runs out, answering each call with the executor's JSON result.
+    fn post_with_tools(
+        &self,
+        body: &mut Value,
+        request: &ProviderRequest,
+        task: &str,
+    ) -> Result<Value, HttpError> {
+        let mut messages: Vec<Value> = body
+            .get("messages")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut tool_names: Vec<String> = Vec::new();
+        let mut rounds = 0usize;
+        let headers = [("Content-Type", "application/json".to_owned())];
+        let timeout = Duration::from_secs_f64(self.timeout_seconds);
+        let mut data;
+        loop {
+            body["messages"] = Value::Array(messages.clone());
+            body["stream"] = json!(false);
+            let text = post_json(&self.endpoint, &headers, &body.to_string(), timeout)?;
+            data = match serde_json::from_str::<Value>(&text) {
+                Ok(data @ Value::Object(_)) => data,
+                Ok(_) => return Err(HttpError::Transport("expected JSON object".into())),
+                Err(error) => return Err(HttpError::Transport(error.to_string())),
+            };
+            let calls = tool_calls(&data);
+            if calls.is_empty() || rounds >= request.max_tool_rounds {
+                break;
+            }
+            rounds += 1;
+            messages.push(
+                data.get("message")
+                    .filter(|m| m.is_object())
+                    .cloned()
+                    .unwrap_or_else(|| json!({"role": "assistant", "content": ""})),
+            );
+            for (name, arguments) in calls {
+                tool_names.push(name.clone());
+                let outcome = match &request.tool_executor {
+                    Some(executor) => (executor.0)(&name, &arguments),
+                    None => Ok(Value::Null),
+                };
+                let (content, is_error) = match outcome {
+                    Ok(result) => (pyjson::dumps(&result, pyjson::DEFAULT_SORTED), false),
+                    Err(message) => (
+                        pyjson::dumps(
+                            &json!({"error": message, "tool": name}),
+                            pyjson::DEFAULT_SORTED,
+                        ),
+                        true,
+                    ),
+                };
+                self.trace(
+                    &format!(
+                        "tool-call provider=ollama task={task} tool={name} args={} result_chars={} error={}",
+                        arguments.len(),
+                        py_len(&content),
+                        py_bool(is_error)
+                    ),
+                    false,
+                );
+                messages.push(json!({"role": "tool", "tool_name": name, "content": content}));
+            }
+        }
+        let mut unique = tool_names.clone();
+        unique.sort();
+        unique.dedup();
+        if let Value::Object(map) = &mut data {
+            let entry = map
+                .entry("_verlato_tool_metadata")
+                .or_insert_with(|| json!({}));
+            if let Value::Object(metadata) = entry {
+                metadata.insert("tool_rounds".into(), json!(rounds));
+                metadata.insert("tool_call_count".into(), json!(tool_names.len()));
+                metadata.insert("tool_names".into(), json!(unique));
+            }
+        }
+        Ok(data)
+    }
+
     fn unavailable(&self, error: &HttpError, model: &str) -> ProviderResponse {
         ProviderResponse::error(
             format!(
@@ -434,6 +568,9 @@ impl OllamaProvider {
                 {"role": "user", "content": request.prompt},
             ],
         });
+        if !request.tools.is_empty() {
+            body["tools"] = json!(request.tools);
+        }
         let extend = |body: &mut Value| {
             if !request.response_format.is_null() {
                 body["format"] = request.response_format.clone();
@@ -456,7 +593,15 @@ impl OllamaProvider {
             ),
             false,
         );
-        let data = match self.post(&self.endpoint, &body, task) {
+        let use_tools = !request.tools.is_empty()
+            && request.tool_executor.is_some()
+            && request.max_tool_rounds > 0;
+        let posted = if use_tools {
+            self.post_with_tools(&mut body, request, task)
+        } else {
+            self.post(&self.endpoint, &body, task)
+        };
+        let data = match posted {
             Ok(data) => data,
             Err(HttpError::Disconnected(_)) => {
                 self.trace(
@@ -531,6 +676,12 @@ impl OllamaProvider {
             if let Some(value) = data.get(*key) {
                 metadata.insert((*key).into(), value.clone());
             }
+        }
+        if let Some(tools) = data
+            .get("_verlato_tool_metadata")
+            .and_then(Value::as_object)
+        {
+            metadata.extend(tools.clone());
         }
         if model != self.model {
             metadata.insert("base_model".into(), json!(self.model));

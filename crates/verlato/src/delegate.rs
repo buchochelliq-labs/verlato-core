@@ -9,8 +9,7 @@
 use anyhow::{bail, Context, Result};
 use std::process::{Command, Stdio};
 
-pub const PYTHON_HINT: &str = "Some features (batched and tool-retrieval suggestion strategies and adaptive \
-     recommendations) are still served by the Python implementation. \
+pub const PYTHON_HINT: &str = "Some commands and configurations are still served by the Python implementation. \
      Install it with `pip install -e .` from the Verlato repository (it provides `verlato-py`), or set \
      VERLATO_PYTHON_CLI to the command that runs it.";
 

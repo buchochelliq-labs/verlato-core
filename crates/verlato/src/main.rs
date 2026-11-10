@@ -490,7 +490,7 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
                 preflight,
                 count,
                 parallelism,
-                batch_size: _,
+                batch_size,
                 strategy,
                 prompt_profile,
                 adaptive_recommendations,
@@ -510,6 +510,7 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
                     all_visible,
                     count,
                     parallelism,
+                    batch_size,
                     strategy,
                     prompt_profile,
                     suggest_model,
@@ -525,11 +526,6 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
                         infer_commit_intents: model.inference(),
                     },
                 };
-                if let Some(code) =
-                    delegate_if(verlato::suggest::python_reason(&ctx, &args, preview)?)
-                {
-                    return code;
-                }
                 if trace_suggestions {
                     std::env::set_var("VERLATO_TRACE_MODEL_CALLS", "1");
                 }

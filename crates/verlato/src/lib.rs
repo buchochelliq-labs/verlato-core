@@ -7,6 +7,7 @@
 //! model-backed features are delegated to the Python implementation until they are ported;
 //! see `docs/RUST_MIGRATION.md`.
 
+pub mod adaptive;
 pub mod assist;
 pub mod classifier;
 pub mod config;

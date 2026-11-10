@@ -913,24 +913,274 @@ def test_draft_suggest_preflight_and_parallelism_match(tmp_path: Path):
         server.shutdown()
 
 
-def test_draft_suggest_batched_strategy_is_delegated(tmp_path: Path):
-    _, rs_repo, env = _pair(tmp_path, "git")
-    for args, reason in (
-        (("--strategy", "full-diff-json", "--model-provider", "litellm", "--privacy", "trusted-provider-patch"),
-         "full-diff-json suggestion strategy"),
-        (("--model-provider", "ollama", "--allow-remote-patches"), "tool-retrieval suggestion strategy"),
-        (("--model-provider", "mock", "--adaptive-recommendations"), "adaptive suggestion recommendations"),
-    ):
-        result = subprocess.run(
-            _rust("draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preview", *args),
-            cwd=rs_repo,
-            env=_native_only(env),
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode != 0, args
-        assert "not available in the Rust build yet" in result.stderr and reason in result.stderr, result.stderr
+_BATCH_PLUGIN = r'''
+import json, os, sys
+request = json.load(sys.stdin)
+with open(os.environ["PARITY_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps(request, sort_keys=True) + "\n")
+evidence = request["evidence"]
+count = int(evidence.get("suggestion_count") or 1)
+mode = os.environ.get("PARITY_BATCH_MODE", "ok")
+if evidence.get("batch"):
+    payload = json.loads(request["prompt"].split("Input JSON:\n", 1)[1])
+    items = payload["items"]
+    if mode == "garbage":
+        content = "not json at all"
+    else:
+        if mode == "partial":
+            items = items[1:]  # the first item of every batch falls back to a single call
+        content = json.dumps({"items": [
+            {"item_id": item["item_id"], "suggestions": [
+                f"Option {i} explains how {item['title']} changes behaviour for release readers."
+                for i in range(1, count + 1)
+            ]}
+            for item in items
+        ]})
+else:
+    title = evidence.get("title", "change")
+    content = "\n".join(
+        f"{i}. Single option {i} explains how {title} changes behaviour across {len(request['prompt'])} characters."
+        for i in range(1, count + 1)
+    )
+print(json.dumps({"request_hash": request["request_hash"], "content": content, "confidence": 0.8, "model": "parity"}))
+'''
 
+
+def _batch_setup(tmp_path: Path, engine: str):
+    py_repo, rs_repo, env = _suggest_setup(tmp_path, engine, "plugin", None)
+    env = {**env, "PARITY_LOG": str(tmp_path / "unused.jsonl")}
+    plugin = tmp_path / "batch_plugin.py"
+    plugin.write_text(_BATCH_PLUGIN)
+    for repo in (py_repo, rs_repo):
+        config = json.loads((repo / "verlato.json").read_text())
+        config["provider"]["plugin_command"] = [sys.executable, str(plugin)]
+        config["model_privacy"] = "trusted-provider-patch"
+        config["provider"]["plugin_env"] = ["PARITY_LOG", "PARITY_BATCH_MODE"]
+        (repo / "verlato.json").write_text(json.dumps(config))
+    return py_repo, rs_repo, env
+
+
+def _mask_structured_hashes(value):
+    """Structured strategies send the full evidence JSON, which embeds the engine build under
+    IntentumDiff, so their prompt sizes, prompt hashes and cache keys differ between runtimes."""
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if key in {"prompt_sha", "full_diff_prompt_chars", "batch_prompt_chars"} or (
+                key == "key" and str(item).startswith("suggestion-v1:")
+            ):
+                continue
+            out[key] = _mask_structured_hashes(item)
+        return out
+    if isinstance(value, (list, tuple)):
+        return [_mask_structured_hashes(item) for item in value]
+    if isinstance(value, str):
+        value = _ENGINE_VERSION_TEXT.sub(r'"engine_version":\1"<engine>"', value)
+        value = re.sub(r'"(estimated_tokens|json_chars|evidence_chars)":( ?)\d+', r'"\1":\2*', value)
+        return re.sub(r"(prompt_sha|chars)=\w+", r"\1=*", value)
+    return value
+
+
+def _cache_entries(repo: Path, *, engine_identity: bool) -> list:
+    entries = _cache_file(repo, engine_identity=engine_identity)["entries"].values()
+    masked = [_mask_structured_hashes(entry) for entry in entries]
+    return sorted(masked, key=lambda entry: json.dumps(entry, sort_keys=True))
+
+
+def _compare_suggest_runs(cases, py_repo, rs_repo, env, *, identity: bool, logs: dict[str, Path] | None = None):
+    rs_out: dict = {}
+    for args, extra_env in cases:
+        run_env = {**env, **extra_env}
+        if logs:
+            py_env = {**run_env, "PARITY_LOG": str(logs["py"])}
+            rs_env = {**run_env, "PARITY_LOG": str(logs["rs"])}
+        else:
+            py_env = rs_env = run_env
+        py_out, py_err = _run_full(_python(*args), py_repo, py_env)
+        rs_out, rs_err = _run_full(_rust(*args), rs_repo, _native_only(rs_env))
+        mask = _mask_structured_hashes if identity else (lambda value: value)
+        assert mask(_strip_timings(rs_out, engine_identity=identity)) == mask(
+            _strip_timings(py_out, engine_identity=identity)
+        ), args
+        skip = ("response-detail",)
+        assert mask(_trace_records(rs_err, engine_identity=identity, skip_model_prefixes=skip)) == mask(
+            _trace_records(py_err, engine_identity=identity, skip_model_prefixes=skip)
+        ), args
+    return rs_out
+
+
+@pytest.mark.parametrize("engine", ["git", "intentumdiff"])
+@pytest.mark.parametrize("strategy", ["paired", "full-diff-json"])
+def test_draft_suggest_batched_strategies_match(tmp_path: Path, engine: str, strategy: str):
+    py_repo, rs_repo, env = _batch_setup(tmp_path, engine)
+    identity = engine != "git"
+    logs = {name: tmp_path / f"{name}.jsonl" for name in ("py", "rs")}
+    base = ("draft", "suggest", "--base", "v1.0.0", "--all-visible", "--strategy", strategy)
+    cases = [
+        ((*base, "--preflight"), {}),
+        ((*base, "--preview", "--count", "2"), {}),
+        ((*base, "--preview", "--count", "2"), {}),  # cache hits
+        ((*base, "--preview", "--refresh-cache", "--batch-size", "3"), {"PARITY_BATCH_MODE": "partial"}),
+        ((*base, "--preview", "--no-cache"), {"PARITY_BATCH_MODE": "garbage"}),
+    ]
+    rs_out = _compare_suggest_runs(cases, py_repo, rs_repo, env, identity=identity, logs=logs)
+    performance = rs_out["performance"]
+    assert performance["strategy"] == strategy
+    assert performance["batched_model_calls"] >= 1 and performance["single_model_calls"] >= 1
+    compare = (lambda value: _mask_structured_hashes(_strip_engine_identity(value))) if identity else (lambda value: value)
+    assert compare(_read_log(logs["rs"])) == compare(_read_log(logs["py"]))
+    assert _cache_entries(rs_repo, engine_identity=identity) == _cache_entries(py_repo, engine_identity=identity)
+
+
+def test_draft_suggest_batched_parallel_chunks_match(tmp_path: Path):
+    py_repo, rs_repo, env = _batch_setup(tmp_path, "git")
+    for args in (
+        ("draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preview", "--no-cache",
+         "--strategy", "full-diff-json", "--batch-size", "1", "--parallelism", "3"),
+        ("draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preview", "--no-cache",
+         "--strategy", "paired", "--parallelism", "2"),
+    ):
+        py_out, _ = _run_full(_python(*args), py_repo, env)
+        rs_out, _ = _run_full(_rust(*args), rs_repo, _native_only(env))
+        assert _strip_timings(rs_out) == _strip_timings(py_out), args
+
+
+def _ollama_tool_handler():
+    from http.server import BaseHTTPRequestHandler
+
+    class Handler(BaseHTTPRequestHandler):
+        bodies: list[dict] = []
+
+        def do_POST(self):  # noqa: N802 - http.server API
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            Handler.bodies.append(json.loads(json.dumps(body)))
+            messages = body["messages"]
+            prompt = next(m["content"] for m in messages if m["role"] == "user")
+            manifest = json.loads(prompt.split("Compact input JSON:\n", 1)[1])["item"]
+            tool_names = [tool["function"]["name"] for tool in body.get("tools", [])]
+            rounds = sum(1 for m in messages if m["role"] == "assistant")
+            if rounds == 0:
+                path = manifest["files"][0]["path"]
+                file_tool = "verlato_get_file_semantic_diff" if "verlato_get_file_semantic_diff" in tool_names else "verlato_get_file_patch"
+                calls = [
+                    {"function": {"name": "verlato_get_suggestion_item", "arguments": {"item_id": manifest["item_id"]}}},
+                    {"function": {"name": file_tool, "arguments": json.dumps({"item_id": manifest["item_id"], "path": path})}},
+                    {"function": {"name": "verlato_get_suggestion_item", "arguments": {"item_id": "missing"}}},
+                    {"function": {"name": "verlato_search_item_diff", "arguments": {"item_id": manifest["item_id"]}}},
+                    {"function": {"name": "verlato_unknown_tool", "arguments": "not json"}},
+                ]
+                message = {"role": "assistant", "content": "", "tool_calls": calls}
+            else:
+                count = int(prompt.split("Return exactly ", 1)[1].split(" ", 1)[0])
+                lines = [
+                    f"{i}. Variant {i} clarifies how {manifest['title']} affects release readers after {rounds} tool round(s)."
+                    for i in range(1, count + 1)
+                ]
+                message = {"role": "assistant", "content": "\n".join(lines) if count > 1 else lines[0][3:]}
+            payload = json.dumps({
+                "message": message, "done": True, "done_reason": "stop", "eval_count": 12,
+                "prompt_eval_count": 50, "total_duration": 9_000_000, "eval_duration": 4_000_000,
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    return Handler
+
+
+@pytest.mark.parametrize("engine", ["git", "intentumdiff"])
+def test_draft_suggest_tool_retrieval_matches(tmp_path: Path, engine: str):
+    handler = _ollama_tool_handler()
+    server = _serve(handler)
+    try:
+        py_repo, rs_repo, env = _suggest_setup(tmp_path, engine, "ollama", server.server_address[1])
+        env = {**env, "VERLATO_MODEL_PRIVACY": "trusted-provider-patch"}
+        identity = engine != "git"
+        compare = (lambda value: _mask_structured_hashes(_strip_engine_identity(value))) if identity else (lambda v: v)
+        base = ("draft", "suggest", "--base", "v1.0.0", "--all-visible", "--privacy", "trusted-provider-patch")
+        for args in (
+            (*base, "--preflight"),
+            (*base, "--preview"),
+            (*base, "--preview", "--count", "3", "--refresh-cache"),
+            (*base, "--preview", "--count", "3"),  # cache hits
+        ):
+            handler.bodies.clear()
+            py_out, py_err = _run_full(_python(*args), py_repo, env)
+            py_bodies = list(handler.bodies)
+            handler.bodies.clear()
+            rs_out, rs_err = _run_full(_rust(*args), rs_repo, _native_only(env))
+            mask = _mask_structured_hashes if identity else (lambda value: value)
+            assert mask(_strip_timings(rs_out, engine_identity=identity)) == mask(
+                _strip_timings(py_out, engine_identity=identity)
+            ), args
+            assert mask(_trace_records(rs_err, engine_identity=identity)) == mask(
+                _trace_records(py_err, engine_identity=identity)
+            ), args
+            assert compare(handler.bodies) == compare(py_bodies), args
+        assert rs_out["performance"]["strategy"] == "tool-retrieval"
+        assert _cache_entries(rs_repo, engine_identity=identity) == _cache_entries(py_repo, engine_identity=identity)
+    finally:
+        server.shutdown()
+
+
+def test_draft_suggest_tool_retrieval_calls_tools(tmp_path: Path):
+    handler = _ollama_tool_handler()
+    server = _serve(handler)
+    try:
+        _, rs_repo, env = _suggest_setup(tmp_path, "git", "ollama", server.server_address[1])
+        rs_out, rs_err = _run_full(
+            _rust("draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preview", "--no-cache",
+                  "--privacy", "trusted-provider-patch"),
+            rs_repo,
+            _native_only(env),
+        )
+        item = rs_out["items"][0]
+        assert item["provider_metadata"]["tool_rounds"] == 1
+        assert item["provider_metadata"]["tool_call_count"] == 5
+        assert "tool-call provider=ollama task=suggest tool=verlato_unknown_tool args=0" in rs_err
+        tool_messages = [m for m in handler.bodies[1]["messages"] if m["role"] == "tool"]
+        assert json.loads(tool_messages[2]["content"]) == {
+            "error": "'Unknown suggestion item id: missing'", "tool": "verlato_get_suggestion_item",
+        }
+        assert json.loads(tool_messages[3]["content"])["error"] == "Missing required string argument: query"
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.parametrize("strategy", ["single", "full-diff-json"])
+def test_draft_suggest_adaptive_recommendations_match(tmp_path: Path, strategy: str):
+    py_repo, rs_repo, env = _batch_setup(tmp_path, "git")
+    item_id = json.loads(_run(_python("scan", "--base", "v1.0.0"), py_repo, env))[0]["id"]
+    for repo, runner in ((py_repo, _python), (rs_repo, _rust)):
+        for event, source in (("suggestion_applied", "model-suggestion"), ("suggestion_regenerated", "model-suggestion"),
+                              ("suggestion_rejected", "other")):
+            _run(runner("feedback", "record", "--event", event, "--item-id", item_id,
+                        "--metadata-json", json.dumps({"source": source})), repo, _native_only(env) if runner is _rust else env)
+    base = ("draft", "suggest", "--base", "v1.0.0", "--strategy", strategy, "--adaptive-recommendations")
+    cases = [
+        ((*base, "--all-visible", "--preview"), {}),
+        ((*base, "--all-visible", "--preview"), {}),  # cache hits
+        ((*base, "--all-visible", "--preview", "--no-cache"), {"VERLATO_MODEL_MAX_ITEMS": "0"}),
+    ]
+    rs_out = _compare_suggest_runs(cases, py_repo, rs_repo, env, identity=False)
+    assert rs_out["adaptive_recommendations"]["schema_version"] == "verlato.suggestion_adaptive.v1"
+
+
+def test_draft_suggest_cache_backends_match(tmp_path: Path):
+    py_repo, rs_repo, env = _batch_setup(tmp_path, "git")
+    env = {**env, "VERLATO_SUGGESTION_CACHE_BACKEND": "Redis"}
+    args = ("draft", "suggest", "--base", "v1.0.0", "--all-visible", "--preview")
+    python = subprocess.run(_python(*args), cwd=py_repo, env=env, capture_output=True, text=True)
+    rust = subprocess.run(_rust(*args), cwd=rs_repo, env=_native_only(env), capture_output=True, text=True)
+    message = "Unknown suggestion cache backend 'redis'; available: json"
+    assert python.returncode != 0 and message in python.stderr
+    assert rust.returncode != 0 and message in rust.stderr, rust.stderr
+    _compare_suggest_runs([((*args, "--no-cache"), {})], py_repo, rs_repo, env, identity=False)
 
 @pytest.mark.parametrize("engine", ["git", "intentumdiff"])
 def test_draft_suggest_apply_matches(tmp_path: Path, engine: str):
