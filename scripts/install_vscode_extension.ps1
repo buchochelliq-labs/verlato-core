@@ -252,8 +252,8 @@ function New-VerlatoCliShim {
     $content = @(
       "@echo off",
       "setlocal",
-      "set `"PYTHONPATH=$root;%PYTHONPATH%`"",
-      "`"$PythonPath`" -m verlato.cli.main %*",
+      "set `"PYTHONPATH=$root\python;%PYTHONPATH%`"",
+      "`"$PythonPath`" -m verlato %*",
       "exit /b %ERRORLEVEL%"
     )
     $content | Set-Content -LiteralPath $shimPath -Encoding ASCII
@@ -261,7 +261,7 @@ function New-VerlatoCliShim {
   else {
     $content = @(
       "#!/usr/bin/env sh",
-      "PYTHONPATH=`"$root`${PYTHONPATH:+:`$PYTHONPATH}`" exec `"$PythonPath`" -m verlato.cli.main `"$@`""
+      "PYTHONPATH=`"$root/python`${PYTHONPATH:+:`$PYTHONPATH}`" exec `"$PythonPath`" -m verlato `"$@`""
     )
     $content | Set-Content -LiteralPath $shimPath -Encoding UTF8
   }

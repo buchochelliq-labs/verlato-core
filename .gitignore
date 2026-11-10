@@ -219,3 +219,8 @@ __marimo__/
 
 # Rust build output
 /target
+
+# The IntentumDiff parser bundle, provisioned by scripts/fetch_intentumdiff_parsers.sh
+/python/verlato/wasm/
+/python/verlato/*.so
+/python/verlato/*.pyd
