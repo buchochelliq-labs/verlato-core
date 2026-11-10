@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -251,10 +252,14 @@ print(json.dumps({"request_hash": request["request_hash"], "content": content, "
 '''
 
 # Fields derived from the engine build identity, which differs between runtimes under IntentumDiff.
-_ENGINE_DERIVED = {"engine_version", "json_chars", "evidence_chars", "estimated_tokens"}
+_ENGINE_DERIVED = {"engine_version", "json_chars", "evidence_chars", "prompt_chars", "estimated_tokens"}
+# Prompts that embed evidence JSON (conventional-commit derivation) carry the version in their text.
+_ENGINE_VERSION_TEXT = re.compile(r'"engine_version":( ?)"[^"]*"')
 
 
 def _strip_engine_identity(value):
+    if isinstance(value, str):
+        return _ENGINE_VERSION_TEXT.sub(r'"engine_version":\1"<engine>"', value)
     if isinstance(value, dict):
         return {
             key: _strip_engine_identity(item)
@@ -562,17 +567,153 @@ def test_cli_agent_provider_scan_matches(tmp_path: Path, agent: str):
     assert any(f"provider-summary:{agent}:default" in item["evidence"]["commit_signals"] for item in rust_out)
 
 
-def test_commit_intent_inference_is_still_delegated(tmp_path: Path):
-    _, rs_repo, env = _pair(tmp_path, "git")
-    result = subprocess.run(
-        _rust("scan", "--base", "v1.0.0", "--infer-commit-intents"),
-        cwd=rs_repo,
-        env=_native_only(env),
-        capture_output=True,
-        text=True,
+_INTENT_PLUGIN = r"""
+import json, os, sys
+request = json.load(sys.stdin)
+with open(os.environ["PARITY_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps(request, sort_keys=True) + "\n")
+evidence = request["evidence"]
+paths = [f.get("path", "") for f in evidence.get("files", [])]
+scope = "api" if any("api/" in p for p in paths) else "docs" if any(p.endswith(".md") for p in paths) else "core"
+if request["task"] in ("derive-conventional", "draft-conventional"):
+    body = {"type": "feat" if evidence.get("initial_commit") is False else "chore", "scope": scope,
+            "description": f"update {len(paths)} file(s) from {request['task']}", "breaking": False,
+            "confidence": 0.9, "rationale": "parity"}
+    if request["task"] == "draft-conventional":
+        body["body"] = [f"- touches {p}" for p in paths[:3]]
+    content = json.dumps(body)
+elif request["task"] == "classify":
+    content = "changed/general/external/patch"
+else:
+    content = f"Explains {evidence.get('title', 'change')} using {len(request['prompt'])} prompt characters."
+print(json.dumps({"request_hash": request["request_hash"], "content": content, "confidence": 0.8, "model": "parity"}))
+"""
+
+
+def _intent_setup(tmp_path: Path, engine: str, provider: str):
+    py_repo, rs_repo, env = _pair(tmp_path, engine)
+    env = {**env, "VERLATO_TRACE_PROGRESS": "1"}
+    if provider == "plugin":
+        plugin = tmp_path / "intent_plugin.py"
+        plugin.write_text(_INTENT_PLUGIN)
+        env.pop("VERLATO_MODEL_PROVIDER")
+        config = {"provider": {"name": "plugin", "plugin_manifest": {"id": "parity"},
+                               "plugin_command": [sys.executable, str(plugin)], "plugin_env": ["PARITY_LOG"]}}
+        for repo in (py_repo, rs_repo):
+            (repo / "verlato.json").write_text(json.dumps(config))
+    else:
+        env["VERLATO_MODEL_PROVIDER"] = "mock"
+    return py_repo, rs_repo, env
+
+
+def _progress_events(stderr: str, stage: str) -> list[dict]:
+    prefix = "[verlato:progress] json "
+    events = [json.loads(line[len(prefix):]) for line in stderr.splitlines() if line.startswith(prefix)]
+    return [{k: v for k, v in event.items() if v not in ("", None)} for event in events if event.get("stage") == stage]
+
+
+@pytest.mark.parametrize("engine", ["git", "intentumdiff"])
+@pytest.mark.parametrize("provider", ["mock", "plugin"])
+def test_commit_intent_inference_matches(tmp_path: Path, engine: str, provider: str):
+    """Low-signal commits are grouped by model-derived intents natively, as in Python."""
+    py_repo, rs_repo, env = _intent_setup(tmp_path, engine, provider)
+    compare = (lambda value: value) if engine == "git" else _strip_engine_identity
+    commands = [
+        ("scan", "--base", "v1.0.0", "--infer-commit-intents"),
+        ("draft", "json", "--base", "v1.0.0", "--infer-commit-intents", "--model-provider", provider),
+        ("draft", "json", "--base", "v1.0.0", "--infer-commit-intents"),
+    ]
+    for index, args in enumerate(commands):
+        logs = {name: tmp_path / f"{name}-{index}.jsonl" for name in ("py", "rs")}
+        python = subprocess.run(_python(*args), cwd=py_repo, env={**env, "PARITY_LOG": str(logs["py"])},
+                                capture_output=True, text=True, timeout=600)
+        rust = subprocess.run(_rust(*args), cwd=rs_repo, env=_native_only({**env, "PARITY_LOG": str(logs["rs"])}),
+                              capture_output=True, text=True, timeout=600)
+        assert python.returncode == 0 and rust.returncode == 0, (python.stderr[-800:], rust.stderr[-800:])
+        assert compare(json.loads(rust.stdout)) == compare(json.loads(python.stdout)), args
+        assert compare(_read_log(logs["rs"])) == compare(_read_log(logs["py"])), args
+        assert _progress_events(rust.stderr, "inferring_commit_intents") == _progress_events(
+            python.stderr, "inferring_commit_intents"
+        ), args
+    items = json.loads(rust.stdout)
+    signals = [signal for section in items["sections"] for item in section["items"] for signal in item["commit_signals"]]
+    assert any(signal.startswith("inferred-conventional:") for signal in signals)
+
+
+def test_commit_intent_inference_config_and_prompt_match(tmp_path: Path):
+    py_repo, rs_repo, env = _intent_setup(tmp_path, "git", "mock")
+    for repo in (py_repo, rs_repo):
+        (repo / "verlato.json").write_text(json.dumps({"commit_intent_inference": "low-signal"}))
+    items = json.loads(_run(_python("scan", "--base", "v1.0.0"), py_repo, env))
+    assert json.loads(_run(_rust("scan", "--base", "v1.0.0"), rs_repo, _native_only(env))) == items
+    for item in items[:3]:
+        args = ("draft", "prompt", "--base", "v1.0.0", "--id", item["id"], "--model-provider", "mock")
+        assert json.loads(_run(_rust(*args), rs_repo, _native_only(env))) == json.loads(_run(_python(*args), py_repo, env))
+    # Fan-out guard: no inference (and no model calls) when the range has too many commits.
+    guarded = {**env, "VERLATO_MODEL_MAX_ITEMS": "2"}
+    assert json.loads(_run(_rust("scan", "--base", "v1.0.0"), rs_repo, _native_only(guarded))) == json.loads(
+        _run(_python("scan", "--base", "v1.0.0"), py_repo, guarded)
     )
-    assert result.returncode != 0
-    assert "commit intent inference" in result.stderr
+
+
+def _commit_shas(repo: Path) -> list[str]:
+    out = subprocess.run(["git", "log", "--format=%H", "v1.0.0..HEAD"], cwd=repo, capture_output=True, text=True, check=True)
+    return out.stdout.split()
+
+
+@pytest.mark.parametrize("engine", ["git", "intentumdiff"])
+@pytest.mark.parametrize("provider", ["mock", "plugin"])
+def test_commit_conventional_matches(tmp_path: Path, engine: str, provider: str):
+    py_repo, rs_repo, env = _intent_setup(tmp_path, engine, provider)
+    compare = (lambda value: value) if engine == "git" else _strip_engine_identity
+    shas = _commit_shas(py_repo)
+    logs = {name: tmp_path / f"conventional-{name}.jsonl" for name in ("py", "rs")}
+    for sha in shas[:4]:
+        for mode in ("diff-only", "subject-hint"):
+            for privacy in ("metadata-only", "trusted-provider-patch"):
+                args = ("commit", "conventional", "--base", "v1.0.0", "--sha", sha[:10], "--evidence-mode", mode,
+                        "--privacy", privacy)
+                python_out = json.loads(_run(_python(*args), py_repo, {**env, "PARITY_LOG": str(logs["py"])}))
+                rust_out = json.loads(_run(_rust(*args), rs_repo, _native_only({**env, "PARITY_LOG": str(logs["rs"])})))
+                assert compare(rust_out) == compare(python_out), (sha, mode, privacy)
+    assert compare(_read_log(logs["rs"])) == compare(_read_log(logs["py"]))
+    missing = subprocess.run(_rust("commit", "conventional", "--base", "v1.0.0", "--sha", "deadbeef"), cwd=rs_repo,
+                             env=_native_only(env), capture_output=True, text=True)
+    assert missing.returncode != 0 and "deadbeef was not found" in missing.stderr
+
+
+def test_commit_service_methods_match(tmp_path: Path):
+    py_repo, rs_repo, env = _intent_setup(tmp_path, "intentumdiff", "plugin")
+    shas = _commit_shas(py_repo)
+    requests = [
+        {"id": 1, "method": "commit.conventional", "params": {"base": "v1.0.0", "sha": shas[0][:8]}},
+        {"id": 2, "method": "commit.conventional",
+         "params": {"base": "v1.0.0", "sha": shas[1], "evidenceMode": "subject-hint", "modelPrivacy": "trusted-provider-patch"}},
+        {"id": 3, "method": "commit.conventional", "params": {"base": "v1.0.0", "sha": "deadbeef"}},
+        {"id": 4, "method": "commit.conventional_many", "params": {"base": "v1.0.0", "shas": [shas[2], "deadbeef", shas[3][:7]]}},
+        {"id": 5, "method": "commit.conventional_many", "params": {"base": "v1.0.0"}},
+        {"id": 6, "method": "commit.conventional_many", "params": {"base": "v1.0.0", "shas": "nope"}},
+        {"id": 7, "method": "commit.conventional", "params": {"sha": "x"}},
+        {"id": 8, "method": "draft.get", "params": {"request": {"base": "v1.0.0", "model_provider": "plugin"}}},
+        {"id": 9, "method": "shutdown"},
+    ]
+    payload = "".join(json.dumps(request) + "\n" for request in requests)
+    for repo in (py_repo, rs_repo):
+        config = json.loads((repo / "verlato.json").read_text())
+        config["commit_intent_inference"] = "low-signal"
+        (repo / "verlato.json").write_text(json.dumps(config))
+
+    def serve(cmd: list[str], repo: Path, run_env: dict[str, str]) -> list[dict]:
+        result = subprocess.run(cmd, cwd=repo, env=run_env, input=payload, capture_output=True, text=True, timeout=600)
+        return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+
+    logs = {name: tmp_path / f"service-{name}.jsonl" for name in ("py", "rs")}
+    python_responses = serve(_python("service"), py_repo, {**env, "PARITY_LOG": str(logs["py"])})
+    rust_responses = serve(_rust("service"), rs_repo, _native_only({**env, "PARITY_LOG": str(logs["rs"])}))
+    assert len(rust_responses) == len(python_responses) == len(requests)
+    for python_response, rust_response in zip(python_responses, rust_responses, strict=True):
+        assert _strip_engine_identity(rust_response) == _strip_engine_identity(python_response), python_response["id"]
+    assert _strip_engine_identity(_read_log(logs["rs"])) == _strip_engine_identity(_read_log(logs["py"]))
 
 
 # ---------------------------------------------------------------------------

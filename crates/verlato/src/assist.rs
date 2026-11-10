@@ -14,7 +14,7 @@ use crate::models::{ChangeGroup, ChangedFile, Commit};
 use crate::providers::{is_provider_error_marker, Provider, ProviderRequest};
 use crate::pyjson::{self, py_len};
 use crate::semantic::{render_semantic_diff, semantic_diff_for_prompt, semantic_prompt_payload};
-use crate::vocab::{normalize_change_kind, parse_conventional_commit, subject, SECTION_ORDER};
+use crate::vocab::{normalize_change_kind, subject, SECTION_ORDER};
 
 pub const DEFAULT_MODEL_PRIVACY: &str = "metadata-only";
 const MODEL_PRIVACY_CHOICES: &[&str] = &[
@@ -137,7 +137,7 @@ pub fn model_request_record(
     let prompt_chars = py_len(prompt);
     json!({
         "task": task,
-        "provider": provider.unwrap_or("configured"),
+        "provider": provider.filter(|p| !p.is_empty()).unwrap_or("configured"),
         "model": null,
         "privacy_mode": privacy,
         "request_hash": stable_json_hash(&json!({
@@ -226,7 +226,7 @@ pub fn privacy_summary(
     }
     json!({
         "mode": normalize_model_privacy(privacy_mode),
-        "provider": provider,
+        "provider": if provider.is_empty() { "configured" } else { provider },
         "raw_patch_chars_available": raw_patch_chars_available,
         "raw_patch_chars_sent": raw_patch_chars_sent,
         "will_send": will_send,
@@ -285,13 +285,14 @@ fn sorted(values: &[String]) -> Vec<String> {
 }
 
 fn commit_payload(commit: &Commit) -> Value {
-    let conventional = parse_conventional_commit(&commit.message).map(|parsed| {
+    let (effective, inferred_used) = crate::intents::effective_conventional_commit(commit);
+    let conventional = effective.map(|parsed| {
         json!({
             "type": parsed.kind,
             "scope": parsed.scope,
             "description": parsed.description,
             "breaking": parsed.breaking,
-            "source": "authored",
+            "source": if inferred_used { "inferred" } else { "authored" },
         })
     });
     json!({
@@ -302,8 +303,8 @@ fn commit_payload(commit: &Commit) -> Value {
         "previous_sha": commit.parent_sha,
         "initial_commit": commit.parent_sha.is_none(),
         "authored_or_inferred_conventional": conventional,
-        "inferred_intent": null,
-        "derived_conventional": null,
+        "inferred_intent": commit.inferred_intent.as_ref().map(|i| i.payload()),
+        "derived_conventional": commit.derived_intent.as_ref().map(|i| i.payload()),
         "files_total": commit.files.len(),
     })
 }
@@ -314,7 +315,7 @@ fn boundary_payload(commit: &Commit) -> Value {
         "subject": subject(&commit.message),
         "previous_sha": commit.parent_sha,
         "initial_commit": commit.parent_sha.is_none(),
-        "derived_conventional": null,
+        "derived_conventional": commit.derived_intent.as_ref().map(|i| i.message()),
     })
 }
 
@@ -550,11 +551,33 @@ fn commit_boundary_line(commit: &Commit) -> String {
         None => "initial commit".to_owned(),
         Some(parent) => format!("previous {}", parent.chars().take(12).collect::<String>()),
     };
+    let derived = commit
+        .derived_intent
+        .as_ref()
+        .map(|i| format!("; derived {}", i.message()))
+        .unwrap_or_default();
     format!(
-        "{} ({base}) {}",
+        "{} ({base}) {}{derived}",
         commit.sha.chars().take(12).collect::<String>(),
         subject(&commit.message)
     )
+}
+
+/// `_commit_prompt_line`: the subject, annotated with inferred and derived intents.
+fn commit_prompt_line(commit: &Commit) -> String {
+    let mut annotations = Vec::new();
+    if let Some(intent) = &commit.inferred_intent {
+        annotations.push(format!("inferred {}", intent.message()));
+    }
+    if let Some(intent) = &commit.derived_intent {
+        annotations.push(format!("derived {}", intent.message()));
+    }
+    let subject = subject(&commit.message);
+    if annotations.is_empty() {
+        subject.to_owned()
+    } else {
+        format!("{subject} [{}]", annotations.join(" | "))
+    }
 }
 
 fn tone_instruction(tone: &str) -> &'static str {
@@ -803,10 +826,10 @@ pub struct SummaryPrompt {
 pub fn build_summary_prompt(input: &PromptInput) -> SummaryPrompt {
     let profile = input.profile;
     let (commits, diff) = (input.commits, input.diff);
-    let commit_subjects: Vec<&str> = commits
+    let commit_subjects: Vec<String> = commits
         .iter()
         .take(profile.commits)
-        .map(|c| subject(&c.message))
+        .map(commit_prompt_line)
         .collect();
     let mut commit_lines = if commit_subjects.is_empty() {
         "none".to_owned()
@@ -1059,7 +1082,7 @@ fn classification_prompt(
 ) -> String {
     let commit_lines = commits
         .iter()
-        .map(|c| subject(&c.message))
+        .map(commit_prompt_line)
         .collect::<Vec<_>>()
         .join("; ");
     let label_text = if labels.is_empty() {
@@ -1188,7 +1211,11 @@ impl ModelAssist {
             "title": title,
             "labels": labels,
             "change_summary": change_summary_payload(group, None, diff, files),
-            "inferred_commit_intents": [],
+            "inferred_commit_intents": group
+                .commits
+                .iter()
+                .filter_map(|c| c.inferred_intent.as_ref().map(|i| i.payload()))
+                .collect::<Vec<_>>(),
         });
         let prompt = summary_prompt(
             title,

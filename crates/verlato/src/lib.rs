@@ -16,6 +16,7 @@ pub mod engine;
 pub mod evidence;
 pub mod git;
 pub mod grouper;
+pub mod intents;
 pub mod models;
 pub mod pipeline;
 pub mod providers;

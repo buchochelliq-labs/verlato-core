@@ -22,6 +22,21 @@ pub struct SuggestOptions {
     pub tone: Option<String>,
     pub privacy: Option<String>,
     pub allow_remote_patches: bool,
+    /// `--infer-commit-intents` / `--no-infer-commit-intents`.
+    pub infer_commit_intents: Option<bool>,
+}
+
+impl SuggestOptions {
+    /// The group-collection request for a suggestion flow: the effective suggestion provider,
+    /// the inference choice and the (already resolved) privacy mode, as Python passes them.
+    pub fn collect_request(&self, provider: &str, privacy: &str) -> crate::pipeline::ModelRequest {
+        crate::pipeline::ModelRequest {
+            provider: Some(provider.to_owned()),
+            privacy: Some(privacy.to_owned()),
+            allow_remote_patches: self.allow_remote_patches,
+            infer_commit_intents: self.infer_commit_intents,
+        }
+    }
 }
 
 /// `_resolve_suggest_model_provider`: suggestions always use a real model; `stub` (or nothing
@@ -47,8 +62,9 @@ pub fn find_group(
     base: &str,
     head: &str,
     item_id: &str,
+    request: &crate::pipeline::ModelRequest,
 ) -> Result<(ChangeGroup, ChangeItem)> {
-    for group in ctx.collect_groups(base, head)? {
+    for group in ctx.collect_groups(base, head, request)? {
         let item = classify(&group, base, head, None);
         if item.id == item_id {
             return Ok((group, item));
@@ -76,7 +92,13 @@ pub fn draft_prompt(
     let raw_patches_allowed =
         can_send_raw_patches_for_config(&provider_config, Some(&provider), &privacy);
     let style = Style::resolve(raw, options.tone.as_deref());
-    let (group, item) = find_group(ctx, base, head, item_id)?;
+    let (group, item) = find_group(
+        ctx,
+        base,
+        head,
+        item_id,
+        &options.collect_request(&provider, &privacy),
+    )?;
     let files = changed_files_for_group(&group);
     let diff = evidence::build(&files, Some(&group.commits));
     let labels: Vec<String> = group
@@ -1605,7 +1627,13 @@ pub fn preview_suggestions(
     };
     let batch_size = 1;
     let target_start = Instant::now();
-    let groups = ctx.collect_groups(base, head)?;
+    let groups = ctx.collect_groups(
+        base,
+        head,
+        &args
+            .options
+            .collect_request(&settings.provider, &settings.privacy),
+    )?;
     let item_id = args.item_id.clone().filter(|i| !i.is_empty());
     trace_stage(
         "target-selection",
@@ -2408,7 +2436,13 @@ pub fn apply_model_suggestion(
         options.privacy.as_deref(),
         options.allow_remote_patches,
     );
-    let (group, _) = find_group(ctx, base, head, item_id)?;
+    let (group, _) = find_group(
+        ctx,
+        base,
+        head,
+        item_id,
+        &options.collect_request(&provider, &privacy),
+    )?;
     let style = Style::resolve(raw, options.tone.as_deref());
     let assist = crate::assist::ModelAssist {
         provider: crate::providers::build_provider(&ProviderConfig::from_raw(raw), Some(&provider)),

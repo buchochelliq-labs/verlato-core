@@ -27,6 +27,7 @@ const NATIVE: &[&[&str]] = &[
     &["state", "clear-working"],
     &["feedback", "record"],
     &["doctor", "engine"],
+    &["commit", "conventional"],
 ];
 
 #[derive(Parser)]
@@ -120,6 +121,29 @@ enum Command {
     Feedback(FeedbackCommand),
     #[command(subcommand)]
     Doctor(DoctorCommand),
+    #[command(subcommand)]
+    Commit(CommitCommand),
+}
+
+#[derive(Subcommand)]
+enum CommitCommand {
+    /// Draft a full Conventional Commits message for one existing commit.
+    Conventional {
+        #[arg(long)]
+        base: String,
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+        #[arg(long)]
+        sha: String,
+        #[arg(long)]
+        model_provider: Option<String>,
+        #[arg(long, value_parser = ["diff-only", "subject-hint"], default_value = "diff-only")]
+        evidence_mode: String,
+        #[arg(long = "privacy")]
+        privacy: Option<String>,
+        #[arg(long)]
+        allow_remote_patches: bool,
+    },
 }
 
 #[derive(Args, Clone)]
@@ -281,14 +305,9 @@ fn json_out(value: &impl serde::Serialize) -> Result<()> {
     Ok(())
 }
 
-/// Why a native command must still run in Python, if it must: every model provider is
-/// native, but commit intent inference and the GitHub PR adapter are not ported yet.
-fn python_reason(ctx: &Context, model: Option<&ModelArgs>) -> Option<String> {
-    if let Some(model) = model {
-        if ctx.config.commit_intent_inference(model.inference()) != "off" {
-            return Some("commit intent inference uses a model provider".into());
-        }
-    }
+/// Why a native command must still run in Python, if it must: everything these commands use is
+/// native except the GitHub PR adapter.
+fn python_reason(ctx: &Context, _model: Option<&ModelArgs>) -> Option<String> {
     if ctx.pr_adapter().is_err() {
         return Some("the github PR adapter".into());
     }
@@ -301,6 +320,7 @@ impl ModelArgs {
             provider: self.model_provider.clone(),
             privacy: self.privacy.clone(),
             allow_remote_patches: self.allow_remote_patches,
+            infer_commit_intents: self.inference(),
         }
     }
 }
@@ -440,6 +460,7 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
                         tone,
                         privacy: model.privacy.clone(),
                         allow_remote_patches: model.allow_remote_patches,
+                        infer_commit_intents: model.inference(),
                     },
                 };
                 if let Some(code) =
@@ -497,6 +518,7 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
                     tone,
                     privacy: model.privacy.clone(),
                     allow_remote_patches: model.allow_remote_patches,
+                    infer_commit_intents: model.inference(),
                 };
                 json_out(&verlato::suggest::draft_prompt(
                     &ctx, &base, &head, &id, &options,
@@ -539,9 +561,10 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
                     summary.as_deref(),
                     reviewer.as_deref(),
                     provenance,
-                    // Python passes only the provider to review detection.
+                    // Python passes only the provider and inference choice to review detection.
                     Some(&verlato::pipeline::ModelRequest {
                         provider: model.model_provider.clone(),
+                        infer_commit_intents: model.inference(),
                         ..Default::default()
                     }),
                 )?;
@@ -580,6 +603,23 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
                 }
             };
             json_out(&ctx.record_feedback(&event, &item_id, metadata)?)?;
+        }
+        Command::Commit(CommitCommand::Conventional {
+            base,
+            head,
+            sha,
+            model_provider,
+            evidence_mode,
+            privacy,
+            allow_remote_patches,
+        }) => {
+            let request = verlato::pipeline::ConventionalDraftRequest {
+                model_provider,
+                privacy,
+                allow_remote_patches,
+                evidence_mode,
+            };
+            json_out(&ctx.draft_conventional_commit(&base, &head, &sha, &request)?)?;
         }
         Command::Doctor(DoctorCommand::Engine) => {
             json_out(&engine::engine_info(
@@ -666,10 +706,7 @@ mod tests {
             "state",
             "clear-suggestion-cache"
         ]))));
-        assert!(!is_native(&command_path(&args(&[
-            "commit",
-            "conventional"
-        ]))));
+        assert!(is_native(&command_path(&args(&["commit", "conventional"]))));
         assert!(!is_native(&command_path(&args(&["doctor", "ollama"]))));
         assert!(!is_native(&command_path(&args(&["serve"]))));
     }

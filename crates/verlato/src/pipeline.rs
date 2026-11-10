@@ -45,6 +45,8 @@ pub struct ModelRequest {
     pub provider: Option<String>,
     pub privacy: Option<String>,
     pub allow_remote_patches: bool,
+    /// `--infer-commit-intents` / `--no-infer-commit-intents` (None: env, then config).
+    pub infer_commit_intents: Option<bool>,
 }
 
 impl Context {
@@ -98,7 +100,93 @@ impl Context {
 
     // -- detection ---------------------------------------------------------
 
-    pub fn collect_groups(&self, base: &str, head: &str) -> Result<Vec<ChangeGroup>> {
+    /// Commit intent inference for collected commits (ports `_maybe_infer_commit_intents`):
+    /// the model derives a conventional commit from each diff, and low-signal commits use it
+    /// for grouping.
+    fn infer_commit_intents(&self, commits: &mut [crate::models::Commit], request: &ModelRequest) {
+        if self
+            .config
+            .commit_intent_inference(request.infer_commit_intents)
+            == "off"
+        {
+            return;
+        }
+        let raw = &self.config.raw;
+        let privacy = resolve_model_privacy(
+            raw.get("model_privacy").and_then(Value::as_str),
+            request.privacy.as_deref(),
+            request.allow_remote_patches,
+        );
+        let eligible: Vec<usize> = (0..commits.len())
+            .filter(|&i| crate::intents::is_low_signal_commit(&commits[i]))
+            .collect();
+        let total = commits.len();
+        const STAGE: &str = "inferring_commit_intents";
+        trace_progress(
+            STAGE,
+            "Deriving conventional commit intents from diffs",
+            json!({"detail": format!("{total} commit(s), {} eligible for grouping inference", eligible.len()), "current": 0, "total": total, "unit": "commit"}),
+        );
+        if commits.is_empty() {
+            return;
+        }
+        let max_items = self.config.max_model_items();
+        if max_items >= 0 && total as i64 > max_items {
+            trace_progress(
+                STAGE,
+                "Skipped commit intent inference",
+                json!({"detail": format!("{total} commit(s) exceeds fanout guard {max_items}"), "current": 0, "total": total, "unit": "commit"}),
+            );
+            return;
+        }
+        let provider_config = ProviderConfig::from_raw(raw);
+        let provider = build_provider(&provider_config, request.provider.as_deref());
+        let provider_mode = request
+            .provider
+            .clone()
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| provider_config.name.clone());
+        let dispatch_privacy = if crate::assist::can_send_raw_patches_for_config(
+            &provider_config,
+            Some(&provider_mode),
+            &privacy,
+        ) {
+            privacy
+        } else {
+            "metadata-only".to_owned()
+        };
+        let mut derived = 0;
+        for commit in commits.iter_mut() {
+            if let Some(intent) = crate::intents::derive_conventional_commit(
+                commit,
+                provider.as_ref(),
+                &dispatch_privacy,
+                &provider_mode,
+            ) {
+                commit.derived_intent = Some(intent);
+                derived += 1;
+            }
+        }
+        let mut inferred = 0;
+        for &index in &eligible {
+            if let Some(intent) = commits[index].derived_intent.clone() {
+                commits[index].inferred_intent = Some(intent);
+                inferred += 1;
+            }
+        }
+        trace_progress(
+            STAGE,
+            "Derived conventional commit intents",
+            json!({"detail": format!("{derived}/{total} derived; {inferred}/{} used for grouping inference", eligible.len()), "current": total, "total": total, "unit": "commit"}),
+        );
+    }
+
+    pub fn collect_groups(
+        &self,
+        base: &str,
+        head: &str,
+        request: &ModelRequest,
+    ) -> Result<Vec<ChangeGroup>> {
         trace_progress(
             "collecting_commits",
             "Collecting commits",
@@ -115,6 +203,7 @@ impl Context {
             };
             engine.annotate(&mut commits, &progress);
         }
+        self.infer_commit_intents(&mut commits, request);
         let count = commits.len();
         trace_progress(
             "mapping_pull_requests",
@@ -170,11 +259,14 @@ impl Context {
         head: &str,
         stage: &str,
         label: &str,
-        model: Option<&ModelRequest>,
+        request: &ModelRequest,
+        with_model: bool,
     ) -> Result<Vec<ChangeItem>> {
-        let groups = self.collect_groups(base, head)?;
+        let groups = self.collect_groups(base, head, request)?;
         let total = groups.len();
-        let assist = model.and_then(|request| self.model_assist(request, total));
+        let assist = with_model
+            .then(|| self.model_assist(request, total))
+            .flatten();
         if total == 0 {
             trace_progress(
                 stage,
@@ -208,21 +300,30 @@ impl Context {
         head: &str,
         model: Option<&ModelRequest>,
     ) -> Result<Vec<ChangeItem>> {
-        match model.filter(|m| m.provider.as_deref().is_some_and(|p| !p.trim().is_empty())) {
-            Some(model) => self.detect_items(
+        let default = ModelRequest::default();
+        let request = model.unwrap_or(&default);
+        if request
+            .provider
+            .as_deref()
+            .is_some_and(|p| !p.trim().is_empty())
+        {
+            self.detect_items(
                 base,
                 head,
                 "classifying_changes",
                 "Classifying changesets",
-                Some(model),
-            ),
-            None => self.detect_items(
+                request,
+                true,
+            )
+        } else {
+            self.detect_items(
                 base,
                 head,
                 "detecting_review_candidates",
                 "Detecting review candidates",
-                None,
-            ),
+                request,
+                false,
+            )
         }
     }
 
@@ -239,7 +340,8 @@ impl Context {
             head,
             "classifying_changes",
             "Classifying changesets",
-            Some(model),
+            model,
+            true,
         )?;
         let total = detected.len();
         trace_progress(
@@ -688,4 +790,185 @@ fn push_feedback(state: &mut StateData, event: &str, item_id: &str, metadata: Va
         "recorded_at": today(),
         "metadata": if metadata.is_object() { metadata } else { json!({}) },
     }));
+}
+
+/// An error the stdio service reports with Python's exception class as its code (Python's
+/// service loop answers unexpected exceptions with `exc.__class__.__name__` and `str(exc)`).
+#[derive(Debug)]
+pub struct ServiceError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl std::fmt::Display for ServiceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ServiceError {}
+
+/// Options of `commit conventional` and the `commit.conventional*` service methods.
+#[derive(Debug, Clone, Default)]
+pub struct ConventionalDraftRequest {
+    pub model_provider: Option<String>,
+    pub privacy: Option<String>,
+    pub allow_remote_patches: bool,
+    pub evidence_mode: String,
+}
+
+fn sha_matches(candidate: &str, wanted: &str) -> bool {
+    let (candidate, wanted) = (candidate.to_lowercase(), wanted.trim().to_lowercase());
+    candidate == wanted || candidate.starts_with(&wanted) || wanted.starts_with(&candidate)
+}
+
+impl Context {
+    fn annotate_selected(&self, commits: &mut [crate::models::Commit]) -> Result<()> {
+        if commits.is_empty() {
+            return Ok(());
+        }
+        if let Some(engine) = self.semantic_engine()? {
+            let progress = |current: usize, total: usize, sha: &str| {
+                trace_progress(
+                    "semantic_review",
+                    "IntentumDiff semantic review",
+                    json!({"detail": sha.chars().take(12).collect::<String>(), "current": current, "total": total, "unit": "commit"}),
+                );
+            };
+            engine.annotate(commits, &progress);
+        }
+        Ok(())
+    }
+
+    /// Provider, provider mode and dispatch privacy for drafts (ports
+    /// `MCPService._conventional_draft_context`).
+    fn conventional_draft_context(
+        &self,
+        request: &ConventionalDraftRequest,
+    ) -> (Box<dyn crate::providers::Provider>, String, String) {
+        let raw = &self.config.raw;
+        let allow = request.allow_remote_patches
+            || std::env::var("VERLATO_ALLOW_REMOTE_PATCHES").as_deref() == Ok("1");
+        let privacy = resolve_model_privacy(
+            raw.get("model_privacy").and_then(Value::as_str),
+            request.privacy.as_deref(),
+            allow,
+        );
+        let selected = request.model_provider.clone().filter(|p| p != "configured");
+        let config = ProviderConfig::from_raw(raw);
+        let provider_mode = selected
+            .clone()
+            .filter(|p| !p.is_empty())
+            .or_else(|| {
+                std::env::var("VERLATO_MODEL_PROVIDER")
+                    .ok()
+                    .filter(|p| !p.is_empty())
+            })
+            .unwrap_or_else(|| config.name.clone());
+        let dispatch = if crate::assist::can_send_raw_patches_for_config(
+            &config,
+            Some(&provider_mode),
+            &privacy,
+        ) {
+            privacy
+        } else {
+            "metadata-only".to_owned()
+        };
+        (
+            build_provider(&config, selected.as_deref()),
+            provider_mode,
+            dispatch,
+        )
+    }
+
+    /// `commit conventional` / `commit.conventional`: a drafted Conventional Commits message
+    /// for one commit of the range.
+    pub fn draft_conventional_commit(
+        &self,
+        base: &str,
+        head: &str,
+        sha: &str,
+        request: &ConventionalDraftRequest,
+    ) -> Result<Value> {
+        let commits = self.git().collect_commits(base, head)?;
+        let Some(commit) = commits.into_iter().find(|c| sha_matches(&c.sha, sha)) else {
+            return Err(ServiceError {
+                code: "KeyError",
+                message: format!("'Commit {sha} was not found in range {base}..{head}'"),
+            }
+            .into());
+        };
+        let mut selected = vec![commit];
+        self.annotate_selected(&mut selected)?;
+        let (provider, provider_mode, privacy) = self.conventional_draft_context(request);
+        crate::intents::draft_conventional_commit(
+            &selected[0],
+            provider.as_ref(),
+            &privacy,
+            &provider_mode,
+            &request.evidence_mode,
+        )
+        .ok_or_else(|| {
+            ServiceError {
+                code: "RuntimeError",
+                message: format!("No conventional commit draft could be generated for {sha}"),
+            }
+            .into()
+        })
+    }
+
+    /// `commit.conventional_many`: drafts for several commits (all of the range without `shas`),
+    /// with per-commit errors.
+    pub fn draft_conventional_commits(
+        &self,
+        base: &str,
+        head: &str,
+        shas: Option<&[String]>,
+        request: &ConventionalDraftRequest,
+    ) -> Result<Value> {
+        let commits = self.git().collect_commits(base, head)?;
+        let mut errors: Vec<Value> = Vec::new();
+        let mut selected = Vec::new();
+        match shas.filter(|s| !s.is_empty()) {
+            None => selected = commits,
+            Some(shas) => {
+                for sha in shas {
+                    match commits.iter().find(|c| sha_matches(&c.sha, sha)) {
+                        Some(commit) => selected.push(commit.clone()),
+                        None => errors.push(
+                            json!({"sha": sha, "error": format!("Commit {sha} was not found in range")}),
+                        ),
+                    }
+                }
+            }
+        }
+        let lookup_errors = errors.len();
+        self.annotate_selected(&mut selected)?;
+        let (provider, provider_mode, privacy) = self.conventional_draft_context(request);
+        let mut results = Vec::new();
+        for commit in &selected {
+            match crate::intents::draft_conventional_commit(
+                commit,
+                provider.as_ref(),
+                &privacy,
+                &provider_mode,
+                &request.evidence_mode,
+            ) {
+                Some(draft) => results.push(draft),
+                None => errors.push(json!({
+                    "sha": commit.sha,
+                    "error": "No conventional commit draft could be generated",
+                })),
+            }
+        }
+        Ok(json!({
+            "base_ref": base,
+            "head_ref": head,
+            "count": selected.len() + lookup_errors,
+            "completed": results.len(),
+            "failed": errors.len(),
+            "results": results,
+            "errors": errors,
+        }))
+    }
 }

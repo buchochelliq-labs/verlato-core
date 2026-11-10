@@ -107,13 +107,38 @@ pub fn classify(
         .find_map(|l| normalize_change_kind(l))
         .map(str::to_owned);
 
-    let parsed: Vec<ConventionalCommit> = group
-        .commits
-        .iter()
-        .filter_map(|c| parse_conventional_commit(&c.message))
-        .collect();
+    // Effective conventional commits: authored, completed or replaced by inferred intents.
+    let mut parsed: Vec<ConventionalCommit> = Vec::new();
+    let mut best_authored: Option<ConventionalCommit> = None;
+    let mut inferred_used = false;
+    for commit in &group.commits {
+        let (effective, used_inferred) = crate::intents::effective_conventional_commit(commit);
+        if let Some(effective) = effective {
+            parsed.push(effective);
+            if best_authored.is_none() {
+                best_authored = parse_conventional_commit(&commit.message);
+            }
+            inferred_used = inferred_used || used_inferred;
+        }
+    }
     if let Some(best) = parsed.first() {
-        commit_signals.push(format!("conventional:{}", best.kind));
+        if let Some(authored) = &best_authored {
+            commit_signals.push(format!("conventional:{}", authored.kind));
+        }
+        if inferred_used {
+            let scope = best
+                .scope
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(|s| format!("({s})"))
+                .unwrap_or_default();
+            commit_signals.push(format!("inferred-conventional:{}{scope}", best.kind));
+            if best.breaking && !best_authored.as_ref().is_some_and(|a| a.breaking) {
+                commit_signals.push("inferred-breaking".into());
+            }
+        } else if best_authored.is_none() {
+            commit_signals.push(format!("conventional:{}", best.kind));
+        }
         apply_conventional_type(best, &mut d);
         d.confidence = 0.85;
     } else if let Some(kind) = &label_kind {
@@ -235,7 +260,7 @@ pub fn classify(
         labels: pr.map(|p| p.labels.clone()).unwrap_or_default(),
         files: changed_files.iter().map(|f| f.path.clone()).collect(),
         commit_signals,
-        derived_conventional_commits: Vec::new(),
+        derived_conventional_commits: derived_conventional_commit_payloads(&group.commits),
         diff_summary: diff_summary(&diff, group),
     };
     let checksum = build_checksum(source.pr_number, &source.commit_shas, &title, &area);
@@ -419,8 +444,30 @@ fn boundary(commit: &Commit) -> Value {
         "subject": subject(&commit.message),
         "previous_sha": commit.parent_sha,
         "initial_commit": commit.parent_sha.is_none(),
-        "derived_conventional": Value::Null,
+        "derived_conventional": commit.derived_intent.as_ref().map(|i| i.message()),
     })
+}
+
+/// `_derived_conventional_commit_payloads`: the model-derived commit of each commit that has one.
+fn derived_conventional_commit_payloads(commits: &[Commit]) -> Vec<Value> {
+    commits
+        .iter()
+        .filter_map(|commit| {
+            let derived = commit.derived_intent.as_ref()?;
+            let mut payload = json!({
+                "sha": commit.sha,
+                "previous_sha": commit.parent_sha,
+                "initial_commit": commit.parent_sha.is_none(),
+                "authored_subject": subject(&commit.message),
+            });
+            if let Value::Object(intent) = derived.payload() {
+                for (key, value) in intent {
+                    payload[key] = value;
+                }
+            }
+            Some(payload)
+        })
+        .collect()
 }
 
 fn diff_summary(diff: &DiffEvidence, group: &ChangeGroup) -> Map<String, Value> {
