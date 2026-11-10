@@ -64,7 +64,8 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 140
 target-version = "py312"
-extend-exclude = ["vscode-extension", "target"]
+# .github/rab is rab's installed copy (checked by `release.py vendored`, not edited here).
+extend-exclude = ["vscode-extension", "target", ".github/rab"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
