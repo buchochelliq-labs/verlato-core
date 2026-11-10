@@ -2,8 +2,8 @@
   "servers": {
     "verlato": {
       "type": "stdio",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\verlato-mcp.exe",
-      "args": []
+      "command": "verlato",
+      "args": ["serve"]
     }
   }
 }
