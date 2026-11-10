@@ -194,6 +194,7 @@ cython_debug/
 # Local Codex memory
 .releasepilot_memory.json
 .verlato_memory.json
+.verlato_state.json
 .verlato_suggestion_cache.json
 .verlato_suggestion_cache.json.tmp
 .verlato_semantic_cache.json

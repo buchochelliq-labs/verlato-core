@@ -161,7 +161,7 @@ workspace virtual environment:
 Or set `verlato.cliPath` to the full executable path, for example:
 
 ```json
-"verlato.cliPath": "C:\\Users\\nickn\\OneDrive\\Documents\\GitHub\\verlato\\.venv\\Scripts\\verlato.exe"
+"verlato.cliPath": "C:\\path\\to\\verlato.exe"
 ```
 
 On Windows, prefer the `code.cmd` command above if `code --list-extensions`
