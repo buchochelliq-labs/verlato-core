@@ -90,11 +90,18 @@ fn write_value(out: &mut String, value: &Value, options: Options) {
 /// collapsed to `","` + newline as Python does when indenting).
 pub fn dumps_indented(value: &Value, indent: usize) -> String {
     let mut out = String::new();
-    write_indented(&mut out, value, indent, 0);
+    write_indented(&mut out, value, indent, 0, true);
     out
 }
 
-fn write_indented(out: &mut String, value: &Value, indent: usize, level: usize) {
+/// `json.dumps(value, indent=indent)`: like [`dumps_indented`] but in insertion order.
+pub fn dumps_indented_unsorted(value: &Value, indent: usize) -> String {
+    let mut out = String::new();
+    write_indented(&mut out, value, indent, 0, false);
+    out
+}
+
+fn write_indented(out: &mut String, value: &Value, indent: usize, level: usize, sort: bool) {
     let pad = |out: &mut String, level: usize| {
         out.push('\n');
         out.push_str(&" ".repeat(indent * level));
@@ -107,7 +114,7 @@ fn write_indented(out: &mut String, value: &Value, indent: usize, level: usize) 
                     out.push(',');
                 }
                 pad(out, level + 1);
-                write_indented(out, item, indent, level + 1);
+                write_indented(out, item, indent, level + 1, sort);
             }
             pad(out, level);
             out.push(']');
@@ -115,7 +122,9 @@ fn write_indented(out: &mut String, value: &Value, indent: usize, level: usize) 
         Value::Object(map) if !map.is_empty() => {
             out.push('{');
             let mut entries: Vec<(&String, &Value)> = map.iter().collect();
-            entries.sort_by(|a, b| a.0.cmp(b.0));
+            if sort {
+                entries.sort_by(|a, b| a.0.cmp(b.0));
+            }
             for (index, (key, item)) in entries.into_iter().enumerate() {
                 if index > 0 {
                     out.push(',');
@@ -123,7 +132,7 @@ fn write_indented(out: &mut String, value: &Value, indent: usize, level: usize) 
                 pad(out, level + 1);
                 write_string(out, key, true);
                 out.push_str(": ");
-                write_indented(out, item, indent, level + 1);
+                write_indented(out, item, indent, level + 1, sort);
             }
             pad(out, level);
             out.push('}');

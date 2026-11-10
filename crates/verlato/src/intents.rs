@@ -575,6 +575,7 @@ pub fn derive_conventional_commit(
             ("privacy_mode".to_owned(), json!(privacy_mode)),
             ("request".to_owned(), request),
         ]),
+        ..Default::default()
     });
     if is_provider_error(&response.content) {
         return None;
@@ -1376,6 +1377,7 @@ pub fn draft_conventional_commit(
             ("privacy_mode".to_owned(), json!(privacy_mode)),
             ("request".to_owned(), request.clone()),
         ]),
+        ..Default::default()
     });
     if is_provider_error(&response.content) {
         return None;

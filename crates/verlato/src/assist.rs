@@ -1250,6 +1250,7 @@ impl ModelAssist {
             evidence: evidence.clone(),
             response_format: Value::Null,
             metadata: metadata.clone(),
+            ..Default::default()
         });
         trace(|| {
             format!(
@@ -1299,6 +1300,7 @@ impl ModelAssist {
             evidence,
             response_format: Value::Null,
             metadata,
+            ..Default::default()
         });
         trace(|| {
             format!(

@@ -1,0 +1,76 @@
+{
+ "events": [
+  {
+   "args": [
+    "doctor",
+    "model",
+    "--model-provider",
+    "ollama",
+    "--suggest-model",
+    "tiny"
+   ],
+   "captured": [
+    [
+     {
+      "format": {
+       "properties": {
+        "items": {
+         "items": {
+          "properties": {
+           "item_id": {
+            "type": "string"
+           },
+           "suggestions": {
+            "items": {
+             "type": "string"
+            },
+            "maxItems": 1,
+            "minItems": 1,
+            "type": "array"
+           }
+          },
+          "required": [
+           "item_id",
+           "suggestions"
+          ],
+          "type": "object"
+         },
+         "type": "array"
+        }
+       },
+       "required": [
+        "items"
+       ],
+       "type": "object"
+      },
+      "keep_alive": "10m",
+      "messages": [
+       {
+        "content": "You are Verlato. Write a useful release note with enough context for downstream consumers. Use paragraphs or bullet points when they make the change clearer, but stay focused and avoid padding.",
+        "role": "system"
+       },
+       {
+        "content": "Generate release-note suggestion variants from the full diff evidence.\nUse the file patches as the primary source of truth. Do not infer behavior from titles alone.\nReturn only JSON that matches the requested schema. Do not include Markdown fences or prose.\nFor each item, return exactly 1 suggestion string(s) in the suggestions array.\nDo not combine items, rename item ids, omit an item, or mention implementation details unless they matter to release-note readers.\nIf a file has no semantic_diff (and patch_available=false), treat that file as changed but do not invent unavailable details.\nInput JSON:\n{\n  \"items\": [\n    {\n      \"classification\": {\n        \"area\": \"general\",\n        \"audience\": \"external\",\n        \"kind\": \"changed\",\n        \"semver\": \"patch\"\n      },\n      \"commits\": [\n        {\n          \"author\": \"Verlato\",\n          \"message\": \"docs: tune release note copy\",\n          \"sha\": \"doctor\",\n          \"subject\": \"docs: tune release note copy\"\n        }\n      ],\n      \"current_summary\": \"Checks whether the selected model can produce structured suggestions from diff evidence.\",\n      \"diff_summary\": {\n        \"api_changes\": [],\n        \"config_changes\": [],\n        \"file_statuses\": {\n          \"docs/release-notes.md\": \"M\"\n        },\n        \"files_by_area\": {\n          \"docs\": [\n            \"docs/release-notes.md\"\n          ]\n        },\n        \"migration_changes\": [],\n        \"summary\": \"M docs/release-notes.md\"\n      },\n      \"file_count\": 1,\n      \"files\": [\n        {\n          \"patch\": \"@@ -1,2 +1,2 @@\\n-Old release note text\\n+Clearer release note text for external readers\\n\",\n          \"patch_available\": true,\n          \"patch_chars\": 86,\n          \"patch_unavailable_reason\": \"\",\n          \"path\": \"docs/release-notes.md\",\n          \"status\": \"M\"\n        }\n      ],\n      \"item_id\": \"doctor_model\",\n      \"labels\": [],\n      \"missing_patch_count\": 0,\n      \"patch_chars\": 86,\n      \"pr\": null,\n      \"title\": \"Doctor model diff probe\"\n    }\n  ],\n  \"prompt_shape\": \"full-diff-json-v1\",\n  \"style_profile\": {\n    \"banned_phrases\": [],\n    \"guidance\": \"\",\n    \"project_vocabulary\": [],\n    \"specificity_floor\": 0.0\n  },\n  \"suggestion_count\": 1,\n  \"tone\": \"release-note\"\n}",
+        "role": "user"
+       }
+      ],
+      "model": "tiny",
+      "options": {
+       "num_predict": 96,
+       "temperature": 0.1
+      },
+      "stream": false,
+      "think": false
+     }
+    ]
+   ],
+   "cwd": "<TMP>/py",
+   "files": {},
+   "input": null,
+   "kind": "run",
+   "returncode": 0,
+   "stderr": "",
+   "stdout": "{\n  \"schema\": \"model_doctor.v1\",\n  \"provider\": \"ollama\",\n  \"model\": \"ollama:tiny\",\n  \"suggest_model\": \"tiny\",\n  \"effective_suggest_model\": \"tiny\",\n  \"ok\": true,\n  \"status\": \"ok\",\n  \"warnings\": [],\n  \"elapsed_ms\": 30,\n  \"prompt_chars\": 2209,\n  \"content_chars\": 82,\n  \"metadata\": {\n    \"total_duration\": 1000000000000,\n    \"load_duration\": 900000000000,\n    \"prompt_eval_count\": 50,\n    \"prompt_eval_duration\": 30000000,\n    \"eval_count\": 12,\n    \"eval_duration\": 40000000,\n    \"done_reason\": \"stop\",\n    \"base_model\": \"parity-model\",\n    \"suggest_model\": \"tiny\",\n    \"effective_model\": \"tiny\"\n  }\n}\n"
+  }
+ ]
+}

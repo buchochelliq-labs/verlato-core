@@ -1,91 +1,25 @@
 //! JSON-lines stdio service used by the VS Code extension (`verlato service`). Protocol and
-//! payloads match `verlato/service_stdio.py`. Methods not yet ported are proxied to a lazily
-//! started Python service process.
+//! payloads match the retired Python service (`verlato/service_stdio.py`). [`call`] answers one
+//! request in-process for the Python bindings.
 
-use anyhow::{anyhow, Context as _, Result};
+use anyhow::Result;
 use serde_json::{json, Map, Value};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, Write};
 use std::path::Path;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use crate::pipeline::Context;
 
-const NATIVE_METHODS: &[&str] = &[
-    "health",
-    "info",
-    "draft.get",
-    "draft.preview",
-    "draft.apply",
-    "draft.review",
-    "feedback.record",
-    "state.show",
-    "state.clear_working",
-    "commit.conventional",
-    "commit.conventional_many",
-];
-
 struct ProtocolError(String);
-
-struct PythonService {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
-}
-
-impl PythonService {
-    fn start(cwd: &Path) -> Result<PythonService> {
-        let command =
-            crate::delegate::python_cli().ok_or_else(|| anyhow!(crate::delegate::PYTHON_HINT))?;
-        let mut child = Command::new(&command[0])
-            .args(&command[1..])
-            .arg("service")
-            .current_dir(cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .context("failed to start the Python service")?;
-        let stdin = child.stdin.take().expect("piped");
-        let stdout = BufReader::new(child.stdout.take().expect("piped"));
-        Ok(PythonService {
-            child,
-            stdin,
-            stdout,
-        })
-    }
-
-    fn forward(&mut self, line: &str) -> Result<String> {
-        self.stdin.write_all(line.trim_end().as_bytes())?;
-        self.stdin.write_all(b"\n")?;
-        self.stdin.flush()?;
-        let mut response = String::new();
-        if self.stdout.read_line(&mut response)? == 0 {
-            return Err(anyhow!("the Python service exited"));
-        }
-        Ok(response.trim_end().to_owned())
-    }
-}
-
-impl Drop for PythonService {
-    fn drop(&mut self) {
-        let _ = self
-            .stdin
-            .write_all(b"{\"id\":null,\"method\":\"shutdown\"}\n");
-        let _ = self.stdin.flush();
-        let _ = self.child.wait();
-    }
-}
 
 pub fn run(cwd: &Path) -> Result<i32> {
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
-    let mut python: Option<PythonService> = None;
     for line in stdin.lock().lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
-        let (response, shutdown) = handle_line(cwd, &line, &mut python);
+        let (response, shutdown) = handle_line(cwd, &line);
         writeln!(stdout, "{response}")?;
         stdout.flush()?;
         if shutdown {
@@ -95,7 +29,28 @@ pub fn run(cwd: &Path) -> Result<i32> {
     Ok(0)
 }
 
-fn handle_line(cwd: &Path, line: &str, python: &mut Option<PythonService>) -> (String, bool) {
+/// Answer one service request in-process: `params_json` is the request's params object (empty
+/// for none). Returns the response envelope (`{"id": null, "ok": ..., "result"|"error": ...}`).
+pub fn call(cwd: &Path, method: &str, params_json: &str) -> String {
+    let params: Value = if params_json.trim().is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_str(params_json) {
+            Ok(value) => value,
+            Err(error) => {
+                return error_response(
+                    &Value::Null,
+                    "invalid_json",
+                    &format!("Invalid JSON params: {error}"),
+                )
+            }
+        }
+    };
+    let request = json!({"id": Value::Null, "method": method, "params": params});
+    handle_line(cwd, &request.to_string()).0
+}
+
+fn handle_line(cwd: &Path, line: &str) -> (String, bool) {
     let request: Value = match serde_json::from_str(line) {
         Ok(value) => value,
         Err(error) => {
@@ -138,33 +93,6 @@ fn handle_line(cwd: &Path, line: &str, python: &mut Option<PythonService>) -> (S
     };
     if method == "shutdown" {
         return (ok_response(&id, json!({"shutdown": true})), true);
-    }
-    if !NATIVE_METHODS.contains(&method) || needs_python(cwd, method) {
-        if python.is_none() {
-            match PythonService::start(cwd) {
-                Ok(service) => *python = Some(service),
-                Err(error) => {
-                    return (
-                        error_response(
-                            &id,
-                            "unsupported",
-                            &format!("Unknown service method: {method}. {error}"),
-                        ),
-                        false,
-                    )
-                }
-            }
-        }
-        return match python.as_mut().unwrap().forward(line) {
-            Ok(response) => (response, false),
-            Err(error) => {
-                *python = None;
-                (
-                    error_response(&id, "RuntimeError", &error.to_string()),
-                    false,
-                )
-            }
-        };
     }
     match dispatch(cwd, method, &params) {
         Ok(result) => (ok_response(&id, result), false),
@@ -213,19 +141,6 @@ fn conventional_request(params: &Map<String, Value>) -> crate::pipeline::Convent
         allow_remote_patches: truthy(params, &["allow_remote_patches", "allowRemotePatches"]),
         evidence_mode: optional_either(params, &["evidence_mode", "evidenceMode"])
             .unwrap_or_else(|| "diff-only".into()),
-    }
-}
-
-/// Whether a native method must still run in Python. Draft methods detect changes and follow
-/// the CLI (`python_reason` in main.rs); providers, commit intents and PR adapters are native.
-fn needs_python(cwd: &Path, method: &str) -> bool {
-    if !method.starts_with("draft.") {
-        return false;
-    }
-    match Context::load(cwd) {
-        Ok(ctx) => ctx.pr_adapter().is_err(),
-        // Let the native handler report the configuration error.
-        Err(_) => false,
     }
 }
 
@@ -334,7 +249,6 @@ fn dispatch(cwd: &Path, method: &str, params: &Map<String, Value>) -> Result<Val
                 "schema_version": state.schema_version,
                 "tracked_items": state.items.len(),
                 "targets": ctx.config.targets.keys().collect::<Vec<_>>(),
-                "python_delegate": crate::delegate::python_cli().map(|c| c.join(" ")),
             }))
         }
         "draft.get" | "draft.preview" | "draft.apply" => {
@@ -431,9 +345,86 @@ fn dispatch(cwd: &Path, method: &str, params: &Map<String, Value>) -> Result<Val
         }
         "state.show" => Ok(ctx.state_show()?),
         "state.clear_working" => Ok(ctx.clear_working_state()?),
-        other => Err(Dispatch::Protocol(ProtocolError(format!(
-            "Unknown service method: {other}"
-        )))),
+        "state.clear_suggestion_cache" => Ok(crate::maintenance::clear_suggestion_cache(&ctx)?),
+        "suggestion.items"
+        | "suggestion.item"
+        | "suggestion.patch"
+        | "suggestion.semantic_diff"
+        | "suggestion.semantic_search"
+        | "suggestion.search" => {
+            let base = required(params, "base")?;
+            let head = params
+                .get("head")
+                .filter(|h| value_truthy(h))
+                .map(|h| {
+                    h.as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| h.to_string())
+                })
+                .unwrap_or_else(|| "HEAD".into());
+            // Python validates the remaining required params before building the provider.
+            let item_id = if method == "suggestion.items" {
+                ""
+            } else {
+                required(params, "item_id")?
+            };
+            let path = match method {
+                "suggestion.patch" | "suggestion.semantic_diff" => required(params, "path")?,
+                _ => "",
+            };
+            let query = match method {
+                "suggestion.semantic_search" | "suggestion.search" => required(params, "query")?,
+                _ => "",
+            };
+            let tools = crate::mcp::suggestion_tools(&ctx, base, &head)?;
+            Ok(match method {
+                "suggestion.items" => {
+                    tools.list_suggestion_items(truthy(params, &["include_files", "includeFiles"]))
+                }
+                "suggestion.item" => tools.get_suggestion_item(item_id)?,
+                "suggestion.patch" => tools.get_file_patch(
+                    item_id,
+                    path,
+                    optional_int(params.get("offset"), 0),
+                    optional_int(params.get("limit"), 12_000),
+                )?,
+                "suggestion.semantic_diff" => tools.get_file_semantic_diff(item_id, path)?,
+                "suggestion.semantic_search" => tools.search_semantic_diff(
+                    item_id,
+                    query,
+                    optional_int(params.get("limit"), 5),
+                )?,
+                _ => {
+                    tools.search_item_diff(item_id, query, optional_int(params.get("limit"), 5))?
+                }
+            })
+        }
+        other => match crate::extensions::current().service_for(other) {
+            Some(extension) => extension
+                .call(cwd, other, params)
+                .map_err(Dispatch::Handler),
+            None => Err(Dispatch::Protocol(ProtocolError(format!(
+                "Unknown service method: {other}"
+            )))),
+        },
+    }
+}
+
+/// `_optional_int`: Python `int(value)`, or `default` when that fails.
+fn optional_int(value: Option<&Value>, default: i64) -> i64 {
+    match value {
+        None | Some(Value::Null) => default,
+        Some(Value::Bool(b)) => i64::from(*b),
+        Some(Value::Number(n)) => n
+            .as_i64()
+            .or_else(|| {
+                n.as_f64()
+                    .filter(|f| f.is_finite())
+                    .map(|f| f.trunc() as i64)
+            })
+            .unwrap_or(default),
+        Some(Value::String(s)) => s.trim().replace('_', "").parse().unwrap_or(default),
+        Some(_) => default,
     }
 }
 
@@ -450,12 +441,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn draft_methods_run_natively_with_the_github_adapter() {
+    fn calls_answer_with_the_service_envelope() {
         let dir = std::env::temp_dir();
-        std::env::set_var("VERLATO_PR_ADAPTER", "github");
-        let github = needs_python(&dir, "draft.get");
-        std::env::remove_var("VERLATO_PR_ADAPTER");
-        assert!(!github);
-        assert!(!needs_python(&dir, "draft.get"));
+        let health: Value = serde_json::from_str(&call(&dir, "health", "{}")).unwrap();
+        assert_eq!(health["ok"], json!(true));
+        assert_eq!(health["result"]["runtime"], json!("rust"));
+        let unknown: Value = serde_json::from_str(&call(&dir, "nope", "")).unwrap();
+        assert_eq!(unknown["error"]["code"], json!("invalid_request"));
+        let invalid: Value = serde_json::from_str(&call(&dir, "health", "[1]")).unwrap();
+        assert_eq!(invalid["error"]["code"], json!("invalid_request"));
     }
 }

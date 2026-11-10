@@ -1,0 +1,109 @@
+{
+ "events": [
+  {
+   "args": [
+    "doctor",
+    "ollama",
+    "--warmup",
+    "--parallel-probe",
+    "--suggest-model",
+    " "
+   ],
+   "captured": [
+    [
+     {
+      "keep_alive": "10m",
+      "messages": [
+       {
+        "content": "You are Verlato. Write a useful release note with enough context for downstream consumers. Use paragraphs or bullet points when they make the change clearer, but stay focused and avoid padding.",
+        "role": "system"
+       },
+       {
+        "content": "Return one concise release-note style sentence for this diagnostic change: Verlato adds a model health check for suggestion performance.",
+        "role": "user"
+       }
+      ],
+      "model": "parity-model",
+      "options": {
+       "num_ctx": 8192,
+       "num_predict": 96,
+       "temperature": 0.1
+      },
+      "stream": false,
+      "think": false
+     },
+     {
+      "keep_alive": "10m",
+      "messages": [
+       {
+        "content": "You are Verlato. Write a useful release note with enough context for downstream consumers. Use paragraphs or bullet points when they make the change clearer, but stay focused and avoid padding.",
+        "role": "system"
+       },
+       {
+        "content": "Return one concise release-note style sentence for this diagnostic change: Verlato adds a model health check for suggestion performance.",
+        "role": "user"
+       }
+      ],
+      "model": "parity-model",
+      "options": {
+       "num_ctx": 8192,
+       "num_predict": 96,
+       "temperature": 0.1
+      },
+      "stream": false,
+      "think": false
+     },
+     {
+      "keep_alive": "10m",
+      "messages": [
+       {
+        "content": "You are Verlato. Write a useful release note with enough context for downstream consumers. Use paragraphs or bullet points when they make the change clearer, but stay focused and avoid padding.",
+        "role": "system"
+       },
+       {
+        "content": "Return one concise release-note style sentence for this diagnostic change: Verlato adds a model health check for suggestion performance.",
+        "role": "user"
+       }
+      ],
+      "model": "parity-model",
+      "options": {
+       "num_ctx": 8192,
+       "num_predict": 96,
+       "temperature": 0.1
+      },
+      "stream": false,
+      "think": false
+     },
+     {
+      "keep_alive": "10m",
+      "messages": [
+       {
+        "content": "You are Verlato. Write a useful release note with enough context for downstream consumers. Use paragraphs or bullet points when they make the change clearer, but stay focused and avoid padding.",
+        "role": "system"
+       },
+       {
+        "content": "Return one concise release-note style sentence for this diagnostic change: Verlato adds a model health check for suggestion performance.",
+        "role": "user"
+       }
+      ],
+      "model": "parity-model",
+      "options": {
+       "num_ctx": 8192,
+       "num_predict": 96,
+       "temperature": 0.1
+      },
+      "stream": false,
+      "think": false
+     }
+    ]
+   ],
+   "cwd": "<TMP>/py",
+   "files": {},
+   "input": null,
+   "kind": "run",
+   "returncode": 0,
+   "stderr": "",
+   "stdout": "{\n  \"schema\": \"ollama_doctor.v1\",\n  \"provider\": \"ollama\",\n  \"config\": {\n    \"endpoint\": \"http://127.0.0.1:<PORT0>/api/chat\",\n    \"model\": \"parity-model\",\n    \"suggest_model\": null,\n    \"effective_suggest_model\": \"parity-model\",\n    \"timeout_seconds\": 15.0,\n    \"stream\": false,\n    \"keep_alive\": \"10m\",\n    \"num_ctx\": 8192,\n    \"num_predict\": null,\n    \"suggest_num_predict\": null,\n    \"suggest_num_predict_effective\": 96,\n    \"suggest_think\": false,\n    \"suggestion_parallelism\": 3\n  },\n  \"runtime\": {\n    \"api_ps\": {\n      \"ok\": true,\n      \"url\": \"http://127.0.0.1:<PORT0>/api/ps\",\n      \"models\": [\n        {\n          \"name\": \"other:7b\",\n          \"model\": \"other:7b\",\n          \"size_vram\": 1\n        },\n        {\n          \"name\": \"parity-model:latest\",\n          \"model\": \"parity-model:latest\",\n          \"size\": 5,\n          \"size_vram\": 0,\n          \"context_length\": 16384,\n          \"expires_at\": \"2999-01-01T00:00:00.123456Z\"\n        }\n      ],\n      \"response\": {\n        \"models\": [\n          {\n            \"name\": \"other:7b\",\n            \"model\": \"other:7b\",\n            \"size_vram\": 1\n          },\n          {\n            \"name\": \"parity-model:latest\",\n            \"model\": \"parity-model:latest\",\n            \"size\": 5,\n            \"size_vram\": 0,\n            \"context_length\": 16384,\n            \"expires_at\": \"2999-01-01T00:00:00.123456Z\"\n          }\n        ]\n      }\n    },\n    \"cli_ps\": {\n      \"ok\": false,\n      \"available\": false,\n      \"rows\": []\n    },\n    \"selected_model\": {\n      \"name\": \"parity-model:latest\",\n      \"model\": \"parity-model:latest\",\n      \"size\": 5,\n      \"size_vram\": 0,\n      \"context_length\": 16384,\n      \"expires_at\": \"2999-01-01T00:00:00.123456Z\",\n      \"loaded\": true\n    }\n  },\n  \"probes\": [\n    {\n      \"name\": \"warmup\",\n      \"purpose\": \"warmup\",\n      \"ok\": true,\n      \"error\": null,\n      \"elapsed_ms\": 26,\n      \"prompt_chars\": 136,\n      \"model\": \"ollama:parity-model\",\n      \"content_chars\": 26,\n      \"timings\": {\n        \"model_ms\": 26,\n        \"ollama_total_ms\": 1000000,\n        \"load_ms\": 900000,\n        \"prompt_eval_ms\": 30,\n        \"eval_ms\": 40,\n        \"prompt_tokens\": 50,\n        \"eval_tokens\": 12,\n        \"queue_ms\": 0,\n        \"tokens_per_second\": 300.0\n      },\n      \"metadata\": {\n        \"total_duration\": 1000000000000,\n        \"load_duration\": 900000000000,\n        \"prompt_eval_count\": 50,\n        \"prompt_eval_duration\": 30000000,\n        \"eval_count\": 12,\n        \"eval_duration\": 40000000,\n        \"done_reason\": \"stop\"\n      }\n    },\n    {\n      \"name\": \"single\",\n      \"purpose\": \"measure\",\n      \"ok\": true,\n      \"error\": null,\n      \"elapsed_ms\": 1,\n      \"prompt_chars\": 136,\n      \"model\": \"ollama:parity-model\",\n      \"content_chars\": 26,\n      \"timings\": {\n        \"model_ms\": 1,\n        \"ollama_total_ms\": 1000000,\n        \"load_ms\": 900000,\n        \"prompt_eval_ms\": 30,\n        \"eval_ms\": 40,\n        \"prompt_tokens\": 50,\n        \"eval_tokens\": 12,\n        \"queue_ms\": 0,\n        \"tokens_per_second\": 300.0\n      },\n      \"metadata\": {\n        \"total_duration\": 1000000000000,\n        \"load_duration\": 900000000000,\n        \"prompt_eval_count\": 50,\n        \"prompt_eval_duration\": 30000000,\n        \"eval_count\": 12,\n        \"eval_duration\": 40000000,\n        \"done_reason\": \"stop\"\n      }\n    },\n    {\n      \"name\": \"parallel-a\",\n      \"purpose\": \"measure\",\n      \"ok\": true,\n      \"error\": null,\n      \"elapsed_ms\": 2,\n      \"prompt_chars\": 136,\n      \"model\": \"ollama:parity-model\",\n      \"content_chars\": 26,\n      \"timings\": {\n        \"model_ms\": 2,\n        \"ollama_total_ms\": 1000000,\n        \"load_ms\": 900000,\n        \"prompt_eval_ms\": 30,\n        \"eval_ms\": 40,\n        \"prompt_tokens\": 50,\n        \"eval_tokens\": 12,\n        \"queue_ms\": 0,\n        \"tokens_per_second\": 300.0\n      },\n      \"metadata\": {\n        \"total_duration\": 1000000000000,\n        \"load_duration\": 900000000000,\n        \"prompt_eval_count\": 50,\n        \"prompt_eval_duration\": 30000000,\n        \"eval_count\": 12,\n        \"eval_duration\": 40000000,\n        \"done_reason\": \"stop\"\n      }\n    },\n    {\n      \"name\": \"parallel-b\",\n      \"purpose\": \"measure\",\n      \"ok\": true,\n      \"error\": null,\n      \"elapsed_ms\": 1,\n      \"prompt_chars\": 136,\n      \"model\": \"ollama:parity-model\",\n      \"content_chars\": 26,\n      \"timings\": {\n        \"model_ms\": 1,\n        \"ollama_total_ms\": 1000000,\n        \"load_ms\": 900000,\n        \"prompt_eval_ms\": 30,\n        \"eval_ms\": 40,\n        \"prompt_tokens\": 50,\n        \"eval_tokens\": 12,\n        \"queue_ms\": 0,\n        \"tokens_per_second\": 300.0\n      },\n      \"metadata\": {\n        \"total_duration\": 1000000000000,\n        \"load_duration\": 900000000000,\n        \"prompt_eval_count\": 50,\n        \"prompt_eval_duration\": 30000000,\n        \"eval_count\": 12,\n        \"eval_duration\": 40000000,\n        \"done_reason\": \"stop\"\n      }\n    }\n  ],\n  \"summary\": {\n    \"status\": \"warning\",\n    \"bottleneck\": \"load\",\n    \"warmed_up\": true,\n    \"diagnostics\": [\n      \"Ollama model load time reached 900000ms.\",\n      \"Warmup completed in 26ms and absorbed 900000ms of model load time.\",\n      \"Configured num_ctx is 8192; large contexts increase memory use and can limit parallel requests.\",\n      \"Loaded model context length is 16384; with suggestion parallelism 3, memory pressure can multiply.\",\n      \"Loaded model did not report GPU VRAM residency; check ollama ps processor placement.\"\n    ],\n    \"recommendations\": [\n      \"Keep the model warm with VERLATO_OLLAMA_KEEP_ALIVE or provider.keep_alive.\",\n      \"Use verlato doctor ollama --warmup or the VS Code Warm model action before large all-visible suggestion runs.\",\n      \"Warmup was requested; if load time remains high, raise keep_alive or check memory pressure.\",\n      \"Lower suggestionParallelism to 1 or reduce OLLAMA_CONTEXT_LENGTH/VERLATO_OLLAMA_NUM_CTX before enabling server-side parallelism.\",\n      \"Check ollama ps processor placement and consider a smaller/faster model if generation remains slow.\"\n    ],\n    \"recommended_settings\": {}\n  }\n}\n"
+  }
+ ]
+}

@@ -10,7 +10,7 @@ pub mod mock;
 pub mod model_log;
 pub mod ollama;
 pub mod plugin;
-mod process;
+pub mod process;
 
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -28,6 +28,24 @@ pub struct ProviderRequest {
     pub evidence: Value,
     pub response_format: Value,
     pub metadata: Map<String, Value>,
+    /// Ollama-format tool definitions the model may call (tool-retrieval suggestions).
+    pub tools: Vec<Value>,
+    /// Runs a tool call: `Ok(result)` or `Err(str(exception))`.
+    pub tool_executor: Option<ToolExecutor>,
+    pub max_tool_rounds: usize,
+}
+
+/// A tool call handler: `Ok(result)` or `Err(str(exception))`.
+pub type ToolFn = dyn Fn(&str, &Map<String, Value>) -> Result<Value, String> + Send + Sync;
+
+/// Executes one model tool call (Python `ProviderRequest.tool_executor`).
+#[derive(Clone)]
+pub struct ToolExecutor(pub std::sync::Arc<ToolFn>);
+
+impl std::fmt::Debug for ToolExecutor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ToolExecutor")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -72,6 +90,13 @@ pub trait Provider: Send + Sync {
 
     /// The Python class name, used where Python falls back to `provider.__class__.__name__`.
     fn class_name(&self) -> &'static str;
+
+    /// The Ollama connection and option attributes `verlato doctor ollama` reports
+    /// (`endpoint`, `timeout_seconds`, `num_ctx`, ... and the effective suggest `num_predict`
+    /// for `request`). Only the Ollama provider has them.
+    fn ollama_attributes(&self, _request: &ProviderRequest) -> Option<Map<String, Value>> {
+        None
+    }
 }
 
 /// `_provider_effective_model`: the model a task would use.
@@ -497,15 +522,25 @@ pub fn build_provider_with(
     mode: Option<&str>,
     suggest_model: Option<&str>,
 ) -> Box<dyn Provider> {
-    let primary = build_single(config, mode, suggest_model);
+    let primary = build_hooked(config, mode, suggest_model);
     if config.fallbacks.is_empty() {
         return primary;
     }
     let mut providers = vec![primary];
     for raw in &config.fallbacks {
-        providers.push(build_single(&config.fallback(raw), None, suggest_model));
+        providers.push(build_hooked(&config.fallback(raw), None, suggest_model));
     }
     Box::new(FallbackProvider { providers })
+}
+
+/// One provider, wrapped with the installed policy/sink hooks (a no-op without extensions).
+fn build_hooked(
+    config: &ProviderConfig,
+    mode: Option<&str>,
+    suggest_override: Option<&str>,
+) -> Box<dyn Provider> {
+    let name = selected_mode(config, mode);
+    crate::extensions::hook_provider(&name, build_single(config, mode, suggest_override))
 }
 
 fn build_single(
@@ -647,7 +682,10 @@ fn build_single(
                 },
             }))
         }
-        _ => Box::new(StubProvider),
+        other => match crate::extensions::current().provider_factory(other) {
+            Some(factory) => factory(config),
+            None => Box::new(StubProvider),
+        },
     }
 }
 

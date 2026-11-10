@@ -23,6 +23,23 @@ pub struct JsonSuggestionCache {
     pub dirty: bool,
 }
 
+/// Backends a CLI process can open (`build_suggestion_cache_backend`'s registry). Python
+/// integrations can register more with `register_suggestion_cache_backend`, but only inside their
+/// own interpreter, so the Python CLI and service only ever see `json`.
+pub const BACKENDS: &[&str] = &["json"];
+
+/// `build_suggestion_cache_backend`: open the (already normalized) `backend` at `path`.
+pub fn open_backend(backend: &str, path: &str, ttl_days: i64) -> Result<JsonSuggestionCache> {
+    match backend {
+        "json" => JsonSuggestionCache::load(path, ttl_days),
+        other => bail!(
+            "Unknown suggestion cache backend {}; available: {}",
+            crate::mcp::py_repr_str(other),
+            BACKENDS.join(", ")
+        ),
+    }
+}
+
 /// `_utc_now`: second precision with a `Z` suffix.
 pub fn utc_now() -> String {
     Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
@@ -273,6 +290,32 @@ impl JsonSuggestionCache {
         written?;
         self.dirty = false;
         Ok(())
+    }
+
+    /// `JsonSuggestionCacheStore.clear`: delete the cache file under the lock and return how
+    /// many entries it held (0 for an unreadable file).
+    pub fn clear(&mut self) -> Result<usize> {
+        if let Some(parent) = self.path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut count = 0;
+        {
+            let _lock = lock_file(&self.path)?;
+            if self.path.exists() {
+                let raw: Value = std::fs::read_to_string(&self.path)
+                    .ok()
+                    .and_then(|text| serde_json::from_str(&text).ok())
+                    .unwrap_or(Value::Null);
+                count = raw
+                    .get("entries")
+                    .and_then(Value::as_object)
+                    .map_or(0, Map::len);
+                std::fs::remove_file(&self.path)?;
+            }
+        }
+        self.entries.clear();
+        self.dirty = false;
+        Ok(count)
     }
 }
 

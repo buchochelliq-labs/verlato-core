@@ -5,7 +5,6 @@ const test = require("node:test");
 const {
   getNativeExecutables,
   getVenvExecutable,
-  resolvePythonDelegate,
   resolveSpawnCommand,
   resolveVerlatoExecutable,
 } = require("../dist/client/cliResolution");
@@ -168,11 +167,26 @@ test("prefers the native Rust binary bundled with the extension or built in the 
   assert.equal(resolution.executable, checkoutBuild);
 });
 
-test("finds the Python delegate used for model-backed commands", () => {
-  const delegate = path.join(path.dirname(extensionPath), ".venv", "bin", "verlato-py");
-  assert.equal(
-    resolvePythonDelegate({ workspacePath, extensionPath, existsSync: (c) => c === delegate, platform: "linux" }),
-    delegate,
-  );
-  assert.equal(resolvePythonDelegate({ workspacePath, extensionPath, existsSync: () => false, platform: "linux" }), undefined);
+test("falls back to a verlato on PATH, such as a pip install or an unpacked release bundle", () => {
+  const resolution = resolveVerlatoExecutable({
+    configuredPath: "",
+    workspacePath,
+    extensionPath,
+    existsSync: () => false,
+    platform: "linux",
+  });
+  assert.equal(resolution.executable, "verlato");
+  assert.equal(resolution.searched.at(-1), "verlato");
+});
+
+test("uses a configured release bundle executable as given", () => {
+  const bundled = "/opt/verlato-v0.2.0-x86_64-unknown-linux-gnu/verlato";
+  const resolution = resolveVerlatoExecutable({
+    configuredPath: bundled,
+    workspacePath,
+    extensionPath,
+    existsSync: () => false,
+    platform: "linux",
+  });
+  assert.equal(resolution.executable, bundled);
 });

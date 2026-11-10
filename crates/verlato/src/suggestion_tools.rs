@@ -300,6 +300,186 @@ impl SuggestionTools {
     }
 }
 
+fn tool_definition(name: &str, description: &str, schema: Value) -> Value {
+    json!({
+        "type": "function",
+        "function": {"name": name, "description": description, "parameters": schema},
+    })
+}
+
+fn item_id_property() -> Value {
+    json!({"type": "string", "description": "Suggestion item id."})
+}
+
+fn truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64() != Some(0.0),
+        Value::String(s) => !s.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(o) => !o.is_empty(),
+    }
+}
+
+/// `_required_string`.
+fn required_string(arguments: &Map<String, Value>, key: &str) -> Result<String, String> {
+    match arguments.get(key) {
+        Some(Value::String(value)) if !value.trim().is_empty() => Ok(value.clone()),
+        _ => Err(format!("Missing required string argument: {key}")),
+    }
+}
+
+/// `_coerce_int`.
+fn coerce_int(value: Option<&Value>, default: i64, minimum: i64, maximum: Option<i64>) -> i64 {
+    let parsed = match value {
+        None | Some(Value::Null) => Some(default),
+        Some(Value::Bool(b)) => Some(i64::from(*b)),
+        Some(Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().map(|f| f.trunc() as i64)),
+        Some(Value::String(s)) => s.trim().replace('_', "").parse().ok(),
+        Some(_) => None,
+    };
+    let result = parsed.unwrap_or(default).max(minimum);
+    maximum.map_or(result, |m| result.min(m))
+}
+
+impl SuggestionTools {
+    /// Whether any item was reviewed by IntentumDiff (`uses_semantic_diff`).
+    pub fn uses_semantic_diff(&self) -> bool {
+        self.entries.iter().any(|e| e.diff.semantic.is_some())
+    }
+
+    /// `ollama_tools()`: the tool definitions in Ollama's function-calling format.
+    pub fn ollama_tools(&self) -> Vec<Value> {
+        let mut tools = vec![
+            tool_definition(
+                "verlato_list_suggestion_items",
+                "List compact release-note suggestion items and changed-file manifests for the active git range.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "include_files": {
+                            "type": "boolean",
+                            "description": "Include per-file path, status, and patch-size metadata.",
+                        }
+                    },
+                }),
+            ),
+            tool_definition(
+                "verlato_get_suggestion_item",
+                "Return metadata, commits, file manifest, and deterministic diff summary for one suggestion item.",
+                json!({
+                    "type": "object",
+                    "required": ["item_id"],
+                    "properties": {"item_id": item_id_property()},
+                }),
+            ),
+        ];
+        if self.uses_semantic_diff() {
+            tools.push(tool_definition(
+                "verlato_get_file_semantic_diff",
+                "Return the IntentumDiff semantic diff for one file in one suggestion item: meaningful \
+                 changes with their enclosing symbols, refactorings, moved code and ignored formatting.",
+                json!({
+                    "type": "object",
+                    "required": ["item_id", "path"],
+                    "properties": {
+                        "item_id": item_id_property(),
+                        "path": {"type": "string", "description": "Changed file path."},
+                    },
+                }),
+            ));
+            tools.push(tool_definition(
+                "verlato_search_semantic_diff",
+                "Search the IntentumDiff semantic diff of one suggestion item for a symbol or term.",
+                json!({
+                    "type": "object",
+                    "required": ["item_id", "query"],
+                    "properties": {
+                        "item_id": item_id_property(),
+                        "query": {"type": "string", "description": "Case-insensitive symbol or term."},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": MAX_SEARCH_RESULTS},
+                    },
+                }),
+            ));
+            return tools;
+        }
+        tools.push(tool_definition(
+            "verlato_get_file_patch",
+            "Return a bounded patch chunk for one file in one suggestion item.",
+            json!({
+                "type": "object",
+                "required": ["item_id", "path"],
+                "properties": {
+                    "item_id": item_id_property(),
+                    "path": {"type": "string", "description": "Changed file path."},
+                    "offset": {"type": "integer", "minimum": 0, "description": "Character offset into the patch."},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": MAX_PATCH_CHUNK_CHARS},
+                },
+            }),
+        ));
+        tools.push(tool_definition(
+            "verlato_search_item_diff",
+            "Search patch text for one suggestion item and return small matching snippets.",
+            json!({
+                "type": "object",
+                "required": ["item_id", "query"],
+                "properties": {
+                    "item_id": item_id_property(),
+                    "query": {"type": "string", "description": "Case-insensitive text to search in patches."},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": MAX_SEARCH_RESULTS},
+                },
+            }),
+        ));
+        tools
+    }
+
+    /// `call_tool`: run a model tool call; errors are Python's `str(exception)`.
+    pub fn call_tool(&self, name: &str, arguments: &Map<String, Value>) -> Result<Value, String> {
+        let text = |e: anyhow::Error| e.to_string();
+        match name {
+            "verlato_list_suggestion_items" => {
+                Ok(self.list_suggestion_items(arguments.get("include_files").is_some_and(truthy)))
+            }
+            "verlato_get_suggestion_item" => self
+                .get_suggestion_item(&required_string(arguments, "item_id")?)
+                .map_err(text),
+            "verlato_get_file_patch" => {
+                let item_id = required_string(arguments, "item_id")?;
+                let path = required_string(arguments, "path")?;
+                let offset = coerce_int(arguments.get("offset"), 0, 0, None);
+                let limit = coerce_int(
+                    arguments.get("limit"),
+                    DEFAULT_PATCH_CHUNK_CHARS,
+                    1,
+                    Some(MAX_PATCH_CHUNK_CHARS),
+                );
+                self.get_file_patch(&item_id, &path, offset, limit)
+                    .map_err(text)
+            }
+            "verlato_get_file_semantic_diff" => {
+                let item_id = required_string(arguments, "item_id")?;
+                let path = required_string(arguments, "path")?;
+                self.get_file_semantic_diff(&item_id, &path).map_err(text)
+            }
+            "verlato_search_semantic_diff" | "verlato_search_item_diff" => {
+                let item_id = required_string(arguments, "item_id")?;
+                let query = required_string(arguments, "query")?;
+                let limit = coerce_int(arguments.get("limit"), 5, 1, Some(MAX_SEARCH_RESULTS));
+                if name == "verlato_search_semantic_diff" {
+                    self.search_semantic_diff(&item_id, &query, limit)
+                } else {
+                    self.search_item_diff(&item_id, &query, limit)
+                }
+                .map_err(text)
+            }
+            _ => Err(crate::mcp::py_repr_str(&format!(
+                "Unknown suggestion evidence tool: {name}"
+            ))),
+        }
+    }
+}
+
 fn first_line(message: &str) -> String {
     splitlines(message)
         .first()
@@ -347,7 +527,7 @@ fn boundary_payload(commit: &Commit) -> Value {
     })
 }
 
-fn commit_boundaries(commits: &[Commit]) -> Value {
+pub(crate) fn commit_boundaries(commits: &[Commit]) -> Value {
     match (commits.first(), commits.last()) {
         (Some(first), Some(last)) => {
             json!({"first": boundary_payload(first), "last": boundary_payload(last)})

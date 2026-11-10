@@ -194,6 +194,7 @@ cython_debug/
 # Local Codex memory
 .releasepilot_memory.json
 .verlato_memory.json
+.verlato_state.json
 .verlato_suggestion_cache.json
 .verlato_suggestion_cache.json.tmp
 .verlato_semantic_cache.json
@@ -219,3 +220,11 @@ __marimo__/
 
 # Rust build output
 /target
+
+# The IntentumDiff parser bundle, provisioned by scripts/fetch_intentumdiff_parsers.sh
+/python/verlato/wasm/
+/python/verlato/*.so
+/python/verlato/*.pyd
+
+# rab's installed copy has a build/ action
+!/.github/rab/build/

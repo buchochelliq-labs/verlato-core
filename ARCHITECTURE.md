@@ -22,40 +22,42 @@ This document captures the current MVP architecture and should be reviewed befor
 
 ## Module map
 
-- `verlato/cli/main.py`
-  - CLI orchestration for `scan`, `generate`, `render`, `state show`.
-- `verlato/core/collector.py`
-  - Collect commits in a ref range and map commits to PRs via adapter.
-- `verlato/core/grouper.py`
-  - Group commits into PR-level groups (with no-PR fallback groups).
-- `verlato/core/conventional.py`
-  - Conventional commit parser + breaking-change detection.
-- `verlato/core/semantic.py`
-  - The IntentumDiff engine adapter: reviews each commit with `intentumdiff.CommitDiffer`, reduces the result to a
-    privacy-safe `CommitSemantics` digest, caches digests per commit, runs uncached reviews in worker processes, and
-    aggregates digests into group-level `SemanticEvidence` (verdict, group counts, symbols, guardrails).
-- `verlato/core/diff_evidence.py`
-  - Builds compact `DiffEvidence` led by IntentumDiff `SemanticEvidence`, plus changed-file paths and patch hunks.
-- `verlato/core/classifier.py`
-  - Heuristic classification layer with diff fallback signals and model prompt construction for summary suggestions.
-- `verlato/core/reconciler.py`
-  - Reconciliation by checksum against persisted state.
-- `verlato/core/generator.py`
-  - Markdown rendering for GitHub release notes and changelog output.
-- `verlato/state/store.py`
-  - JSON persistence, schema versioning, and area lineage index.
-- `verlato/github/adapter.py`
-  - GitHub adapter boundary, including stub implementation.
-- `verlato/providers/`
-  - BYOM provider abstraction with stub, deterministic mock, Ollama, GitHub-hosted model, Codex CLI, Claude Code, and model-log sink support.
+Verlato is implemented in Rust (`crates/verlato`); the Python package is a thin wrapper over it.
+
+- `crates/verlato/src/cli.rs` (`verlato::cli::run`)
+  - The command line (`scan`, `generate`, `reconcile`, `render`, `draft *`, `state *`, `feedback *`, `doctor *`,
+    `commit conventional`, `model-logs export`, `service`, `serve`), shared by the executable and the bindings.
+- `crates/verlato/src/git.rs`, `grouper.rs`
+  - Collect commits in a ref range, map commits to PRs (standard git, or the GitHub API adapter), and group commits
+    into PR-level groups (with no-PR fallback groups and conventional-commit parsing).
+- `crates/verlato/src/engine.rs`, `semantic.rs`
+  - The IntentumDiff engine, linked in-process: reviews each commit (`api::review_sources` per changed file, in
+    parallel), reduces it to a privacy-safe digest, caches digests per commit, and aggregates group-level semantic
+    evidence (verdict, group counts, symbols, guardrails).
+- `crates/verlato/src/evidence.rs`, `classifier.rs`, `assist.rs`
+  - Compact diff evidence led by the semantic evidence, heuristic classification with diff fallback signals, and the
+    model prompts, privacy records and audits for summaries and suggestions.
+- `crates/verlato/src/pipeline.rs`, `drafts.rs`, `store.rs`
+  - Reconciliation by checksum, draft documents and Markdown rendering, JSON state persistence and lineage.
+- `crates/verlato/src/providers/`
+  - BYOM providers: stub, deterministic mock, Ollama, LiteLLM, GitHub Models, the external-command plugin, Codex CLI,
+    Claude Code, fallback chains, and model-log sinks.
+- `crates/verlato/src/suggest.rs`, `adaptive.rs`, `suggestion_cache.rs`, `suggestion_tools.rs`, `intents.rs`
+  - Suggestions in every strategy, adaptive recommendations, the suggestion cache, retrieval tools, and commit intent
+    inference / Conventional Commit drafting.
+- `crates/verlato/src/service.rs`
+  - The JSON-lines stdio service used by the VS Code extension (`verlato service`), and in-process calls for the
+    Python bindings.
+- `crates/verlato/src/mcp.rs`
+  - The MCP server on stdio (`verlato serve`) for Copilot and other MCP clients.
+- `crates/verlato/src/extensions.rs` (`verlato::cli::run_with`)
+  - Extension points for separately built binaries (forge adapters, providers, policy, event sinks, subcommands,
+    service methods); no-ops in the open-source binary. See `docs/OPEN_CORE.md`.
+- `crates/verlato-python/`, `python/verlato/`
+  - The `verlato` Python package: the `verlato._native` PyO3 module and the `verlato`/`verlato-mcp` commands; the
+    wheel ships the IntentumDiff parser bundle.
 - `vscode-extension/`
   - Editor UX for draft review, suggestion preview/regeneration, tone selection, realtime model telemetry, and apply flows.
-- `verlato/mcp/service.py`
-  - Shared service interface used by MCP tools.
-- `verlato/mcp/server.py`
-  - MCP tool registration and stdio server entrypoint for VS Code/Copilot.
-- `verlato/service_stdio.py`
-  - Built-in JSON-lines stdio service used by the VS Code extension for core local editor flows without requiring FastMCP.
 
 ## Data flow
 
@@ -67,7 +69,7 @@ This document captures the current MVP architecture and should be reviewed befor
 5. `Reconciler` filters already-known items by checksum.
 6. `StateStore` persists newly generated items.
 7. `MarkdownGenerator` renders organized output sections.
-8. `verlato/mcp/server.py` exposes agent-facing MCP tools over stdio for Copilot and other MCP clients.
+8. `verlato serve` (`crates/verlato/src/mcp.rs`) exposes agent-facing MCP tools over stdio for Copilot and other MCP clients.
 
 For suggestion previews, `draft suggest --preview` is diff-first and model-backed. The removed `instant` path is rejected because suggestions must be generated from Verlato-built diff payloads. `auto`, `paired`, and `full-diff-json` use structured JSON batches for capable providers such as Ollama, LiteLLM, and audited plugins; each uncached item includes full available changed-file patches, PR metadata, commits, labels, kind/audience context, the selected tone preset, and optional project language controls. The bounded single-item prompt path remains available as an explicit fallback. Project style controls include guidance text, preferred vocabulary, banned phrases, and an opt-in specificity floor. The CLI emits realtime model telemetry to stderr and optional JSONL debug logs. VS Code consumes those events as a request timeline, lets users regenerate one item or all visible suggestions, records lightweight local feedback, and passes summary provenance back through `draft review` when a suggestion is applied. External BYOM plugins run out of process with JSON stdin/stdout, minimal environment, no repo cwd, enforced timeout, and request/prompt/evidence/schema hashes recorded in provider metadata.
 

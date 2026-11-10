@@ -1,55 +1,76 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.9,<2.0"]
+build-backend = "maturin"
 
 [project]
 name = "verlato"
-version = "0.1.0"
+# The version is the Rust workspace's ([workspace.package] in Cargo.toml).
+dynamic = ["version"]
 description = "Semantic release notes powered by IntentumDiff, with conventional commit and intent inference"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-  # The semantic diff engine that powers Verlato's change evidence.
-  "intentumdiff-python>=0.0.2b2",
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+keywords = ["release-notes", "changelog", "semantic-diff", "conventional-commits", "mcp"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Rust",
+  "Topic :: Software Development :: Documentation",
+  "Topic :: Software Development :: Version Control :: Git",
+  "Typing :: Typed",
 ]
+# No runtime dependencies: the native engine and its parser bundle ship in the wheel.
+dependencies = []
 
 [project.optional-dependencies]
 dev = [
+  "maturin>=1.9,<2.0",
   "pytest>=8.0",
   "ruff>=0.6.0",
   "mypy>=1.10.0",
 ]
-mcp = [
-  "fastmcp>=3.0.0",
-]
+
+[project.urls]
+Homepage = "https://github.com/buchochelliq-labs/verlato-core"
+Source = "https://github.com/buchochelliq-labs/verlato-core"
+Issues = "https://github.com/buchochelliq-labs/verlato-core/issues"
+Changelog = "https://github.com/buchochelliq-labs/verlato-core/blob/main/CHANGELOG.md"
 
 [project.scripts]
-verlato = "verlato.cli.main:main"
-# Stable name for the Python implementation; the native Rust `verlato` binary delegates
-# not-yet-ported (model-backed) commands to it.
-verlato-py = "verlato.cli.main:main"
-verlato-mcp = "verlato.mcp.server:main"
+verlato = "verlato._cli:main"
+verlato-mcp = "verlato._cli:mcp"
 
-[tool.setuptools.packages.find]
-include = ["verlato*"]
+[tool.maturin]
+manifest-path = "crates/verlato-python/Cargo.toml"
+python-source = "python"
+module-name = "verlato._native"
+# The IntentumDiff parser bundle, provisioned (and checksum-verified) at build time by
+# scripts/fetch_intentumdiff_parsers.sh python/verlato/wasm. It is git-ignored, so it is
+# named here to be packaged.
+include = [{ path = "python/verlato/wasm/*", format = ["sdist", "wheel"] }]
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 140
-target-version = "py310"
+target-version = "py312"
+# .github/rab is rab's installed copy (checked by `release.py vendored`, not edited here).
+extend-exclude = ["vscode-extension", "target", ".github/rab"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
 
 [tool.mypy]
-python_version = "3.10"
-strict = false
-warn_unused_ignores = true
-warn_redundant_casts = true
-warn_unused_configs = true
-
-[[tool.mypy.overrides]]
-module = ["intentumdiff", "intentumdiff.*", "fastmcp", "fastmcp.*"]
-ignore_missing_imports = true
+python_version = "3.12"
+strict = true
+files = ["python/verlato"]

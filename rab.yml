@@ -1,0 +1,72 @@
+# What Verlato releases, for rab (the Release Asset Bundle, installed under .github/rab/).
+# `python3 .github/rab/scripts/release.py check` validates this file against the manifests;
+# `python3 .github/rab/scripts/release.py tag` (on main) starts a release. See docs/RELEASING.md.
+#
+# Both packages take their version from Cargo.toml's [workspace.package] version (the Python
+# package's pyproject.toml has `dynamic = ["version"]` with [tool.maturin] manifest-path).
+# Every artifact ships the IntentumDiff parser bundle, provisioned and checksum-verified at
+# build time by scripts/fetch_intentumdiff_parsers.sh (the bundle's single pinned source).
+
+release:
+  name_from: verlato
+  branch: main
+
+packages:
+  # The native executable with its parser bundle, per platform, as GitHub release assets:
+  # verlato-v<version>-<target>.tar.gz (.zip on Windows), each holding verlato-v<version>-<target>/
+  # {verlato, wasm/, LICENSE, NOTICE, README.md}, plus SHA256SUMS.
+  - name: verlato-native
+    registry: github
+    manifest: crates/verlato/Cargo.toml
+    version: "0.2.0"
+    tag: "v{version}"
+    paths: ["crates/**", "Cargo.toml", "Cargo.lock", "scripts/**", "README.md", "LICENSE", "NOTICE"]
+    checksums: SHA256SUMS
+    artifacts:
+      - kind: command
+        os: ubuntu-latest
+        run: scripts/package_native_bundle.sh x86_64-unknown-linux-gnu
+        outputs: "target/verlato-bundle/verlato-v*.tar.gz"
+        test: scripts/test_native_bundle.sh
+      - kind: command
+        os: ubuntu-24.04-arm
+        run: scripts/package_native_bundle.sh aarch64-unknown-linux-gnu
+        outputs: "target/verlato-bundle/verlato-v*.tar.gz"
+        test: scripts/test_native_bundle.sh
+      - kind: command
+        os: macos-latest
+        run: scripts/package_native_bundle.sh aarch64-apple-darwin
+        outputs: "target/verlato-bundle/verlato-v*.tar.gz"
+        test: scripts/test_native_bundle.sh
+      - kind: command
+        os: macos-latest
+        run: scripts/package_native_bundle.sh x86_64-apple-darwin
+        outputs: "target/verlato-bundle/verlato-v*.tar.gz"
+        test: scripts/test_native_bundle.sh
+      - kind: command
+        os: windows-latest
+        run: scripts/package_native_bundle.sh x86_64-pc-windows-msvc
+        outputs: "target/verlato-bundle/verlato-v*.zip"
+        test: scripts/test_native_bundle.sh
+
+  # The `verlato` Python package: abi3 wheels (one per platform, CPython 3.12+) carrying the
+  # native extension and the parser bundle, plus the sdist.
+  - name: verlato
+    registry: pypi
+    manifest: pyproject.toml
+    version: "0.2.0"
+    paths: ["pyproject.toml", "python/**", "crates/**", "Cargo.toml", "Cargo.lock", "scripts/**", "README.md",
+            "LICENSE", "NOTICE"]
+    artifacts:
+      - kind: maturin
+        targets:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+          - x86_64-pc-windows-msvc
+        prepare: scripts/fetch_intentumdiff_parsers.sh python/verlato/wasm
+        test:
+          run: scripts/test_wheel.sh
+          # An x86_64 macOS wheel is cross-compiled on Apple Silicon and cannot run there.
+          targets: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, aarch64-apple-darwin, x86_64-pc-windows-msvc]

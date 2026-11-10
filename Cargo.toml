@@ -1,12 +1,17 @@
-# Verlato's Rust implementation. The `verlato` crate (crates/verlato) is replacing the
-# Python package command by command; see docs/RUST_MIGRATION.md.
+# Verlato's implementation: the `verlato` crate (crates/verlato, library + executable) and its
+# Python bindings (crates/verlato-python, the `verlato._native` extension module the `verlato`
+# PyPI package ships). See docs/RUST_MIGRATION.md.
 [workspace]
-members = ["crates/verlato"]
+members = ["crates/verlato", "crates/verlato-python"]
 resolver = "2"
 
 [workspace.package]
+# The one version: the crates, the Python package (pyproject.toml `dynamic = ["version"]`) and
+# the release bundles all take it from here.
+version = "0.2.0"
 edition = "2021"
-license = "MIT"
+license = "Apache-2.0"
+repository = "https://github.com/buchochelliq-labs/verlato-core"
 publish = false
 
 [profile.release]

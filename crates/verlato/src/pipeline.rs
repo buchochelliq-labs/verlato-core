@@ -86,19 +86,31 @@ impl Context {
         .map(Some)
     }
 
+    /// The forge adapter `VERLATO_PR_ADAPTER` selects: a built-in (`standard-git`, `none`,
+    /// `github`) or one an extension registered; unknown names use `standard-git`.
     pub fn pr_adapter(&self) -> Result<PrAdapter> {
-        match std::env::var("VERLATO_PR_ADAPTER")
+        let name = std::env::var("VERLATO_PR_ADAPTER")
             .unwrap_or_else(|_| "standard-git".into())
-            .to_lowercase()
-            .as_str()
-        {
-            "none" => Ok(PrAdapter::None),
+            .to_lowercase();
+        let adapter = match name.as_str() {
+            "none" => PrAdapter::None,
             // Without a repository and token Python falls back to local git as well.
-            "github" => Ok(crate::git::GitHubApi::from_env()
+            "github" => crate::git::GitHubApi::from_env()
                 .map(PrAdapter::GitHub)
-                .unwrap_or(PrAdapter::StandardGit)),
-            _ => Ok(PrAdapter::StandardGit),
-        }
+                .unwrap_or(PrAdapter::StandardGit),
+            "standard-git" => PrAdapter::StandardGit,
+            other => match crate::extensions::current().forge_factory(other) {
+                Some(factory) => factory(&crate::extensions::ForgeContext {
+                    cwd: &self.cwd,
+                    config: &self.config.raw,
+                })?
+                .map(PrAdapter::Extension)
+                .unwrap_or(PrAdapter::StandardGit),
+                None => PrAdapter::StandardGit,
+            },
+        };
+        crate::extensions::check_forge(adapter.name(), adapter.is_remote())?;
+        Ok(adapter)
     }
 
     // -- detection ---------------------------------------------------------
@@ -483,7 +495,22 @@ impl Context {
             "Writing release notes",
             json!({"detail": target, "current": 0, "total": 1, "unit": "target"}),
         );
+        crate::extensions::check_publish(&crate::extensions::PublishInfo {
+            action: "draft.apply",
+            version: Some(&document.version),
+            target: Some(target),
+            items: document
+                .sections
+                .iter()
+                .flat_map(|section| section.items.iter())
+                .map(|item| (item.id.clone(), item.status.clone()))
+                .collect(),
+        })?;
         let result = drafts::apply_document(&self.config, document, target, file, &self.cwd)?;
+        crate::extensions::emit(
+            "draft.applied",
+            json!({"version": document.version, "target": result.target, "path": result.path, "items": document.item_count}),
+        );
         trace_progress(
             "draft_apply_writing",
             "Wrote release notes",
@@ -638,6 +665,10 @@ impl Context {
         }
         let updated = state.items[index].clone();
         store.save(&state)?;
+        crate::extensions::emit(
+            "review.updated",
+            json!({"item_id": updated.id, "status": updated.status, "reviewer": updated.reviewed_by, "summary_edited": summary.is_some()}),
+        );
         Ok(updated)
     }
 
@@ -646,6 +677,9 @@ impl Context {
         let mut state = store.load()?;
         push_feedback(&mut state, event, item_id, metadata);
         store.save(&state)?;
+        if let Some(recorded) = state.feedback_events.last() {
+            crate::extensions::emit("feedback.recorded", recorded.clone());
+        }
         Ok(json!({"recorded": true, "event": event, "item_id": item_id}))
     }
 
@@ -690,15 +724,32 @@ impl Context {
     ) -> Result<Value> {
         let store = self.store();
         let mut state = store.load()?;
+        crate::extensions::check_publish(&crate::extensions::PublishInfo {
+            action: "state.mark_published",
+            version: Some(version),
+            target: None,
+            items: state
+                .items
+                .iter()
+                .filter(|item| (all_unpublished || ids.contains(&item.id)) && !item.published)
+                .map(|item| (item.id.clone(), item.status.clone()))
+                .collect(),
+        })?;
         let mut updated = 0;
+        let mut published_ids = Vec::new();
         for item in &mut state.items {
             if (all_unpublished || ids.contains(&item.id)) && !item.published {
                 item.published = true;
                 item.published_in = Some(version.into());
                 updated += 1;
+                published_ids.push(item.id.clone());
             }
         }
         store.save(&state)?;
+        crate::extensions::emit(
+            "release.published",
+            json!({"version": version, "item_ids": published_ids}),
+        );
         Ok(json!({"updated": updated, "version": version}))
     }
 
