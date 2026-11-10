@@ -16,6 +16,7 @@ const NATIVE: &[&[&str]] = &[
     &["reconcile"],
     &["render"],
     &["service"],
+    &["serve"],
     &["draft", "json"],
     &["draft", "preview"],
     &["draft", "apply"],
@@ -113,6 +114,8 @@ enum Command {
         include_provenance: bool,
     },
     Service,
+    /// MCP server on stdio.
+    Serve,
     #[command(subcommand)]
     Draft(DraftCommand),
     #[command(subcommand)]
@@ -386,6 +389,7 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
             println!("{}", document.rendered[&format]);
         }
         Command::Service => return service::run(&cwd),
+        Command::Serve => return verlato::mcp::run(&cwd),
         Command::Draft(command) => match command {
             DraftCommand::Json(args)
             | DraftCommand::Preview(args)
@@ -708,6 +712,6 @@ mod tests {
         ]))));
         assert!(is_native(&command_path(&args(&["commit", "conventional"]))));
         assert!(!is_native(&command_path(&args(&["doctor", "ollama"]))));
-        assert!(!is_native(&command_path(&args(&["serve"]))));
+        assert!(is_native(&command_path(&args(&["serve"]))));
     }
 }

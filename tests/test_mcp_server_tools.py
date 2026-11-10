@@ -251,3 +251,52 @@ def test_cli_serve_can_delegate_to_mcp_stdio(monkeypatch):
     rc = main(["serve"])
 
     assert rc == 0
+
+
+def test_review_request_prompt_renders_through_real_fastmcp():
+    # Regression: FastMCP resolved the prompt's string annotations ("GitRef") lazily and failed
+    # with "TypeAdapter[GitRef] is not fully defined" on every prompts/get.
+    import asyncio
+
+    import pytest
+
+    fastmcp = pytest.importorskip("fastmcp")
+    server = create_fastmcp_server(service=_FakeService())
+
+    async def render():
+        async with fastmcp.Client(server) as client:
+            return await client.get_prompt("verlato_review_request", {"base": "v1.0.0", "head": "main"})
+
+    result = asyncio.run(render())
+    text = result.messages[0].content.text
+    assert "- Base ref: v1.0.0\n- Head ref: main\n- Release version: Unreleased\n" in text
+
+
+def test_system_exit_from_service_becomes_a_tool_error():
+    # Regression: CLI helpers raise SystemExit (e.g. an unknown draft item), which FastMCP does
+    # not catch, so the stdio server never answered the call.
+    import asyncio
+
+    import pytest
+
+    fastmcp = pytest.importorskip("fastmcp")
+
+    class _ExitingService(_FakeService):
+        def update_review_state(self, **kwargs):
+            raise SystemExit("Could not find draft item ci_x for range v1..HEAD")
+
+    server = create_fastmcp_server(service=_ExitingService())
+
+    async def call():
+        async with fastmcp.Client(server) as client:
+            return await client.call_tool(
+                "verlato_update_review_state",
+                {"base": "v1", "item_id": "ci_x", "status": "ready"},
+                raise_on_error=False,
+            )
+
+    result = asyncio.run(call())
+    assert result.is_error
+    assert result.content[0].text == (
+        "Error calling tool 'verlato_update_review_state': Could not find draft item ci_x for range v1..HEAD"
+    )

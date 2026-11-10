@@ -1,0 +1,1308 @@
+{
+ "protocolVersion": "2025-06-18",
+ "capabilities": {
+  "logging": {},
+  "prompts": {
+   "listChanged": true
+  },
+  "resources": {
+   "subscribe": false,
+   "listChanged": true
+  },
+  "tools": {
+   "listChanged": true
+  }
+ },
+ "serverInfo": {
+  "name": "Verlato",
+  "version": "@VERSION@"
+ },
+ "instructions": "Verlato helps agents inspect git ranges, generate structured draft release notes, review draft items, and apply changelog or GitHub release-note updates. Change evidence comes from the IntentumDiff semantic diff: use verlato_get_file_semantic_diff and verlato_search_semantic_diff to see meaningful changes, refactorings, moved code and ignored formatting, and never describe moved code, refactorings or formatting as new behavior. Raw patches are not exposed.",
+ "tools": [
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "service",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "annotations": {
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Verlato Service Health"
+   },
+   "description": "Return basic health and version information for the Verlato backend.",
+   "inputSchema": {
+    "properties": {},
+    "type": "object",
+    "additionalProperties": false
+   },
+   "name": "verlato_service_health",
+   "outputSchema": {
+    "type": "object",
+    "additionalProperties": true
+   },
+   "title": "Verlato Service Health"
+  },
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "service",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "annotations": {
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Verlato Service Info"
+   },
+   "description": "Return service details including state stats and configured output targets.",
+   "inputSchema": {
+    "properties": {},
+    "type": "object",
+    "additionalProperties": false
+   },
+   "name": "verlato_service_info",
+   "outputSchema": {
+    "type": "object",
+    "additionalProperties": true
+   },
+   "title": "Verlato Service Info"
+  },
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "scan",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "annotations": {
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Scan Unpublished Changes"
+   },
+   "description": "List unpublished change items for a git ref range without mutating state.",
+   "inputSchema": {
+    "properties": {
+     "base": {
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "head": {
+      "default": "HEAD",
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     }
+    },
+    "required": [
+     "base"
+    ],
+    "type": "object",
+    "additionalProperties": false
+   },
+   "name": "verlato_scan_unpublished_changes",
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "items": {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "type": "object",
+    "x-fastmcp-wrap-result": true
+   },
+   "title": "Scan Unpublished Changes"
+  },
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "draft",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "annotations": {
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Get Draft Document"
+   },
+   "description": "Build a structured draft release document for a git ref range.",
+   "inputSchema": {
+    "properties": {
+     "base": {
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "head": {
+      "default": "HEAD",
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "version": {
+      "default": "Unreleased",
+      "description": "Release version label to use in rendered notes.",
+      "type": "string"
+     },
+     "include_confidence": {
+      "default": false,
+      "description": "Whether to include confidence values in the returned draft.",
+      "type": "boolean"
+     },
+     "include_provenance": {
+      "default": false,
+      "description": "Whether to include provenance and evidence details in the draft.",
+      "type": "boolean"
+     },
+     "model_provider": {
+      "anyOf": [
+       {
+        "enum": [
+         "stub",
+         "mock",
+         "ollama",
+         "litellm",
+         "plugin",
+         "github-copilot",
+         "codex-cli",
+         "claude-code"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "Optional model provider override for LLM-assisted summaries and classifications."
+     }
+    },
+    "required": [
+     "base"
+    ],
+    "type": "object",
+    "additionalProperties": false
+   },
+   "name": "verlato_get_draft_document",
+   "outputSchema": {
+    "type": "object",
+    "additionalProperties": true
+   },
+   "title": "Get Draft Document"
+  },
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "draft",
+      "preview",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "annotations": {
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Preview Release Notes"
+   },
+   "description": "Render GitHub-style release notes for a git ref range.",
+   "inputSchema": {
+    "properties": {
+     "base": {
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "head": {
+      "default": "HEAD",
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "version": {
+      "default": "Unreleased",
+      "description": "Release version label to use in rendered notes.",
+      "type": "string"
+     },
+     "include_confidence": {
+      "default": false,
+      "description": "Whether to include confidence values in the rendered preview.",
+      "type": "boolean"
+     },
+     "include_provenance": {
+      "default": false,
+      "description": "Whether to include provenance and evidence details in the rendered preview.",
+      "type": "boolean"
+     },
+     "model_provider": {
+      "anyOf": [
+       {
+        "enum": [
+         "stub",
+         "mock",
+         "ollama",
+         "litellm",
+         "plugin",
+         "github-copilot",
+         "codex-cli",
+         "claude-code"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "Optional model provider override for LLM-assisted summaries and classifications."
+     }
+    },
+    "required": [
+     "base"
+    ],
+    "type": "object",
+    "additionalProperties": false
+   },
+   "name": "verlato_preview_release_notes",
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "type": "object",
+    "x-fastmcp-wrap-result": true
+   },
+   "title": "Preview Release Notes"
+  },
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "apply",
+      "draft",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "annotations": {
+    "destructiveHint": true,
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "title": "Apply Draft"
+   },
+   "description": "Generate and apply a draft release document to a configured target file.",
+   "inputSchema": {
+    "properties": {
+     "base": {
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "head": {
+      "default": "HEAD",
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "version": {
+      "default": "Unreleased",
+      "description": "Release version label to use in rendered notes.",
+      "type": "string"
+     },
+     "target": {
+      "default": "changelog",
+      "description": "Configured output target to update.",
+      "enum": [
+       "changelog",
+       "github-release"
+      ],
+      "type": "string"
+     },
+     "file": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "Optional explicit file path override for the selected target."
+     },
+     "include_confidence": {
+      "default": false,
+      "description": "Whether to include confidence values while generating the draft.",
+      "type": "boolean"
+     },
+     "include_provenance": {
+      "default": false,
+      "description": "Whether to include provenance while generating the draft.",
+      "type": "boolean"
+     },
+     "model_provider": {
+      "anyOf": [
+       {
+        "enum": [
+         "stub",
+         "mock",
+         "ollama",
+         "litellm",
+         "plugin",
+         "github-copilot",
+         "codex-cli",
+         "claude-code"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "Optional model provider override for LLM-assisted summaries and classifications."
+     }
+    },
+    "required": [
+     "base"
+    ],
+    "type": "object",
+    "additionalProperties": false
+   },
+   "name": "verlato_apply_draft",
+   "outputSchema": {
+    "type": "object",
+    "additionalProperties": true
+   },
+   "title": "Apply Draft"
+  },
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "review",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "annotations": {
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "title": "Update Review State"
+   },
+   "description": "Update review status, summary, or reviewer metadata for a draft item.",
+   "inputSchema": {
+    "properties": {
+     "base": {
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "item_id": {
+      "description": "Verlato draft item identifier.",
+      "type": "string"
+     },
+     "head": {
+      "default": "HEAD",
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "status": {
+      "anyOf": [
+       {
+        "enum": [
+         "needs-review",
+         "ready",
+         "accepted",
+         "edited",
+         "hidden"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "Review status to persist for the selected draft item."
+     },
+     "summary": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "Optional edited summary to persist for the draft item."
+     },
+     "reviewer": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "Optional reviewer identity to persist with the update."
+     }
+    },
+    "required": [
+     "base",
+     "item_id"
+    ],
+    "type": "object",
+    "additionalProperties": false
+   },
+   "name": "verlato_update_review_state",
+   "outputSchema": {
+    "type": "object",
+    "additionalProperties": true
+   },
+   "title": "Update Review State"
+  },
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "model",
+      "review",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "annotations": {
+    "idempotentHint": true,
+    "openWorldHint": true,
+    "title": "Request Model Input"
+   },
+   "description": "Ask the configured model provider for a summary suggestion on one draft item.",
+   "inputSchema": {
+    "properties": {
+     "base": {
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "item_id": {
+      "description": "Verlato draft item identifier.",
+      "type": "string"
+     },
+     "head": {
+      "default": "HEAD",
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "reviewer": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "Optional reviewer identity to persist with the update."
+     },
+     "model_provider": {
+      "anyOf": [
+       {
+        "enum": [
+         "stub",
+         "mock",
+         "ollama",
+         "litellm",
+         "plugin",
+         "github-copilot",
+         "codex-cli",
+         "claude-code"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "Optional model provider override for LLM-assisted summaries and classifications."
+     }
+    },
+    "required": [
+     "base",
+     "item_id"
+    ],
+    "type": "object",
+    "additionalProperties": false
+   },
+   "name": "verlato_request_model_input",
+   "outputSchema": {
+    "type": "object",
+    "additionalProperties": true
+   },
+   "title": "Request Model Input"
+  },
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "review",
+      "scan",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "annotations": {
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Reconcile Preview"
+   },
+   "description": "Return a lightweight unpublished-change preview for a git ref range.",
+   "inputSchema": {
+    "properties": {
+     "base": {
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "head": {
+      "default": "HEAD",
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     }
+    },
+    "required": [
+     "base"
+    ],
+    "type": "object",
+    "additionalProperties": false
+   },
+   "name": "verlato_reconcile_preview",
+   "outputSchema": {
+    "type": "object",
+    "additionalProperties": true
+   },
+   "title": "Reconcile Preview"
+  },
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "diff",
+      "suggestions",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "annotations": {
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "List Suggestion Items"
+   },
+   "description": "List compact suggestion items and changed-file manifests for a git ref range.",
+   "inputSchema": {
+    "properties": {
+     "base": {
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "head": {
+      "default": "HEAD",
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "include_files": {
+      "default": false,
+      "description": "Include changed-file path, status, and patch-size metadata.",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "base"
+    ],
+    "type": "object",
+    "additionalProperties": false
+   },
+   "name": "verlato_list_suggestion_items",
+   "outputSchema": {
+    "type": "object",
+    "additionalProperties": true
+   },
+   "title": "List Suggestion Items"
+  },
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "diff",
+      "suggestions",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "annotations": {
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Get Suggestion Item"
+   },
+   "description": "Return metadata, commits, file manifest, and diff summary for one suggestion item.",
+   "inputSchema": {
+    "properties": {
+     "base": {
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "item_id": {
+      "description": "Verlato draft item identifier.",
+      "type": "string"
+     },
+     "head": {
+      "default": "HEAD",
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     }
+    },
+    "required": [
+     "base",
+     "item_id"
+    ],
+    "type": "object",
+    "additionalProperties": false
+   },
+   "name": "verlato_get_suggestion_item",
+   "outputSchema": {
+    "type": "object",
+    "additionalProperties": true
+   },
+   "title": "Get Suggestion Item"
+  },
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "diff",
+      "semantic",
+      "suggestions",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "annotations": {
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Get File Semantic Diff"
+   },
+   "description": "Return the IntentumDiff semantic diff for one file in one suggestion item.",
+   "inputSchema": {
+    "properties": {
+     "base": {
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "item_id": {
+      "description": "Verlato draft item identifier.",
+      "type": "string"
+     },
+     "path": {
+      "description": "Changed file path.",
+      "type": "string"
+     },
+     "head": {
+      "default": "HEAD",
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     }
+    },
+    "required": [
+     "base",
+     "item_id",
+     "path"
+    ],
+    "type": "object",
+    "additionalProperties": false
+   },
+   "name": "verlato_get_file_semantic_diff",
+   "outputSchema": {
+    "type": "object",
+    "additionalProperties": true
+   },
+   "title": "Get File Semantic Diff"
+  },
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "diff",
+      "semantic",
+      "suggestions",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "annotations": {
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Search Semantic Diff"
+   },
+   "description": "Search the IntentumDiff semantic diff of one suggestion item.",
+   "inputSchema": {
+    "properties": {
+     "base": {
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "item_id": {
+      "description": "Verlato draft item identifier.",
+      "type": "string"
+     },
+     "query": {
+      "description": "Case-insensitive symbol or term to find in the semantic diff.",
+      "type": "string"
+     },
+     "head": {
+      "default": "HEAD",
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "limit": {
+      "default": 5,
+      "description": "Maximum number of search results to return.",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "base",
+     "item_id",
+     "query"
+    ],
+    "type": "object",
+    "additionalProperties": false
+   },
+   "name": "verlato_search_semantic_diff",
+   "outputSchema": {
+    "type": "object",
+    "additionalProperties": true
+   },
+   "title": "Search Semantic Diff"
+  },
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "diff",
+      "suggestions",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "annotations": {
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Get File Patch"
+   },
+   "description": "Return a bounded patch chunk for one file in one suggestion item.",
+   "inputSchema": {
+    "properties": {
+     "base": {
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "item_id": {
+      "description": "Verlato draft item identifier.",
+      "type": "string"
+     },
+     "path": {
+      "description": "Changed file path.",
+      "type": "string"
+     },
+     "head": {
+      "default": "HEAD",
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "offset": {
+      "default": 0,
+      "description": "Character offset into the requested patch.",
+      "type": "integer"
+     },
+     "limit": {
+      "default": 12000,
+      "description": "Maximum patch characters to return.",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "base",
+     "item_id",
+     "path"
+    ],
+    "type": "object",
+    "additionalProperties": false
+   },
+   "name": "verlato_get_file_patch",
+   "outputSchema": {
+    "type": "object",
+    "additionalProperties": true
+   },
+   "title": "Get File Patch"
+  },
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "diff",
+      "suggestions",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "annotations": {
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Search Item Diff"
+   },
+   "description": "Search patch text for one suggestion item and return compact snippets.",
+   "inputSchema": {
+    "properties": {
+     "base": {
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "item_id": {
+      "description": "Verlato draft item identifier.",
+      "type": "string"
+     },
+     "query": {
+      "description": "Case-insensitive query to search inside patch text.",
+      "type": "string"
+     },
+     "head": {
+      "default": "HEAD",
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "limit": {
+      "default": 5,
+      "description": "Maximum number of search results to return.",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "base",
+     "item_id",
+     "query"
+    ],
+    "type": "object",
+    "additionalProperties": false
+   },
+   "name": "verlato_search_item_diff",
+   "outputSchema": {
+    "type": "object",
+    "additionalProperties": true
+   },
+   "title": "Search Item Diff"
+  },
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "commit",
+      "model",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "annotations": {
+    "idempotentHint": true,
+    "openWorldHint": true,
+    "readOnlyHint": true,
+    "title": "Draft Conventional Commit"
+   },
+   "description": "Infer or draft a full Conventional Commits message for one commit in a git range.",
+   "inputSchema": {
+    "properties": {
+     "base": {
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "sha": {
+      "description": "Commit SHA or unique prefix to draft a conventional commit for.",
+      "type": "string"
+     },
+     "head": {
+      "default": "HEAD",
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "model_provider": {
+      "anyOf": [
+       {
+        "enum": [
+         "stub",
+         "mock",
+         "ollama",
+         "litellm",
+         "plugin",
+         "github-copilot",
+         "codex-cli",
+         "claude-code"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "Optional model provider override for LLM-assisted summaries and classifications."
+     },
+     "model_privacy": {
+      "anyOf": [
+       {
+        "enum": [
+         "metadata-only",
+         "local-summary-then-ai",
+         "trusted-provider-patch"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "Optional privacy mode override for commit evidence."
+     },
+     "allow_remote_patches": {
+      "default": false,
+      "description": "Allow raw patch excerpts to be sent to a configured remote provider for this request.",
+      "type": "boolean"
+     },
+     "evidence_mode": {
+      "default": "diff-only",
+      "description": "Use diff-only to omit authored commit text, or subject-hint to include the authored subject/message as model evidence.",
+      "enum": [
+       "diff-only",
+       "subject-hint"
+      ],
+      "type": "string"
+     }
+    },
+    "required": [
+     "base",
+     "sha"
+    ],
+    "type": "object",
+    "additionalProperties": false
+   },
+   "name": "verlato_draft_conventional_commit",
+   "outputSchema": {
+    "type": "object",
+    "additionalProperties": true
+   },
+   "title": "Draft Conventional Commit"
+  },
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "commit",
+      "model",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "annotations": {
+    "idempotentHint": true,
+    "openWorldHint": true,
+    "readOnlyHint": true,
+    "title": "Draft Conventional Commits"
+   },
+   "description": "Infer or draft Conventional Commits messages for commits in a git range sequentially.",
+   "inputSchema": {
+    "properties": {
+     "base": {
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "shas": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "Optional ordered commit SHAs or unique prefixes to infer. Defaults to every commit in the range."
+     },
+     "head": {
+      "default": "HEAD",
+      "description": "Git ref, tag, or commit to use for the requested range.",
+      "type": "string"
+     },
+     "model_provider": {
+      "anyOf": [
+       {
+        "enum": [
+         "stub",
+         "mock",
+         "ollama",
+         "litellm",
+         "plugin",
+         "github-copilot",
+         "codex-cli",
+         "claude-code"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "Optional model provider override for LLM-assisted summaries and classifications."
+     },
+     "model_privacy": {
+      "anyOf": [
+       {
+        "enum": [
+         "metadata-only",
+         "local-summary-then-ai",
+         "trusted-provider-patch"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "Optional privacy mode override for commit evidence."
+     },
+     "allow_remote_patches": {
+      "default": false,
+      "description": "Allow raw patch excerpts to be sent to a configured remote provider for this request.",
+      "type": "boolean"
+     },
+     "evidence_mode": {
+      "default": "diff-only",
+      "description": "Use diff-only to omit authored commit text, or subject-hint to include the authored subject/message as model evidence.",
+      "enum": [
+       "diff-only",
+       "subject-hint"
+      ],
+      "type": "string"
+     }
+    },
+    "required": [
+     "base"
+    ],
+    "type": "object",
+    "additionalProperties": false
+   },
+   "name": "verlato_draft_conventional_commits",
+   "outputSchema": {
+    "type": "object",
+    "additionalProperties": true
+   },
+   "title": "Draft Conventional Commits"
+  }
+ ],
+ "resources": [
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "docs",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "annotations": {},
+   "description": "Structured overview of the Verlato MCP server and its exposed capabilities.",
+   "mimeType": "application/json",
+   "name": "Verlato Overview",
+   "uri": "verlato://overview"
+  },
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "config",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "annotations": {},
+   "description": "Sample Verlato configuration file for repo setup and output targets.",
+   "mimeType": "application/json",
+   "name": "Verlato Sample Config",
+   "uri": "verlato://sample-config"
+  }
+ ],
+ "resourceTemplates": [
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "docs",
+      "guidance",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "annotations": {},
+   "description": "Workspace guidance documents such as AGENT.md, README.md, ARCHITECTURE.md, and Copilot instructions.",
+   "mimeType": "text/markdown",
+   "name": "Verlato Guidance",
+   "uriTemplate": "verlato://guidance/{name}"
+  }
+ ],
+ "prompts": [
+  {
+   "_meta": {
+    "fastmcp": {
+     "versions": [
+      "@VERSION@"
+     ],
+     "tags": [
+      "release-notes",
+      "review",
+      "verlato"
+     ],
+     "version": "@VERSION@"
+    }
+   },
+   "arguments": [
+    {
+     "description": "Git ref, tag, or commit to use for the requested range.\n\nProvide a value matching the following JSON schema: {\"type\":\"string\"}. Encode non-string values as JSON.",
+     "name": "base",
+     "required": true
+    },
+    {
+     "description": "Git ref, tag, or commit to use for the requested range.\n\nProvide a value matching the following JSON schema: {\"type\":\"string\"}. Encode non-string values as JSON.",
+     "name": "head",
+     "required": false
+    },
+    {
+     "description": "Release version label to use in rendered notes.\n\nProvide a value matching the following JSON schema: {\"type\":\"string\"}. Encode non-string values as JSON.",
+     "name": "version",
+     "required": false
+    }
+   ],
+   "description": "Prompt template that guides an agent through reviewing and generating release notes for a ref range.",
+   "name": "verlato_review_request",
+   "title": "Verlato Review Request"
+  }
+ ]
+}
