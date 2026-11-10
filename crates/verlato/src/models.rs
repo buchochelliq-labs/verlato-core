@@ -95,6 +95,8 @@ pub struct PullRequest {
     pub body: String,
     pub labels: Vec<String>,
     pub files: Vec<ChangedFile>,
+    pub base_ref: String,
+    pub head_ref: String,
 }
 
 #[derive(Debug, Clone)]

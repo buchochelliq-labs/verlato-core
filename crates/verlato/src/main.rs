@@ -305,13 +305,13 @@ fn json_out(value: &impl serde::Serialize) -> Result<()> {
     Ok(())
 }
 
-/// Why a native command must still run in Python, if it must: everything these commands use is
-/// native except the GitHub PR adapter.
+/// Why a native command must still run in Python, if it must. Everything the detection commands
+/// use (providers, commit intents, PR adapters) is native; this only reports a PR adapter that
+/// fails to configure.
 fn python_reason(ctx: &Context, _model: Option<&ModelArgs>) -> Option<String> {
-    if ctx.pr_adapter().is_err() {
-        return Some("the github PR adapter".into());
-    }
-    None
+    ctx.pr_adapter()
+        .err()
+        .map(|e| format!("the PR adapter: {e}"))
 }
 
 impl ModelArgs {

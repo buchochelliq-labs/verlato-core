@@ -4,7 +4,7 @@
 
 pub mod cli_agents;
 pub mod github;
-mod http;
+pub mod http;
 pub mod litellm;
 pub mod mock;
 pub mod model_log;

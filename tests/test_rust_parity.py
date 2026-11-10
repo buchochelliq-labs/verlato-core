@@ -969,3 +969,78 @@ def test_draft_suggest_apply_errors_match(tmp_path: Path):
         rust = subprocess.run(_rust(*cmd), cwd=rs_repo, env=_native_only(env), capture_output=True, text=True)
         assert (rust.returncode != 0) == (python.returncode != 0) and rust.returncode != 0, args
         assert python.stderr.strip().splitlines()[-1] in rust.stderr, (args, python.stderr, rust.stderr)
+
+
+def test_github_pr_adapter_matches(tmp_path: Path):
+    """The GitHub PR adapter runs natively: same API requests, PR mapping and outputs."""
+    from http.server import BaseHTTPRequestHandler
+    from urllib.parse import parse_qs, urlparse
+
+    py_repo, rs_repo, env = _pair(tmp_path, "git")
+    shas = subprocess.run(
+        ["git", "log", "--format=%H %s", "v1.0.0..HEAD"], cwd=py_repo, capture_output=True, text=True, check=True
+    ).stdout.splitlines()
+    by_subject = {line.split(" ", 1)[1]: line.split(" ", 1)[0] for line in shas}
+    pr_commits = {by_subject["feat(api): add export endpoint"], by_subject["fix(api): handle empty export"]}
+    failing = by_subject["Update app helpers"]
+    files = [{"filename": f"api/file_{i}.py", "status": "modified", "patch": f"@@ -1 +1 @@\n-a\n+b{i}"} for i in range(101)]
+    requests: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - http.server API
+            url = urlparse(self.path)
+            requests.append(self.path)
+            assert self.headers["Authorization"] == "Bearer gh-test"
+            parts = url.path.strip("/").split("/")
+            status, payload = 200, []
+            if parts[3:4] == ["commits"]:
+                sha = parts[4]
+                if sha == failing:
+                    status, payload = 500, {"message": "boom"}
+                else:
+                    payload = [{"number": 7}] if sha in pr_commits else []
+            elif parts[-1] == "files":
+                page = int(parse_qs(url.query)["page"][0])
+                payload = files[(page - 1) * 100 : page * 100]
+            else:
+                payload = {
+                    "title": "  Export API (#7)  ",
+                    "body": "Adds CSV export.",
+                    "labels": [{"name": "feature"}, {"name": ""}],
+                    "base": {"ref": "main"},
+                    "head": {"ref": "export"},
+                }
+            body = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = _serve(Handler)
+    try:
+        env = {
+            **env,
+            "VERLATO_PR_ADAPTER": "github",
+            "VERLATO_GITHUB_REPO": "acme/demo",
+            "GITHUB_TOKEN": "gh-test",
+            "VERLATO_GITHUB_API_URL": f"http://127.0.0.1:{server.server_address[1]}",
+        }
+        for args in (("scan", "--base", "v1.0.0"), ("draft", "json", "--base", "v1.0.0", "--version", "v1.1.0")):
+            requests.clear()
+            python_out = json.loads(_run(_python(*args), py_repo, env))
+            python_requests = list(requests)
+            requests.clear()
+            rust_out = json.loads(_run(_rust(*args), rs_repo, _native_only(env)))
+            assert rust_out == python_out, args
+            assert requests == python_requests, args
+            if args[0] == "scan":
+                pr_items = [item for item in rust_out if item["source"]["pr_number"] == 7]
+                assert pr_items and pr_items[0]["content"]["title"] == "Export API (#7)"
+                assert any(len(item["evidence"]["files"]) >= 101 for item in pr_items)
+                assert any("files?page=2&per_page=100" in path for path in requests)
+    finally:
+        server.shutdown()

@@ -40,7 +40,7 @@ About 16k lines of Python (plus ~7k lines of tests):
 | Suggestions: batched strategies (paired, full-diff-json), tool retrieval, non-JSON (plugin-registered) cache backends, adaptive recommendations | `cli/main.py` (parts), `core/suggestion_tools.py` | ~2k | Delegated |
 | Commit intent inference and Conventional Commit drafting | `core/commit_intent.py` | ~1.1k | **Ported** |
 | MCP server (FastMCP) | `mcp/server.py` | ~0.7k | Delegated |
-| GitHub API PR adapter | `github/adapter.py` | ~0.1k | Delegated |
+| GitHub API PR adapter | `github/adapter.py` | ~0.1k | **Ported** |
 
 The CLI/service JSON contract is the migration seam: the VS Code extension only talks to
 `verlato <command>` (JSON on stdout, progress on stderr) and to `verlato service` (JSON lines),
@@ -76,7 +76,8 @@ provider, with the same prompts, evidence payloads, request audits and hashes, `
 trace lines and `VERLATO_MODEL_LOG_PATH` records as Python. The parity suite checks it with a
 recording plugin, fake Ollama (plain and streaming), OpenAI-compatible and GitHub Models servers,
 fake Codex/Claude executables, and the deterministic mock provider (which reproduces Python's
-Mersenne Twister). A native command is still delegated only for the `github` PR adapter.
+Mersenne Twister). The `github` PR adapter (`VERLATO_PR_ADAPTER=github` with `VERLATO_GITHUB_REPO`
+and `GITHUB_TOKEN`/`GH_TOKEN`; `VERLATO_GITHUB_API_URL` for GitHub Enterprise) is native too.
 
 Commit intent inference (`--infer-commit-intents`, `VERLATO_COMMIT_INTENT_INFERENCE`, or
 `"commit_intent_inference": "low-signal"` in config) is native for every command that collects
@@ -182,7 +183,7 @@ evidence without depending on patch text.
    review state (`draft suggest --id`) is native.
 3. **Commit intents** (done): inference for grouping/classification and Conventional Commit
    drafting (`commit conventional`, `commit.*` service methods).
-4. **MCP server** with the same tools/resources/prompts (e.g. `rmcp`), and the GitHub adapter.
+4. **MCP server** with the same tools/resources/prompts (e.g. `rmcp`). The GitHub adapter is done.
 5. **Retire Python**: remove delegation, ship the extension with the native binary and parser
    bundle per platform, and drop the Python package (or keep it only as a library binding).
 
