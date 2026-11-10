@@ -1,0 +1,342 @@
+{
+ "events": [
+  {
+   "args": [
+    "feedback",
+    "record",
+    "--event",
+    "suggestion_applied",
+    "--item-id",
+    "a",
+    "--metadata-json",
+    "{\"tone\": \"concise\", \"specificity_score\": 0.3}"
+   ],
+   "captured": [],
+   "cwd": "<TMP>/py",
+   "files": {
+    "py/.verlato_state.json": "{\n  \"area_release_lineage\": {},\n  \"feedback_events\": [\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"specificity_score\": 0.3,\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    }\n  ],\n  \"items\": [],\n  \"schema_version\": \"v3\"\n}"
+   },
+   "input": null,
+   "kind": "run",
+   "returncode": 0,
+   "stderr": "",
+   "stdout": "{\n  \"recorded\": true,\n  \"event\": \"suggestion_applied\",\n  \"item_id\": \"a\"\n}\n"
+  },
+  {
+   "args": [
+    "feedback",
+    "record",
+    "--event",
+    "suggestion_applied",
+    "--item-id",
+    "b",
+    "--metadata-json",
+    "{\"tone\": \"concise\", \"specificity_score\": \"0.2\"}"
+   ],
+   "captured": [],
+   "cwd": "<TMP>/py",
+   "files": {
+    "py/.verlato_state.json": "{\n  \"area_release_lineage\": {},\n  \"feedback_events\": [\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"specificity_score\": 0.3,\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"b\",\n      \"metadata\": {\n        \"specificity_score\": \"0.2\",\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    }\n  ],\n  \"items\": [],\n  \"schema_version\": \"v3\"\n}"
+   },
+   "input": null,
+   "kind": "run",
+   "returncode": 0,
+   "stderr": "",
+   "stdout": "{\n  \"recorded\": true,\n  \"event\": \"suggestion_applied\",\n  \"item_id\": \"b\"\n}\n"
+  },
+  {
+   "args": [
+    "feedback",
+    "record",
+    "--event",
+    "summary_edited",
+    "--item-id",
+    "c",
+    "--metadata-json",
+    "{\"tone\": \"technical\", \"specificity_score\": 0.41}"
+   ],
+   "captured": [],
+   "cwd": "<TMP>/py",
+   "files": {
+    "py/.verlato_state.json": "{\n  \"area_release_lineage\": {},\n  \"feedback_events\": [\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"specificity_score\": 0.3,\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"b\",\n      \"metadata\": {\n        \"specificity_score\": \"0.2\",\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"summary_edited\",\n      \"item_id\": \"c\",\n      \"metadata\": {\n        \"specificity_score\": 0.41,\n        \"tone\": \"technical\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    }\n  ],\n  \"items\": [],\n  \"schema_version\": \"v3\"\n}"
+   },
+   "input": null,
+   "kind": "run",
+   "returncode": 0,
+   "stderr": "",
+   "stdout": "{\n  \"recorded\": true,\n  \"event\": \"summary_edited\",\n  \"item_id\": \"c\"\n}\n"
+  },
+  {
+   "args": [
+    "feedback",
+    "record",
+    "--event",
+    "suggestion_regenerated",
+    "--item-id",
+    "a",
+    "--metadata-json",
+    "{\"tone\": \"technical\"}"
+   ],
+   "captured": [],
+   "cwd": "<TMP>/py",
+   "files": {
+    "py/.verlato_state.json": "{\n  \"area_release_lineage\": {},\n  \"feedback_events\": [\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"specificity_score\": 0.3,\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"b\",\n      \"metadata\": {\n        \"specificity_score\": \"0.2\",\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"summary_edited\",\n      \"item_id\": \"c\",\n      \"metadata\": {\n        \"specificity_score\": 0.41,\n        \"tone\": \"technical\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_regenerated\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"tone\": \"technical\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    }\n  ],\n  \"items\": [],\n  \"schema_version\": \"v3\"\n}"
+   },
+   "input": null,
+   "kind": "run",
+   "returncode": 0,
+   "stderr": "",
+   "stdout": "{\n  \"recorded\": true,\n  \"event\": \"suggestion_regenerated\",\n  \"item_id\": \"a\"\n}\n"
+  },
+  {
+   "args": [
+    "feedback",
+    "record",
+    "--event",
+    "suggestion_regenerated",
+    "--item-id",
+    "b",
+    "--metadata-json",
+    "{}"
+   ],
+   "captured": [],
+   "cwd": "<TMP>/py",
+   "files": {
+    "py/.verlato_state.json": "{\n  \"area_release_lineage\": {},\n  \"feedback_events\": [\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"specificity_score\": 0.3,\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"b\",\n      \"metadata\": {\n        \"specificity_score\": \"0.2\",\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"summary_edited\",\n      \"item_id\": \"c\",\n      \"metadata\": {\n        \"specificity_score\": 0.41,\n        \"tone\": \"technical\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_regenerated\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"tone\": \"technical\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_regenerated\",\n      \"item_id\": \"b\",\n      \"metadata\": {},\n      \"recorded_at\": \"<TODAY>\"\n    }\n  ],\n  \"items\": [],\n  \"schema_version\": \"v3\"\n}"
+   },
+   "input": null,
+   "kind": "run",
+   "returncode": 0,
+   "stderr": "",
+   "stdout": "{\n  \"recorded\": true,\n  \"event\": \"suggestion_regenerated\",\n  \"item_id\": \"b\"\n}\n"
+  },
+  {
+   "args": [
+    "feedback",
+    "record",
+    "--event",
+    "suggestion_skipped",
+    "--item-id",
+    "c",
+    "--metadata-json",
+    "{\"tone\": \"\\u00e9\"}"
+   ],
+   "captured": [],
+   "cwd": "<TMP>/py",
+   "files": {
+    "py/.verlato_state.json": "{\n  \"area_release_lineage\": {},\n  \"feedback_events\": [\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"specificity_score\": 0.3,\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"b\",\n      \"metadata\": {\n        \"specificity_score\": \"0.2\",\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"summary_edited\",\n      \"item_id\": \"c\",\n      \"metadata\": {\n        \"specificity_score\": 0.41,\n        \"tone\": \"technical\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_regenerated\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"tone\": \"technical\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_regenerated\",\n      \"item_id\": \"b\",\n      \"metadata\": {},\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_skipped\",\n      \"item_id\": \"c\",\n      \"metadata\": {\n        \"tone\": \"\\u00e9\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    }\n  ],\n  \"items\": [],\n  \"schema_version\": \"v3\"\n}"
+   },
+   "input": null,
+   "kind": "run",
+   "returncode": 0,
+   "stderr": "",
+   "stdout": "{\n  \"recorded\": true,\n  \"event\": \"suggestion_skipped\",\n  \"item_id\": \"c\"\n}\n"
+  },
+  {
+   "args": [
+    "feedback",
+    "record",
+    "--event",
+    "suggestion_rejected",
+    "--item-id",
+    "d",
+    "--metadata-json",
+    "{}"
+   ],
+   "captured": [],
+   "cwd": "<TMP>/py",
+   "files": {
+    "py/.verlato_state.json": "{\n  \"area_release_lineage\": {},\n  \"feedback_events\": [\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"specificity_score\": 0.3,\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"b\",\n      \"metadata\": {\n        \"specificity_score\": \"0.2\",\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"summary_edited\",\n      \"item_id\": \"c\",\n      \"metadata\": {\n        \"specificity_score\": 0.41,\n        \"tone\": \"technical\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_regenerated\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"tone\": \"technical\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_regenerated\",\n      \"item_id\": \"b\",\n      \"metadata\": {},\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_skipped\",\n      \"item_id\": \"c\",\n      \"metadata\": {\n        \"tone\": \"\\u00e9\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_rejected\",\n      \"item_id\": \"d\",\n      \"metadata\": {},\n      \"recorded_at\": \"<TODAY>\"\n    }\n  ],\n  \"items\": [],\n  \"schema_version\": \"v3\"\n}"
+   },
+   "input": null,
+   "kind": "run",
+   "returncode": 0,
+   "stderr": "",
+   "stdout": "{\n  \"recorded\": true,\n  \"event\": \"suggestion_rejected\",\n  \"item_id\": \"d\"\n}\n"
+  },
+  {
+   "args": [
+    "feedback",
+    "record",
+    "--event",
+    "suggestion_applied",
+    "--item-id",
+    "a",
+    "--metadata-json",
+    "{\"tone\": \"concise\", \"specificity_score\": 0.3}"
+   ],
+   "captured": [],
+   "cwd": "<TMP>/rs",
+   "files": {
+    "rs/.verlato_state.json": "{\n  \"area_release_lineage\": {},\n  \"feedback_events\": [\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"specificity_score\": 0.3,\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    }\n  ],\n  \"items\": [],\n  \"schema_version\": \"v3\"\n}"
+   },
+   "input": null,
+   "kind": "run",
+   "returncode": 0,
+   "stderr": "",
+   "stdout": "{\n  \"recorded\": true,\n  \"event\": \"suggestion_applied\",\n  \"item_id\": \"a\"\n}\n"
+  },
+  {
+   "args": [
+    "feedback",
+    "record",
+    "--event",
+    "suggestion_applied",
+    "--item-id",
+    "b",
+    "--metadata-json",
+    "{\"tone\": \"concise\", \"specificity_score\": \"0.2\"}"
+   ],
+   "captured": [],
+   "cwd": "<TMP>/rs",
+   "files": {
+    "rs/.verlato_state.json": "{\n  \"area_release_lineage\": {},\n  \"feedback_events\": [\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"specificity_score\": 0.3,\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"b\",\n      \"metadata\": {\n        \"specificity_score\": \"0.2\",\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    }\n  ],\n  \"items\": [],\n  \"schema_version\": \"v3\"\n}"
+   },
+   "input": null,
+   "kind": "run",
+   "returncode": 0,
+   "stderr": "",
+   "stdout": "{\n  \"recorded\": true,\n  \"event\": \"suggestion_applied\",\n  \"item_id\": \"b\"\n}\n"
+  },
+  {
+   "args": [
+    "feedback",
+    "record",
+    "--event",
+    "summary_edited",
+    "--item-id",
+    "c",
+    "--metadata-json",
+    "{\"tone\": \"technical\", \"specificity_score\": 0.41}"
+   ],
+   "captured": [],
+   "cwd": "<TMP>/rs",
+   "files": {
+    "rs/.verlato_state.json": "{\n  \"area_release_lineage\": {},\n  \"feedback_events\": [\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"specificity_score\": 0.3,\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"b\",\n      \"metadata\": {\n        \"specificity_score\": \"0.2\",\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"summary_edited\",\n      \"item_id\": \"c\",\n      \"metadata\": {\n        \"specificity_score\": 0.41,\n        \"tone\": \"technical\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    }\n  ],\n  \"items\": [],\n  \"schema_version\": \"v3\"\n}"
+   },
+   "input": null,
+   "kind": "run",
+   "returncode": 0,
+   "stderr": "",
+   "stdout": "{\n  \"recorded\": true,\n  \"event\": \"summary_edited\",\n  \"item_id\": \"c\"\n}\n"
+  },
+  {
+   "args": [
+    "feedback",
+    "record",
+    "--event",
+    "suggestion_regenerated",
+    "--item-id",
+    "a",
+    "--metadata-json",
+    "{\"tone\": \"technical\"}"
+   ],
+   "captured": [],
+   "cwd": "<TMP>/rs",
+   "files": {
+    "rs/.verlato_state.json": "{\n  \"area_release_lineage\": {},\n  \"feedback_events\": [\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"specificity_score\": 0.3,\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"b\",\n      \"metadata\": {\n        \"specificity_score\": \"0.2\",\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"summary_edited\",\n      \"item_id\": \"c\",\n      \"metadata\": {\n        \"specificity_score\": 0.41,\n        \"tone\": \"technical\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_regenerated\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"tone\": \"technical\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    }\n  ],\n  \"items\": [],\n  \"schema_version\": \"v3\"\n}"
+   },
+   "input": null,
+   "kind": "run",
+   "returncode": 0,
+   "stderr": "",
+   "stdout": "{\n  \"recorded\": true,\n  \"event\": \"suggestion_regenerated\",\n  \"item_id\": \"a\"\n}\n"
+  },
+  {
+   "args": [
+    "feedback",
+    "record",
+    "--event",
+    "suggestion_regenerated",
+    "--item-id",
+    "b",
+    "--metadata-json",
+    "{}"
+   ],
+   "captured": [],
+   "cwd": "<TMP>/rs",
+   "files": {
+    "rs/.verlato_state.json": "{\n  \"area_release_lineage\": {},\n  \"feedback_events\": [\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"specificity_score\": 0.3,\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"b\",\n      \"metadata\": {\n        \"specificity_score\": \"0.2\",\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"summary_edited\",\n      \"item_id\": \"c\",\n      \"metadata\": {\n        \"specificity_score\": 0.41,\n        \"tone\": \"technical\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_regenerated\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"tone\": \"technical\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_regenerated\",\n      \"item_id\": \"b\",\n      \"metadata\": {},\n      \"recorded_at\": \"<TODAY>\"\n    }\n  ],\n  \"items\": [],\n  \"schema_version\": \"v3\"\n}"
+   },
+   "input": null,
+   "kind": "run",
+   "returncode": 0,
+   "stderr": "",
+   "stdout": "{\n  \"recorded\": true,\n  \"event\": \"suggestion_regenerated\",\n  \"item_id\": \"b\"\n}\n"
+  },
+  {
+   "args": [
+    "feedback",
+    "record",
+    "--event",
+    "suggestion_skipped",
+    "--item-id",
+    "c",
+    "--metadata-json",
+    "{\"tone\": \"\\u00e9\"}"
+   ],
+   "captured": [],
+   "cwd": "<TMP>/rs",
+   "files": {
+    "rs/.verlato_state.json": "{\n  \"area_release_lineage\": {},\n  \"feedback_events\": [\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"specificity_score\": 0.3,\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"b\",\n      \"metadata\": {\n        \"specificity_score\": \"0.2\",\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"summary_edited\",\n      \"item_id\": \"c\",\n      \"metadata\": {\n        \"specificity_score\": 0.41,\n        \"tone\": \"technical\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_regenerated\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"tone\": \"technical\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_regenerated\",\n      \"item_id\": \"b\",\n      \"metadata\": {},\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_skipped\",\n      \"item_id\": \"c\",\n      \"metadata\": {\n        \"tone\": \"\\u00e9\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    }\n  ],\n  \"items\": [],\n  \"schema_version\": \"v3\"\n}"
+   },
+   "input": null,
+   "kind": "run",
+   "returncode": 0,
+   "stderr": "",
+   "stdout": "{\n  \"recorded\": true,\n  \"event\": \"suggestion_skipped\",\n  \"item_id\": \"c\"\n}\n"
+  },
+  {
+   "args": [
+    "feedback",
+    "record",
+    "--event",
+    "suggestion_rejected",
+    "--item-id",
+    "d",
+    "--metadata-json",
+    "{}"
+   ],
+   "captured": [],
+   "cwd": "<TMP>/rs",
+   "files": {
+    "rs/.verlato_state.json": "{\n  \"area_release_lineage\": {},\n  \"feedback_events\": [\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"specificity_score\": 0.3,\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_applied\",\n      \"item_id\": \"b\",\n      \"metadata\": {\n        \"specificity_score\": \"0.2\",\n        \"tone\": \"concise\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"summary_edited\",\n      \"item_id\": \"c\",\n      \"metadata\": {\n        \"specificity_score\": 0.41,\n        \"tone\": \"technical\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_regenerated\",\n      \"item_id\": \"a\",\n      \"metadata\": {\n        \"tone\": \"technical\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_regenerated\",\n      \"item_id\": \"b\",\n      \"metadata\": {},\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_skipped\",\n      \"item_id\": \"c\",\n      \"metadata\": {\n        \"tone\": \"\\u00e9\"\n      },\n      \"recorded_at\": \"<TODAY>\"\n    },\n    {\n      \"event\": \"suggestion_rejected\",\n      \"item_id\": \"d\",\n      \"metadata\": {},\n      \"recorded_at\": \"<TODAY>\"\n    }\n  ],\n  \"items\": [],\n  \"schema_version\": \"v3\"\n}"
+   },
+   "input": null,
+   "kind": "run",
+   "returncode": 0,
+   "stderr": "",
+   "stdout": "{\n  \"recorded\": true,\n  \"event\": \"suggestion_rejected\",\n  \"item_id\": \"d\"\n}\n"
+  },
+  {
+   "args": [
+    "model-logs",
+    "export",
+    "--file",
+    "missing.jsonl"
+   ],
+   "captured": [],
+   "cwd": "<TMP>/py",
+   "files": {},
+   "input": null,
+   "kind": "run",
+   "returncode": 1,
+   "stderr": "Model log file not found: missing.jsonl\n",
+   "stdout": ""
+  },
+  {
+   "args": [
+    "state",
+    "clear-suggestion-cache"
+   ],
+   "captured": [],
+   "cwd": "<TMP>/py",
+   "files": {},
+   "input": null,
+   "kind": "run",
+   "returncode": 1,
+   "stderr": "Traceback (most recent call last):\n  File \"<frozen runpy>\", line 198, in _run_module_as_main\n  File \"<frozen runpy>\", line 88, in _run_code\n  File \"<ROOT>/verlato/cli/__main__.py\", line 4, in <module>\n    raise SystemExit(main())\n                     ^^^^^^\n  File \"<ROOT>/verlato/cli/main.py\", line 6089, in main\n    return _run_clear_suggestion_cache()\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"<ROOT>/verlato/cli/main.py\", line 5803, in _run_clear_suggestion_cache\n    cache = build_suggestion_cache_backend(\n            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"<ROOT>/verlato/state/suggestion_cache.py\", line 72, in build_suggestion_cache_backend\n    raise SuggestionCacheError(f\"Unknown suggestion cache backend {backend!r}; available: {available}\")\nverlato.state.suggestion_cache.SuggestionCacheError: Unknown suggestion cache backend 'redis'; available: json\n",
+   "stdout": ""
+  }
+ ]
+}
