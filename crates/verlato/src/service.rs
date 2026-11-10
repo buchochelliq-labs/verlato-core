@@ -399,9 +399,14 @@ fn dispatch(cwd: &Path, method: &str, params: &Map<String, Value>) -> Result<Val
                 }
             })
         }
-        other => Err(Dispatch::Protocol(ProtocolError(format!(
-            "Unknown service method: {other}"
-        )))),
+        other => match crate::extensions::current().service_for(other) {
+            Some(extension) => extension
+                .call(cwd, other, params)
+                .map_err(Dispatch::Handler),
+            None => Err(Dispatch::Protocol(ProtocolError(format!(
+                "Unknown service method: {other}"
+            )))),
+        },
     }
 }
 

@@ -352,12 +352,42 @@ fn path_from_diff_header(line: &str) -> Option<String> {
 // PR mapping
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The selected forge adapter. `StandardGit`, `None` and `GitHub` are core's built-ins
+/// ([`crate::extensions::BUILTIN_FORGES`]); `Extension` is one registered by an embedding
+/// binary through [`crate::extensions::Extensions::forge`].
+#[derive(Clone)]
 pub enum PrAdapter {
     StandardGit,
     None,
-    /// PRs from the GitHub REST API (`VERLATO_PR_ADAPTER=github`; ports `GitHubApiAdapter`).
+    /// Read-only PRs from the GitHub REST API (`VERLATO_PR_ADAPTER=github`).
     GitHub(GitHubApi),
+    Extension(std::sync::Arc<dyn crate::extensions::ForgeAdapter>),
+}
+
+impl PrAdapter {
+    pub fn name(&self) -> &str {
+        match self {
+            PrAdapter::StandardGit => "standard-git",
+            PrAdapter::None => "none",
+            PrAdapter::GitHub(_) => "github",
+            PrAdapter::Extension(adapter) => adapter.name(),
+        }
+    }
+
+    /// Whether the adapter makes network calls.
+    pub fn is_remote(&self) -> bool {
+        match self {
+            PrAdapter::StandardGit | PrAdapter::None => false,
+            PrAdapter::GitHub(_) => true,
+            PrAdapter::Extension(adapter) => adapter.is_remote(),
+        }
+    }
+}
+
+impl std::fmt::Debug for PrAdapter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PrAdapter({})", self.name())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -564,6 +594,7 @@ pub fn map_commits_to_prs(
     match adapter {
         PrAdapter::None => return Ok(mapping),
         PrAdapter::GitHub(api) => return api.map_commits(commits),
+        PrAdapter::Extension(adapter) => return adapter.map_commits(commits),
         PrAdapter::StandardGit => {}
     }
     for commit in commits {

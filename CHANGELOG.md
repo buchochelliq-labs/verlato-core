@@ -1,6 +1,7 @@
 ## 0.2.0 (unreleased)
 
 ### Changed
+- Verlato is now licensed under Apache-2.0 (previously MIT), and the repository is `buchochelliq-labs/verlato-core`.
 - Verlato is now a native (Rust) program, with the IntentumDiff engine linked in-process. The Python
   implementation is retired; every command, the editor service and the MCP server run natively.
 - The `verlato` Python package is a thin wrapper over the native runtime (PyO3 bindings, abi3 wheels for
@@ -15,6 +16,9 @@
   `verlato` executable and the parser bundle in `wasm/`, plus `SHA256SUMS`. Usable from the VS Code extension
   via `verlato.cliPath`.
 - Releases are made with rab (`rab.yml`, `.github/workflows/release.yml`); see `docs/RELEASING.md`.
+- Extension points for embedding binaries (`verlato::cli::run_with` and `verlato::extensions`): forge adapters,
+  model providers, a policy hook, event sinks, extra subcommands and service methods. Verlato is open core; see
+  `docs/OPEN_CORE.md`.
 
 ### Removed
 - The `verlato-py` command, `VERLATO_PYTHON_CLI`/`VERLATO_TRACE_DELEGATION`, the `mcp` extra, and

@@ -324,6 +324,57 @@ impl ModelArgs {
 /// return its exit code, and command errors print to stderr and return 1. Both stdout and
 /// stderr are flushed before returning, so embedding hosts (the Python bindings) see all output.
 pub fn run(args: Vec<String>) -> i32 {
+    run_with(args, &crate::extensions::Extensions::default())
+}
+
+/// [`run`] with `extensions` installed for the duration of the command: extra subcommands,
+/// service methods, forge adapters, providers, policy and event sinks (see
+/// [`crate::extensions`]). This is the entry point of binaries that embed Verlato.
+pub fn run_with(args: Vec<String>, extensions: &crate::extensions::Extensions) -> i32 {
+    let _installed = crate::extensions::install(extensions);
+    let code = match extension_command(&args, extensions) {
+        Some(code) => code,
+        None => run_core(args),
+    };
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    code
+}
+
+/// Run `args` as an extension subcommand when its first word names one core lacks.
+fn extension_command(args: &[String], extensions: &crate::extensions::Extensions) -> Option<i32> {
+    use clap::CommandFactory;
+    let name = args.first()?;
+    if Cli::command().find_subcommand(name).is_some() {
+        return None;
+    }
+    let extension = extensions.command_named(name)?;
+    let parsed = extension
+        .command()
+        .bin_name(format!("verlato {name}"))
+        .try_get_matches_from(args);
+    Some(match parsed {
+        Err(error) => {
+            let _ = error.print();
+            error.exit_code()
+        }
+        Ok(matches) => {
+            let result = std::env::current_dir()
+                .map_err(anyhow::Error::from)
+                .and_then(|cwd| extension.run(&cwd, &matches));
+            match result {
+                Ok(code) => code,
+                Err(error) => {
+                    let _ = std::io::stdout().flush();
+                    eprintln!("{error:#}");
+                    1
+                }
+            }
+        }
+    })
+}
+
+fn run_core(args: Vec<String>) -> i32 {
     let code = match Cli::try_parse_from(std::iter::once("verlato".to_owned()).chain(args)) {
         Err(error) => {
             let _ = error.print();

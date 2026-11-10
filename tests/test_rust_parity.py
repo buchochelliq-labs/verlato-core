@@ -1606,8 +1606,25 @@ def _mcp_versions() -> set[str]:
     return {_LEGACY_PYTHON_VERSION, rust_version}
 
 
+_README_RESOURCE = "verlato://guidance/readme"
+
+
+def _mcp_readme_text(response: dict) -> list[dict]:
+    """The `verlato://guidance/readme` resource contents (the repository's README.md)."""
+    contents = response.get("result", {}).get("contents", []) if isinstance(response.get("result"), dict) else []
+    return [item for item in contents if isinstance(item, dict) and item.get("uri") == _README_RESOURCE and "text" in item]
+
+
 def _mcp_compare(python: dict, rust: dict, py_repo: Path, rs_repo: Path, *, engine_identity: bool, label) -> None:
     versions = _mcp_versions()
+    # The readme resource serves the repository's own README.md, which keeps changing after the
+    # goldens were recorded: the native server must serve the current README, and everything
+    # else about the answer must match the recording.
+    for item in _mcp_readme_text(rust):
+        assert item["text"] == (ROOT / "README.md").read_text(encoding="utf-8"), label
+        item["text"] = "<README>"
+    for item in _mcp_readme_text(python):
+        item["text"] = "<README>"
     expected = _mcp_normalize(python, py_repo, versions, engine_identity=engine_identity)
     actual = _mcp_normalize(rust, rs_repo, versions, engine_identity=engine_identity)
     assert actual == expected, label

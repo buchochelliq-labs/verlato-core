@@ -6,6 +6,12 @@
 //! provider, suggestions in every strategy, commit intents, the maintenance commands and the
 //! MCP server. The `verlato` executable and the `verlato` Python package (PyO3 bindings in
 //! `crates/verlato-python`) both run [`cli::run`]; see `docs/RUST_MIGRATION.md`.
+//!
+//! Embedding binaries (such as Verlato Enterprise) depend on this crate as a git dependency and
+//! run [`cli::run_with`] with their [`extensions::Extensions`]: forge adapters, model providers,
+//! a policy hook, event sinks, extra subcommands and service methods. The public API is the
+//! modules below; everything an extension needs is re-exported from [`extensions`],
+//! [`providers`], [`models`], [`git`] and [`pipeline`]. See `docs/OPEN_CORE.md`.
 
 pub mod adaptive;
 pub mod assist;
@@ -15,6 +21,7 @@ pub mod config;
 pub mod drafts;
 pub mod engine;
 pub mod evidence;
+pub mod extensions;
 pub mod git;
 pub mod grouper;
 pub mod intents;

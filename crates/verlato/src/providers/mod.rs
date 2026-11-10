@@ -522,15 +522,25 @@ pub fn build_provider_with(
     mode: Option<&str>,
     suggest_model: Option<&str>,
 ) -> Box<dyn Provider> {
-    let primary = build_single(config, mode, suggest_model);
+    let primary = build_hooked(config, mode, suggest_model);
     if config.fallbacks.is_empty() {
         return primary;
     }
     let mut providers = vec![primary];
     for raw in &config.fallbacks {
-        providers.push(build_single(&config.fallback(raw), None, suggest_model));
+        providers.push(build_hooked(&config.fallback(raw), None, suggest_model));
     }
     Box::new(FallbackProvider { providers })
+}
+
+/// One provider, wrapped with the installed policy/sink hooks (a no-op without extensions).
+fn build_hooked(
+    config: &ProviderConfig,
+    mode: Option<&str>,
+    suggest_override: Option<&str>,
+) -> Box<dyn Provider> {
+    let name = selected_mode(config, mode);
+    crate::extensions::hook_provider(&name, build_single(config, mode, suggest_override))
 }
 
 fn build_single(
@@ -672,7 +682,10 @@ fn build_single(
                 },
             }))
         }
-        _ => Box::new(StubProvider),
+        other => match crate::extensions::current().provider_factory(other) {
+            Some(factory) => factory(config),
+            None => Box::new(StubProvider),
+        },
     }
 }
 

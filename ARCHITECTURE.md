@@ -50,6 +50,9 @@ Verlato is implemented in Rust (`crates/verlato`); the Python package is a thin 
     Python bindings.
 - `crates/verlato/src/mcp.rs`
   - The MCP server on stdio (`verlato serve`) for Copilot and other MCP clients.
+- `crates/verlato/src/extensions.rs` (`verlato::cli::run_with`)
+  - Extension points for separately built binaries (forge adapters, providers, policy, event sinks, subcommands,
+    service methods); no-ops in the open-source binary. See `docs/OPEN_CORE.md`.
 - `crates/verlato-python/`, `python/verlato/`
   - The `verlato` Python package: the `verlato._native` PyO3 module and the `verlato`/`verlato-mcp` commands; the
     wheel ships the IntentumDiff parser bundle.
