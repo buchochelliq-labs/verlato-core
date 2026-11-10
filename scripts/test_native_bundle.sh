@@ -25,7 +25,7 @@ assert len(roots) == 1, f"{archive.name}: expected one top-level directory, foun
 root = roots[0]
 assert archive.name.startswith(root.name), f"{archive.name}: top-level directory {root.name}"
 exe = root / ("verlato.exe" if archive.name.endswith(".zip") else "verlato")
-for required in (exe, root / "LICENSE.md", root / "README.md", root / "wasm" / "parser_manifest.json"):
+for required in (exe, root / "LICENSE", root / "NOTICE", root / "README.md", root / "wasm" / "parser_manifest.json"):
     assert required.is_file(), f"{archive.name}: missing {required.relative_to(work)}"
 assert len(list((root / "wasm").glob("*.wasm"))) > 10, f"{archive.name}: parser components missing"
 print(root)

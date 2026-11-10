@@ -14,13 +14,13 @@ release:
 packages:
   # The native executable with its parser bundle, per platform, as GitHub release assets:
   # verlato-v<version>-<target>.tar.gz (.zip on Windows), each holding verlato-v<version>-<target>/
-  # {verlato, wasm/, LICENSE.md, README.md}, plus SHA256SUMS.
+  # {verlato, wasm/, LICENSE, NOTICE, README.md}, plus SHA256SUMS.
   - name: verlato-native
     registry: github
     manifest: crates/verlato/Cargo.toml
     version: "0.2.0"
     tag: "v{version}"
-    paths: ["crates/**", "Cargo.toml", "Cargo.lock", "scripts/**", "README.md", "LICENSE.md"]
+    paths: ["crates/**", "Cargo.toml", "Cargo.lock", "scripts/**", "README.md", "LICENSE", "NOTICE"]
     checksums: SHA256SUMS
     artifacts:
       - kind: command
@@ -56,7 +56,7 @@ packages:
     manifest: pyproject.toml
     version: "0.2.0"
     paths: ["pyproject.toml", "python/**", "crates/**", "Cargo.toml", "Cargo.lock", "scripts/**", "README.md",
-            "LICENSE.md"]
+            "LICENSE", "NOTICE"]
     artifacts:
       - kind: maturin
         targets:

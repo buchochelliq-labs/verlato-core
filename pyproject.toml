@@ -9,8 +9,8 @@ dynamic = ["version"]
 description = "Semantic release notes powered by IntentumDiff, with conventional commit and intent inference"
 readme = "README.md"
 requires-python = ">=3.12"
-license = "MIT"
-license-files = ["LICENSE.md"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 keywords = ["release-notes", "changelog", "semantic-diff", "conventional-commits", "mcp"]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -40,10 +40,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/buchochelliq-labs/verlato"
-Source = "https://github.com/buchochelliq-labs/verlato"
-Issues = "https://github.com/buchochelliq-labs/verlato/issues"
-Changelog = "https://github.com/buchochelliq-labs/verlato/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/buchochelliq-labs/verlato-core"
+Source = "https://github.com/buchochelliq-labs/verlato-core"
+Issues = "https://github.com/buchochelliq-labs/verlato-core/issues"
+Changelog = "https://github.com/buchochelliq-labs/verlato-core/blob/main/CHANGELOG.md"
 
 [project.scripts]
 verlato = "verlato._cli:main"

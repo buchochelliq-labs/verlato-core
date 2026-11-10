@@ -31,7 +31,8 @@ verlato-v<version>-<target>.tar.gz            (.zip for Windows)
     ├── wasm/                                 the IntentumDiff parser bundle
     │   ├── parser_manifest.json
     │   └── *_parser.wasm
-    ├── LICENSE.md
+    ├── LICENSE
+    ├── NOTICE
     └── README.md
 SHA256SUMS                                    sha256sum format, over every asset
 ```
@@ -75,7 +76,7 @@ pin in the same commit.**
 2. **PyPI trusted publisher.** Create a `pypi` environment in the repository settings (Settings →
    Environments; optionally limit it to `main` and `release-*` tags, and add required reviewers). On PyPI, the
    `verlato` project does not exist yet, so add a *pending* trusted publisher from your account's publishing
-   page (<https://pypi.org/manage/account/publishing/>): owner `buchochelliq-labs`, repository `verlato`,
+   page (<https://pypi.org/manage/account/publishing/>): owner `buchochelliq-labs`, repository `verlato-core`,
    workflow `release.yml`, environment `pypi`. The first upload creates the project. No token is stored.
 3. **GitHub Releases** need nothing: the `publish-github` job uses the workflow's token with
    `contents: write`.

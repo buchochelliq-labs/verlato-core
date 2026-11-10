@@ -5,10 +5,10 @@
   "version": "0.0.1",
   "publisher": "verlato",
   "icon": "media/verlato-icon.png",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/n1ckyb/verlato.git"
+    "url": "https://github.com/buchochelliq-labs/verlato-core.git"
   },
   "engines": {
     "vscode": "^1.90.0"

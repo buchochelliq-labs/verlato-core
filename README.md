@@ -164,7 +164,7 @@ verlato.__version__, verlato.engine_version()
 
 ### Release bundles (GitHub Releases)
 
-Each [GitHub release](https://github.com/buchochelliq-labs/verlato/releases) has a self-contained bundle per
+Each [GitHub release](https://github.com/buchochelliq-labs/verlato-core/releases) has a self-contained bundle per
 platform, `verlato-v<version>-<target>.tar.gz` (`.zip` on Windows), holding the `verlato` executable with the
 parser bundle beside it in `wasm/`, plus `SHA256SUMS`:
 
@@ -454,3 +454,10 @@ python -m pytest        # the package tests and the parity suite (tests/golden)
 2. PR-level grouping is the default output unit.
 3. Vague commit messages trigger IntentumDiff semantic evidence and summaries.
 4. Internal-only changes are separated from customer-facing changes when detectable.
+
+## License
+
+Verlato is licensed under the [Apache License, Version 2.0](LICENSE); see also [NOTICE](NOTICE). Releases
+before the relicensing were published under the MIT License. Verlato is open core: paid team and organisation
+features live in a separate private repository, and [docs/OPEN_CORE.md](docs/OPEN_CORE.md) describes the
+boundary.

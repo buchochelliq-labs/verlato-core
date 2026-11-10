@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the native release bundle for one target: an archive holding the `verlato` executable,
 # the IntentumDiff parser bundle in `wasm/` beside it (where the executable looks for it), and
-# LICENSE.md and README.md.
+# LICENSE, NOTICE and README.md.
 #
 # Usage: scripts/package_native_bundle.sh TARGET [VERSION]
 #   Writes target/verlato-bundle/verlato-v<VERSION>-<TARGET>.tar.gz (.zip for Windows targets).
@@ -25,7 +25,7 @@ stage="target/verlato-bundle/$name"
 rm -rf "$stage"
 mkdir -p "$stage"
 cp "target/$target/release/$exe" "$stage/$exe"
-cp LICENSE.md README.md "$stage/"
+cp LICENSE NOTICE README.md "$stage/"
 scripts/fetch_intentumdiff_parsers.sh "$stage/wasm"
 
 "$python" - "$stage" "$exe" <<'PY'
