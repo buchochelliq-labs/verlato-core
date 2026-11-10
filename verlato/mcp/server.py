@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import typing
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -204,7 +205,32 @@ GuidanceName = Annotated[
 ]
 
 
+class _ExitSafeService:
+    """Proxy that turns `SystemExit` from CLI helpers into ordinary errors.
+
+    The CLI helpers behind the service report user errors with `SystemExit`, which FastMCP does
+    not catch: it escaped the tool call and left the stdio server without an answer.
+    """
+
+    def __init__(self, service: Any) -> None:
+        self._service = service
+
+    def __getattr__(self, name: str) -> Any:
+        attribute = getattr(self._service, name)
+        if not callable(attribute):
+            return attribute
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return attribute(*args, **kwargs)
+            except SystemExit as exc:
+                raise RuntimeError(str(exc.code if exc.code is not None else exc)) from None
+
+        return call
+
+
 def _register_server_components(server, svc: MCPService) -> None:
+    svc = _ExitSafeService(svc)  # type: ignore[assignment]
     def _overview_payload() -> dict[str, Any]:
         return {
             "name": "verlato",
@@ -268,12 +294,6 @@ def _register_server_components(server, svc: MCPService) -> None:
             raise FileNotFoundError(f"Sample config not found: {_SAMPLE_CONFIG_PATH}")
         return _SAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
 
-    @server.prompt(
-        title="Verlato Review Request",
-        description=_PROMPT_METADATA[0].description,
-        tags={"verlato", "review", "release-notes"},
-        version=__version__,
-    )
     def verlato_review_request(
         base: GitRef,
         head: GitRef = "HEAD",
@@ -295,6 +315,16 @@ def _register_server_components(server, svc: MCPService) -> None:
             "4. If needed, call verlato_update_review_state to refine item status or summary.\n"
             "5. Call verlato_apply_draft only when you are ready to write the chosen target file."
         )
+
+    # FastMCP converts prompt arguments with the raw signature annotations, which are unresolved
+    # strings ("GitRef") under `from __future__ import annotations`; resolve them first.
+    verlato_review_request.__annotations__ = typing.get_type_hints(verlato_review_request, include_extras=True)
+    server.prompt(
+        title="Verlato Review Request",
+        description=_PROMPT_METADATA[0].description,
+        tags={"verlato", "review", "release-notes"},
+        version=__version__,
+    )(verlato_review_request)
 
     @server.tool(
         annotations={

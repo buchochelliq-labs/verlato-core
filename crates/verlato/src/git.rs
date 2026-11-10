@@ -352,10 +352,188 @@ fn path_from_diff_header(line: &str) -> Option<String> {
 // PR mapping
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrAdapter {
     StandardGit,
     None,
+    /// PRs from the GitHub REST API (`VERLATO_PR_ADAPTER=github`; ports `GitHubApiAdapter`).
+    GitHub(GitHubApi),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitHubApi {
+    pub repo: String,
+    pub token: String,
+    pub api_base: String,
+}
+
+impl GitHubApi {
+    /// `GitHubApiAdapter.from_env`: needs `VERLATO_GITHUB_REPO` and `GITHUB_TOKEN`/`GH_TOKEN`.
+    pub fn from_env() -> Option<GitHubApi> {
+        let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+        Some(GitHubApi {
+            repo: env("VERLATO_GITHUB_REPO")?,
+            token: env("GITHUB_TOKEN").or_else(|| env("GH_TOKEN"))?,
+            api_base: env("VERLATO_GITHUB_API_URL")
+                .unwrap_or_else(|| "https://api.github.com".into())
+                .trim_end_matches('/')
+                .to_owned(),
+        })
+    }
+
+    fn request_json(
+        &self,
+        path: &str,
+        params: &[(&str, String)],
+    ) -> anyhow::Result<serde_json::Value> {
+        let query = if params.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "?{}",
+                params
+                    .iter()
+                    .map(|(k, v)| format!("{k}={}", url_encode(v)))
+                    .collect::<Vec<_>>()
+                    .join("&")
+            )
+        };
+        let url = format!("{}{path}{query}", self.api_base);
+        let headers = [
+            ("Accept", "application/vnd.github+json".to_owned()),
+            ("Authorization", format!("Bearer {}", self.token)),
+            ("X-GitHub-Api-Version", "2022-11-28".to_owned()),
+            ("User-Agent", "verlato".to_owned()),
+        ];
+        let text =
+            crate::providers::http::get_text(&url, &headers, std::time::Duration::from_secs(60))
+                .map_err(|e| anyhow::anyhow!("GitHub API request {path} failed: {e}"))?;
+        Ok(serde_json::from_str(&text)?)
+    }
+
+    fn paginate(&self, path: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+        let mut results = Vec::new();
+        for page in 1.. {
+            let data = self.request_json(
+                path,
+                &[("page", page.to_string()), ("per_page", "100".into())],
+            )?;
+            let items = match data {
+                serde_json::Value::Array(items) => items,
+                serde_json::Value::Null => break,
+                serde_json::Value::Object(ref o) if o.is_empty() => break,
+                other => anyhow::bail!("Expected list payload for {path}, got {other}"),
+            };
+            if items.is_empty() {
+                break;
+            }
+            let full = items.len() >= 100;
+            results.extend(items);
+            if !full {
+                break;
+            }
+        }
+        Ok(results)
+    }
+
+    fn pull_request(&self, number: i64) -> anyhow::Result<PullRequest> {
+        let data = self.request_json(&format!("/repos/{}/pulls/{number}", self.repo), &[])?;
+        anyhow::ensure!(
+            data.is_object(),
+            "Expected object payload for pull request details"
+        );
+        let text = |value: Option<&serde_json::Value>| {
+            value
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_owned()
+        };
+        let files = self.paginate(&format!("/repos/{}/pulls/{number}/files", self.repo))?;
+        Ok(PullRequest {
+            number,
+            title: text(data.get("title")).trim().to_owned(),
+            body: text(data.get("body")),
+            labels: data
+                .get("labels")
+                .and_then(serde_json::Value::as_array)
+                .map(|labels| {
+                    labels
+                        .iter()
+                        .map(|l| text(l.get("name")))
+                        .filter(|n| !n.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            files: files
+                .iter()
+                .filter(|f| !text(f.get("filename")).is_empty())
+                .map(|f| ChangedFile {
+                    path: text(f.get("filename")),
+                    status: f
+                        .get("status")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("modified")
+                        .to_owned(),
+                    patch: text(f.get("patch")),
+                })
+                .collect(),
+            base_ref: text(data.get("base").and_then(|b| b.get("ref"))),
+            head_ref: text(data.get("head").and_then(|h| h.get("ref"))),
+        })
+    }
+
+    /// PRs for each commit; a failed commit lookup means "no PR", a failed PR fetch is an error.
+    fn map_commits(&self, commits: &[Commit]) -> anyhow::Result<HashMap<String, PullRequest>> {
+        let mut by_commit: HashMap<String, Option<PullRequest>> = HashMap::new();
+        let mut by_number: HashMap<i64, PullRequest> = HashMap::new();
+        let mut mapping = HashMap::new();
+        for commit in commits {
+            if !by_commit.contains_key(&commit.sha) {
+                let pulls = self
+                    .request_json(
+                        &format!("/repos/{}/commits/{}/pulls", self.repo, commit.sha),
+                        &[],
+                    )
+                    .ok();
+                let number = pulls
+                    .as_ref()
+                    .and_then(serde_json::Value::as_array)
+                    .and_then(|p| p.first())
+                    .and_then(|p| p.get("number"))
+                    .and_then(serde_json::Value::as_i64);
+                let pr = match number {
+                    None => None,
+                    Some(number) => Some(match by_number.get(&number) {
+                        Some(pr) => pr.clone(),
+                        None => {
+                            let pr = self.pull_request(number)?;
+                            by_number.insert(number, pr.clone());
+                            pr
+                        }
+                    }),
+                };
+                by_commit.insert(commit.sha.clone(), pr);
+            }
+            if let Some(Some(pr)) = by_commit.get(&commit.sha) {
+                mapping.insert(commit.sha.clone(), pr.clone());
+            }
+        }
+        Ok(mapping)
+    }
+}
+
+/// `urllib.parse.urlencode` value quoting (`quote_plus`).
+fn url_encode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'.' | b'-' | b'~' => {
+                (b as char).to_string()
+            }
+            b' ' => "+".into(),
+            other => format!("%{other:02X}"),
+        })
+        .collect()
 }
 
 fn pr_patterns() -> &'static [Regex; 3] {
@@ -378,10 +556,15 @@ pub fn extract_pr_number(subject: &str) -> Option<i64> {
 }
 
 /// Map commit SHAs to PRs inferred from commit subjects (Python `StandardGitAdapter`).
-pub fn map_commits_to_prs(adapter: PrAdapter, commits: &[Commit]) -> HashMap<String, PullRequest> {
+pub fn map_commits_to_prs(
+    adapter: &PrAdapter,
+    commits: &[Commit],
+) -> anyhow::Result<HashMap<String, PullRequest>> {
     let mut mapping = HashMap::new();
-    if adapter == PrAdapter::None {
-        return mapping;
+    match adapter {
+        PrAdapter::None => return Ok(mapping),
+        PrAdapter::GitHub(api) => return api.map_commits(commits),
+        PrAdapter::StandardGit => {}
     }
     for commit in commits {
         let title = subject(&commit.message);
@@ -397,7 +580,7 @@ pub fn map_commits_to_prs(adapter: PrAdapter, commits: &[Commit]) -> HashMap<Str
             );
         }
     }
-    mapping
+    Ok(mapping)
 }
 
 /// GitHub-style URL for a git remote (Python `normalize_remote_url`).

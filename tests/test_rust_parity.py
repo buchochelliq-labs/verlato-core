@@ -969,3 +969,305 @@ def test_draft_suggest_apply_errors_match(tmp_path: Path):
         rust = subprocess.run(_rust(*cmd), cwd=rs_repo, env=_native_only(env), capture_output=True, text=True)
         assert (rust.returncode != 0) == (python.returncode != 0) and rust.returncode != 0, args
         assert python.stderr.strip().splitlines()[-1] in rust.stderr, (args, python.stderr, rust.stderr)
+
+
+def test_github_pr_adapter_matches(tmp_path: Path):
+    """The GitHub PR adapter runs natively: same API requests, PR mapping and outputs."""
+    from http.server import BaseHTTPRequestHandler
+    from urllib.parse import parse_qs, urlparse
+
+    py_repo, rs_repo, env = _pair(tmp_path, "git")
+    shas = subprocess.run(
+        ["git", "log", "--format=%H %s", "v1.0.0..HEAD"], cwd=py_repo, capture_output=True, text=True, check=True
+    ).stdout.splitlines()
+    by_subject = {line.split(" ", 1)[1]: line.split(" ", 1)[0] for line in shas}
+    pr_commits = {by_subject["feat(api): add export endpoint"], by_subject["fix(api): handle empty export"]}
+    failing = by_subject["Update app helpers"]
+    files = [{"filename": f"api/file_{i}.py", "status": "modified", "patch": f"@@ -1 +1 @@\n-a\n+b{i}"} for i in range(101)]
+    requests: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - http.server API
+            url = urlparse(self.path)
+            requests.append(self.path)
+            assert self.headers["Authorization"] == "Bearer gh-test"
+            parts = url.path.strip("/").split("/")
+            status, payload = 200, []
+            if parts[3:4] == ["commits"]:
+                sha = parts[4]
+                if sha == failing:
+                    status, payload = 500, {"message": "boom"}
+                else:
+                    payload = [{"number": 7}] if sha in pr_commits else []
+            elif parts[-1] == "files":
+                page = int(parse_qs(url.query)["page"][0])
+                payload = files[(page - 1) * 100 : page * 100]
+            else:
+                payload = {
+                    "title": "  Export API (#7)  ",
+                    "body": "Adds CSV export.",
+                    "labels": [{"name": "feature"}, {"name": ""}],
+                    "base": {"ref": "main"},
+                    "head": {"ref": "export"},
+                }
+            body = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = _serve(Handler)
+    try:
+        env = {
+            **env,
+            "VERLATO_PR_ADAPTER": "github",
+            "VERLATO_GITHUB_REPO": "acme/demo",
+            "GITHUB_TOKEN": "gh-test",
+            "VERLATO_GITHUB_API_URL": f"http://127.0.0.1:{server.server_address[1]}",
+        }
+        for args in (("scan", "--base", "v1.0.0"), ("draft", "json", "--base", "v1.0.0", "--version", "v1.1.0")):
+            requests.clear()
+            python_out = json.loads(_run(_python(*args), py_repo, env))
+            python_requests = list(requests)
+            requests.clear()
+            rust_out = json.loads(_run(_rust(*args), rs_repo, _native_only(env)))
+            assert rust_out == python_out, args
+            assert requests == python_requests, args
+            if args[0] == "scan":
+                pr_items = [item for item in rust_out if item["source"]["pr_number"] == 7]
+                assert pr_items and pr_items[0]["content"]["title"] == "Export API (#7)"
+                assert any(len(item["evidence"]["files"]) >= 101 for item in pr_items)
+                assert any("files?page=2&per_page=100" in path for path in requests)
+    finally:
+        server.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# MCP server (`verlato serve`)
+# ---------------------------------------------------------------------------
+
+_PYDANTIC_DOCS = re.compile(r"errors\.pydantic\.dev/[0-9.]+/")
+
+
+class _McpClient:
+    """A JSON-RPC client over a server's stdio; answers are read one request at a time."""
+
+    def __init__(self, cmd: list[str], repo: Path, env: dict[str, str]) -> None:
+        self.process = subprocess.Popen(
+            cmd, cwd=repo, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        self.next_id = 0
+
+    def send(self, message: dict) -> None:
+        assert self.process.stdin is not None
+        self.process.stdin.write(json.dumps(message) + "\n")
+        self.process.stdin.flush()
+
+    def request(self, method: str, params: dict | None = None) -> dict:
+        self.next_id += 1
+        message: dict = {"jsonrpc": "2.0", "id": self.next_id, "method": method}
+        if params is not None:
+            message["params"] = params
+        self.send(message)
+        assert self.process.stdout is not None
+        line = self.process.stdout.readline()
+        assert line, f"{method}: the server closed stdout"
+        response = json.loads(line)
+        assert response["id"] == self.next_id, response
+        return response
+
+    def close(self) -> str:
+        assert self.process.stdin is not None and self.process.stderr is not None
+        self.process.stdin.close()
+        self.process.wait(timeout=60)
+        return self.process.stderr.read()
+
+
+def _mcp_normalize(value, repo: Path, versions: set[str], *, engine_identity: bool):
+    """Runtime-neutral MCP payloads: versions, repo paths, pydantic doc links and (for the
+    IntentumDiff engine) engine build identity are masked; JSON text content is parsed."""
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if key == "diff_engine" and isinstance(item, dict):
+                item = {k: item.get(k) for k in ("engine", "configured")}
+            out[key] = _mcp_normalize(item, repo, versions, engine_identity=engine_identity)
+        return _strip_engine_identity(out) if engine_identity else out
+    if isinstance(value, list):
+        return [_mcp_normalize(item, repo, versions, engine_identity=engine_identity) for item in value]
+    if isinstance(value, str):
+        if value in versions:
+            return "<version>"
+        if value[:1] in "[{":
+            try:
+                parsed = json.loads(value)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, (dict, list)):
+                return {"<json>": _mcp_normalize(parsed, repo, versions, engine_identity=engine_identity)}
+        text = _PYDANTIC_DOCS.sub("errors.pydantic.dev/<v>/", value.replace(str(repo), "<repo>"))
+        for version in versions:
+            text = text.replace(f'"version": "{version}"', '"version": "<version>"')
+        return _strip_engine_identity(text) if engine_identity else text
+    return value
+
+
+def _mcp_pair(tmp_path: Path, engine: str, privacy: str | None = None):
+    pytest.importorskip("fastmcp")
+    py_repo, rs_repo, env = _pair(tmp_path, engine)
+    if privacy is not None:
+        for repo in (py_repo, rs_repo):
+            (repo / "verlato.json").write_text(json.dumps({"model_privacy": privacy}))
+    return py_repo, rs_repo, env
+
+
+def _mcp_versions() -> set[str]:
+    from verlato import __version__
+
+    rust_version = _run(_rust("--version"), ROOT, dict(os.environ)).split()[-1]
+    return {__version__, rust_version}
+
+
+def _mcp_compare(python: dict, rust: dict, py_repo: Path, rs_repo: Path, *, engine_identity: bool, label) -> None:
+    versions = _mcp_versions()
+    expected = _mcp_normalize(python, py_repo, versions, engine_identity=engine_identity)
+    actual = _mcp_normalize(rust, rs_repo, versions, engine_identity=engine_identity)
+    assert actual == expected, label
+
+
+_MCP_INIT = {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "parity", "version": "1"}}
+
+
+@pytest.mark.parametrize("engine", ["git", "intentumdiff"])
+@pytest.mark.parametrize("privacy", ["metadata-only", "trusted-provider-patch"])
+def test_mcp_server_matches(tmp_path: Path, engine: str, privacy: str):
+    """`verlato serve` runs natively and answers an MCP session exactly like the FastMCP server."""
+    py_repo, rs_repo, env = _mcp_pair(tmp_path, engine, privacy)
+    engine_identity = engine != "git"
+    python = _McpClient(_python("serve"), py_repo, env)
+    rust = _McpClient(_rust("serve"), rs_repo, _native_only(env))
+
+    def both(method: str, params: dict | None = None) -> dict:
+        python_response = python.request(method, params)
+        rust_response = rust.request(method, params)
+        _mcp_compare(
+            python_response, rust_response, py_repo, rs_repo, engine_identity=engine_identity, label=(method, params)
+        )
+        return python_response
+
+    def call(name: str, **arguments) -> dict:
+        return both("tools/call", {"name": name, "arguments": arguments})["result"]
+
+    try:
+        assert both("initialize", _MCP_INIT)["result"]["protocolVersion"] == "2025-06-18"
+        for client in (python, rust):
+            client.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        tools = [tool["name"] for tool in both("tools/list")["result"]["tools"]]
+        legacy = {"verlato_get_file_patch", "verlato_search_item_diff"}
+        assert legacy <= set(tools) if engine == "git" else not legacy & set(tools)
+        for method in ("resources/list", "resources/templates/list", "prompts/list", "ping"):
+            both(method)
+
+        call("verlato_service_health")
+        call("verlato_service_info")
+        scan = call("verlato_scan_unpublished_changes", base="v1.0.0")
+        assert scan["structuredContent"]["result"]
+        call("verlato_reconcile_preview", base="v1.0.0")
+        call("verlato_get_draft_document", base="v1.0.0", version="v1.1.0", include_confidence=True)
+        call("verlato_preview_release_notes", base="v1.0.0", version="v1.1.0", include_provenance="yes")
+        listing = call("verlato_list_suggestion_items", base="v1.0.0", include_files=True)["structuredContent"]
+        for item in listing["items"][:4]:
+            item_id = item["item_id"]
+            detail = call("verlato_get_suggestion_item", base="v1.0.0", item_id=item_id)
+            assert not detail["isError"]
+            for changed in item["files"]:
+                semantic = call("verlato_get_file_semantic_diff", base="v1.0.0", item_id=item_id, path=changed["path"])
+                assert not semantic["isError"]
+            for query in ("export", "rows", "zzz-none"):
+                call("verlato_search_semantic_diff", base="v1.0.0", item_id=item_id, query=query, limit=2)
+            path = item["files"][0]["path"]
+            call("verlato_get_file_patch", base="v1.0.0", item_id=item_id, path=path, offset=10, limit=40)
+            call("verlato_search_item_diff", base="v1.0.0", item_id=item_id, query="return", limit="3")
+
+        item_id = scan["structuredContent"]["result"][0]["id"]
+        updated = call("verlato_update_review_state", base="v1.0.0", item_id=item_id, status="ready", reviewer="alice")
+        assert updated["structuredContent"]["status"] == "ready"
+        call("verlato_update_review_state", base="v1.0.0", item_id=item_id, summary="Adds the export endpoint.")
+        applied = call("verlato_apply_draft", base="v1.0.0", version="v1.1.0")
+        assert not applied["isError"]
+        assert (rs_repo / "CHANGELOG.md").read_text() == (py_repo / "CHANGELOG.md").read_text()
+        state = [json.loads((repo / ".verlato_state.json").read_text()) for repo in (py_repo, rs_repo)]
+        compare = _strip_engine_identity if engine_identity else (lambda value: value)
+        assert compare(state[1]) == compare(state[0])
+
+        shas = _commit_shas(py_repo)
+        call("verlato_draft_conventional_commit", base="v1.0.0", sha=shas[0][:10])
+        call("verlato_draft_conventional_commits", base="v1.0.0", shas=[shas[1][:8], "deadbeef"])
+
+        # Errors: unknown tools and items, failed validation, service errors.
+        for name, arguments in (
+            ("nope", {}),
+            ("verlato_scan_unpublished_changes", {}),
+            ("verlato_service_health", {"extra": 1}),
+            ("verlato_get_draft_document", {"base": 5, "model_provider": "bad", "include_confidence": "maybe"}),
+            ("verlato_apply_draft", {"base": "v1.0.0", "target": "wiki"}),
+            ("verlato_draft_conventional_commits", {"base": "v1.0.0", "shas": ["a", 3]}),
+            ("verlato_get_suggestion_item", {"base": "v1.0.0", "item_id": "ci_missing"}),
+            ("verlato_get_file_semantic_diff", {"base": "v1.0.0", "item_id": item_id, "path": "nope.py"}),
+            ("verlato_update_review_state", {"base": "v1.0.0", "item_id": item_id}),
+            ("verlato_update_review_state", {"base": "v1.0.0", "item_id": "ci_missing", "status": "ready"}),
+            ("verlato_draft_conventional_commit", {"base": "v1.0.0", "sha": "deadbeef"}),
+        ):
+            assert both("tools/call", {"name": name, "arguments": arguments})["result"]["isError"], name
+
+        for uri in (
+            "verlato://overview",
+            "verlato://guidance/readme",
+            "verlato://guidance/skill",
+            "verlato://sample-config",
+            "verlato://guidance/zzz",
+            "verlato://nope",
+        ):
+            both("resources/read", {"uri": uri})
+        both("prompts/get", {"name": "verlato_review_request", "arguments": {"base": "v1.0.0", "head": "main"}})
+        both("prompts/get", {"name": "verlato_review_request", "arguments": {}})
+        both("prompts/get", {"name": "nope"})
+        both("bogus/method")
+        both("tools/call", {})
+        assert both("initialize", {**_MCP_INIT, "protocolVersion": "1999-01-01"})["result"]["protocolVersion"]
+    finally:
+        python.close()
+        rust_stderr = rust.close()
+    assert "not available in the Rust build" not in rust_stderr
+
+
+def test_mcp_request_model_input_matches(tmp_path: Path):
+    """`verlato_request_model_input` asks the provider natively and records the same summary."""
+    pytest.importorskip("fastmcp")
+    py_repo, rs_repo, env = _suggest_setup(tmp_path, "git", "plugin", None)
+    logs = {name: tmp_path / f"mcp-{name}.jsonl" for name in ("py", "rs")}
+    python = _McpClient(_python("serve"), py_repo, {**env, "PARITY_LOG": str(logs["py"])})
+    rust = _McpClient(_rust("serve"), rs_repo, _native_only({**env, "PARITY_LOG": str(logs["rs"])}))
+    try:
+        for client in (python, rust):
+            client.request("initialize", _MCP_INIT)
+        item_id = json.loads(_run(_python("scan", "--base", "v1.0.0"), py_repo, env))[0]["id"]
+        for arguments in (
+            {"base": "v1.0.0", "item_id": item_id, "reviewer": "alice"},
+            {"base": "v1.0.0", "item_id": "ci_missing"},
+        ):
+            params = {"name": "verlato_request_model_input", "arguments": arguments}
+            python_response, rust_response = python.request("tools/call", params), rust.request("tools/call", params)
+            _mcp_compare(python_response, rust_response, py_repo, rs_repo, engine_identity=False, label=arguments)
+        assert python_response["result"]["isError"]
+    finally:
+        python.close()
+        rust.close()
+    assert _read_log(logs["rs"]) == _read_log(logs["py"])
+    assert json.loads((rs_repo / ".verlato_state.json").read_text()) == json.loads(
+        (py_repo / ".verlato_state.json").read_text()
+    )

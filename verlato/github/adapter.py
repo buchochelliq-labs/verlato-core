@@ -25,7 +25,9 @@ class GitHubApiAdapter(PullRequestAdapter):
         token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
         if not repo or not token:
             return None
-        return cls(repo=repo, token=token)
+        # GitHub Enterprise Server (and tests) point the adapter at another API root.
+        api_base = os.getenv("VERLATO_GITHUB_API_URL") or "https://api.github.com"
+        return cls(repo=repo, token=token, api_base=api_base)
 
     def find_pr_for_commit(self, commit_sha: str) -> PullRequest | None:
         if commit_sha in self._commit_cache:

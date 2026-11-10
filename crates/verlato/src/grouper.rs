@@ -331,7 +331,8 @@ mod tests {
     #[test]
     fn pr_area_split() {
         let commits = vec![commit("a", "Big (#3)", &["web/a.ts", "server/b.py"])];
-        let prs = crate::git::map_commits_to_prs(crate::git::PrAdapter::StandardGit, &commits);
+        let prs =
+            crate::git::map_commits_to_prs(&crate::git::PrAdapter::StandardGit, &commits).unwrap();
         let groups = group(&commits, &prs);
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].pr.as_ref().unwrap().title, "Big (#3) [backend]");

@@ -16,6 +16,7 @@ const NATIVE: &[&[&str]] = &[
     &["reconcile"],
     &["render"],
     &["service"],
+    &["serve"],
     &["draft", "json"],
     &["draft", "preview"],
     &["draft", "apply"],
@@ -113,6 +114,8 @@ enum Command {
         include_provenance: bool,
     },
     Service,
+    /// MCP server on stdio.
+    Serve,
     #[command(subcommand)]
     Draft(DraftCommand),
     #[command(subcommand)]
@@ -305,13 +308,13 @@ fn json_out(value: &impl serde::Serialize) -> Result<()> {
     Ok(())
 }
 
-/// Why a native command must still run in Python, if it must: everything these commands use is
-/// native except the GitHub PR adapter.
+/// Why a native command must still run in Python, if it must. Everything the detection commands
+/// use (providers, commit intents, PR adapters) is native; this only reports a PR adapter that
+/// fails to configure.
 fn python_reason(ctx: &Context, _model: Option<&ModelArgs>) -> Option<String> {
-    if ctx.pr_adapter().is_err() {
-        return Some("the github PR adapter".into());
-    }
-    None
+    ctx.pr_adapter()
+        .err()
+        .map(|e| format!("the PR adapter: {e}"))
 }
 
 impl ModelArgs {
@@ -386,6 +389,7 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
             println!("{}", document.rendered[&format]);
         }
         Command::Service => return service::run(&cwd),
+        Command::Serve => return verlato::mcp::run(&cwd),
         Command::Draft(command) => match command {
             DraftCommand::Json(args)
             | DraftCommand::Preview(args)
@@ -708,6 +712,6 @@ mod tests {
         ]))));
         assert!(is_native(&command_path(&args(&["commit", "conventional"]))));
         assert!(!is_native(&command_path(&args(&["doctor", "ollama"]))));
-        assert!(!is_native(&command_path(&args(&["serve"]))));
+        assert!(is_native(&command_path(&args(&["serve"]))));
     }
 }

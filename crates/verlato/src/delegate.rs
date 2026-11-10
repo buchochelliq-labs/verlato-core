@@ -1,5 +1,6 @@
-//! Delegation to the Python implementation for features not yet ported to Rust
-//! (model providers, suggestions, commit-message drafting, MCP server, GitHub adapter).
+//! Delegation to the Python implementation for features not yet ported to Rust (batched and
+//! tool-retrieval suggestion strategies, adaptive recommendations and a few maintenance
+//! commands).
 //!
 //! The Python CLI is located with `VERLATO_PYTHON_CLI` (a command line, e.g.
 //! `python3 -m verlato.cli`), then `verlato-py` on PATH. Delegated commands keep the exact
@@ -8,8 +9,8 @@
 use anyhow::{bail, Context, Result};
 use std::process::{Command, Stdio};
 
-pub const PYTHON_HINT: &str = "Model-backed features (suggestions, LLM summaries, commit-message drafting, \
-     commit intent inference, MCP server, GitHub PR adapter) are still served by the Python implementation. \
+pub const PYTHON_HINT: &str = "Some features (batched and tool-retrieval suggestion strategies, adaptive \
+     recommendations, model-log export and feedback reports) are still served by the Python implementation. \
      Install it with `pip install -e .` from the Verlato repository (it provides `verlato-py`), or set \
      VERLATO_PYTHON_CLI to the command that runs it.";
 

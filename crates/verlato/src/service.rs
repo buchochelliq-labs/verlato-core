@@ -216,9 +216,8 @@ fn conventional_request(params: &Map<String, Value>) -> crate::pipeline::Convent
     }
 }
 
-/// Whether a native method must still run in Python. Draft methods detect changes, so they
-/// keep Python semantics for the same prerequisite as the CLI (`python_reason` in main.rs): the
-/// GitHub PR adapter. Model providers and commit intent inference are native.
+/// Whether a native method must still run in Python. Draft methods detect changes and follow
+/// the CLI (`python_reason` in main.rs); providers, commit intents and PR adapters are native.
 fn needs_python(cwd: &Path, method: &str) -> bool {
     if !method.starts_with("draft.") {
         return false;
@@ -451,14 +450,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn draft_methods_route_to_python_only_for_the_github_adapter() {
+    fn draft_methods_run_natively_with_the_github_adapter() {
         let dir = std::env::temp_dir();
-        assert!(!needs_python(&dir, "draft.get"));
         std::env::set_var("VERLATO_PR_ADAPTER", "github");
         let github = needs_python(&dir, "draft.get");
-        let state = needs_python(&dir, "state.show");
         std::env::remove_var("VERLATO_PR_ADAPTER");
-        assert!(github);
-        assert!(!state);
+        assert!(!github);
+        assert!(!needs_python(&dir, "draft.get"));
     }
 }

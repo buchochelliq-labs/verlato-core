@@ -111,6 +111,27 @@ fn send(
     body: &str,
     timeout: Duration,
 ) -> Result<ureq::Response, HttpError> {
+    send_with(url, "POST", headers, Some(body), timeout)
+}
+
+/// GET `url` and return the body text.
+pub fn get_text(
+    url: &str,
+    headers: &[(&str, String)],
+    timeout: Duration,
+) -> Result<String, HttpError> {
+    send_with(url, "GET", headers, None, timeout)?
+        .into_string()
+        .map_err(|error| HttpError::Transport(error.to_string()))
+}
+
+fn send_with(
+    url: &str,
+    method: &str,
+    headers: &[(&str, String)],
+    body: Option<&str>,
+    timeout: Duration,
+) -> Result<ureq::Response, HttpError> {
     let mut builder = ureq::AgentBuilder::new().timeout(timeout);
     if let Some(proxy) = proxy_for(url) {
         match ureq::Proxy::new(&proxy) {
@@ -122,11 +143,15 @@ fn send(
             }
         }
     }
-    let mut request = builder.build().post(url);
+    let mut request = builder.build().request(method, url);
     for (name, value) in headers {
         request = request.set(name, value);
     }
-    match request.send_string(body) {
+    let sent = match body {
+        Some(body) => request.send_string(body),
+        None => request.call(),
+    };
+    match sent {
         Ok(response) => Ok(response),
         Err(ureq::Error::Status(code, response)) => {
             let reason = response.status_text().to_owned();

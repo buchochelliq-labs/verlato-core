@@ -93,7 +93,10 @@ impl Context {
             .as_str()
         {
             "none" => Ok(PrAdapter::None),
-            "github" => bail!("the github PR adapter is served by the Python implementation"),
+            // Without a repository and token Python falls back to local git as well.
+            "github" => Ok(crate::git::GitHubApi::from_env()
+                .map(PrAdapter::GitHub)
+                .unwrap_or(PrAdapter::StandardGit)),
             _ => Ok(PrAdapter::StandardGit),
         }
     }
@@ -210,7 +213,7 @@ impl Context {
             "Mapping commits to PRs",
             json!({"current": count, "total": count, "unit": "commit"}),
         );
-        let prs = map_commits_to_prs(self.pr_adapter()?, &commits);
+        let prs = map_commits_to_prs(&self.pr_adapter()?, &commits)?;
         trace_progress(
             "grouping_changesets",
             "Grouping changesets",

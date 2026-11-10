@@ -5,8 +5,8 @@ release-note pipeline and links the IntentumDiff engine in-process, and every mo
 is native: scans and drafts call Ollama (the default), LiteLLM/OpenAI-compatible endpoints,
 GitHub Models, the external-command plugin, the Codex CLI and Claude Code agents, the mock and
 stub providers, and fallback chains of those. Commit intent inference and Conventional Commit
-drafting are native too. The remaining model-backed features (batched suggestions, the MCP
-server) still run in the Python implementation, which the binary delegates to transparently. This document records the assessment, the current state, and the
+drafting are native too, and so is the MCP server (`verlato serve`). The remaining
+model-backed features (batched and tool-retrieval suggestions) still run in the Python implementation, which the binary delegates to transparently. This document records the assessment, the current state, and the
 remaining phases.
 
 ## Why Rust
@@ -39,8 +39,8 @@ About 16k lines of Python (plus ~7k lines of tests):
 | Suggestions: prompt preview, single-strategy `--preview`/`--preflight`, applying a suggestion, JSON cache, scoring, traces | `cli/main.py` (parts), `state/suggestion_cache.py` (JSON), `core/change_summary.py` | ~2.5k | **Ported** |
 | Suggestions: batched strategies (paired, full-diff-json), tool retrieval, non-JSON (plugin-registered) cache backends, adaptive recommendations | `cli/main.py` (parts), `core/suggestion_tools.py` | ~2k | Delegated |
 | Commit intent inference and Conventional Commit drafting | `core/commit_intent.py` | ~1.1k | **Ported** |
-| MCP server (FastMCP) | `mcp/server.py` | ~0.7k | Delegated |
-| GitHub API PR adapter | `github/adapter.py` | ~0.1k | Delegated |
+| MCP server (`verlato serve`): FastMCP's handshake, tool/resource/prompt catalog, argument validation and result shapes; the MCP evidence tools (`SuggestionEvidenceToolProvider`) | `mcp/server.py`, `mcp/service.py`, `core/suggestion_tools.py` | ~1.7k | **Ported** |
+| GitHub API PR adapter | `github/adapter.py` | ~0.1k | **Ported** |
 
 The CLI/service JSON contract is the migration seam: the VS Code extension only talks to
 `verlato <command>` (JSON on stdout, progress on stderr) and to `verlato service` (JSON lines),
@@ -63,10 +63,11 @@ feedback record
 doctor engine
 service                              (health, info, draft.* incl. model providers and intent inference,
                                       commit.conventional[_many], feedback.record, state.show, state.clear_working)
+serve                                (MCP server on stdio; all tools, resources and prompts)
 ```
 
 Everything else is delegated to the Python implementation with the original arguments:
-the rest of `draft suggest` (see below), `doctor ollama|model`, `serve` (MCP),
+the rest of `draft suggest` (see below), `doctor ollama|model`,
 `model-logs`, `feedback export|recommend`, `state clear-suggestion-cache`, and the
 `suggestion.*` service methods (proxied to a lazily started Python service).
 
@@ -76,7 +77,8 @@ provider, with the same prompts, evidence payloads, request audits and hashes, `
 trace lines and `VERLATO_MODEL_LOG_PATH` records as Python. The parity suite checks it with a
 recording plugin, fake Ollama (plain and streaming), OpenAI-compatible and GitHub Models servers,
 fake Codex/Claude executables, and the deterministic mock provider (which reproduces Python's
-Mersenne Twister). A native command is still delegated only for the `github` PR adapter.
+Mersenne Twister). The `github` PR adapter (`VERLATO_PR_ADAPTER=github` with `VERLATO_GITHUB_REPO`
+and `GITHUB_TOKEN`/`GH_TOKEN`; `VERLATO_GITHUB_API_URL` for GitHub Enterprise) is native too.
 
 Commit intent inference (`--infer-commit-intents`, `VERLATO_COMMIT_INTENT_INFERENCE`, or
 `"commit_intent_inference": "low-signal"` in config) is native for every command that collects
@@ -182,7 +184,15 @@ evidence without depending on patch text.
    review state (`draft suggest --id`) is native.
 3. **Commit intents** (done): inference for grouping/classification and Conventional Commit
    drafting (`commit conventional`, `commit.*` service methods).
-4. **MCP server** with the same tools/resources/prompts (e.g. `rmcp`), and the GitHub adapter.
+4. **MCP server** (done): `verlato serve` speaks newline-delimited JSON-RPC on stdio without an
+   MCP SDK. The tool/resource/prompt catalog is FastMCP's own output, embedded in
+   `crates/verlato/src/mcp_catalog.json` (regenerate it from `python -m verlato.cli serve` when a
+   tool signature changes; the parity suite fails on drift), and the legacy patch tools are
+   listed only with the `git` engine. Arguments are validated against the catalog schemas with
+   pydantic's lax coercions and error messages. Known differences: the stateless `2026-07-28`
+   protocol is not offered (clients negotiate `2025-11-25`), requests are answered one at a time,
+   and pydantic messages are reproduced only for the schema shapes the catalog uses. The GitHub
+   adapter is done.
 5. **Retire Python**: remove delegation, ship the extension with the native binary and parser
    bundle per platform, and drop the Python package (or keep it only as a library binding).
 
