@@ -94,6 +94,38 @@ fn replacement(found: &Captures) -> String {
     REDACTION_TEXT.into()
 }
 
+/// Write lines to stderr together (Python `print_stderr_lines`).
+pub fn stderr_lines(lines: &[String]) {
+    let _guard = lock().lock().unwrap_or_else(|e| e.into_inner());
+    let stderr = std::io::stderr();
+    let mut handle = stderr.lock();
+    for line in lines {
+        let _ = writeln!(handle, "{line}");
+    }
+}
+
+/// Append one line to `VERLATO_MODEL_LOG_PATH` (Python `append_log_line`).
+pub fn append_log_line(line: &str) {
+    let Some(path) = std::env::var("VERLATO_MODEL_LOG_PATH")
+        .ok()
+        .filter(|p| !p.is_empty())
+    else {
+        return;
+    };
+    let _guard = lock().lock().unwrap_or_else(|e| e.into_inner());
+    let path = std::path::PathBuf::from(path);
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
 /// Redact secrets from a model payload (ports `redact_model_payload`).
 pub fn redact(value: &str) -> (String, bool) {
     let mut redacted = value.to_owned();

@@ -68,7 +68,7 @@ impl LiteLlmProvider {
         }
     }
 
-    fn model_for_task(&self, task: &str) -> &str {
+    fn task_model(&self, task: &str) -> &str {
         match (&self.suggest_model, task) {
             (Some(model), "suggest") => model,
             _ => &self.model,
@@ -90,7 +90,7 @@ impl LiteLlmProvider {
     }
 
     fn invoke(&self, task: &str, request: &ProviderRequest) -> ProviderResponse {
-        let model = self.model_for_task(task).to_owned();
+        let model = self.task_model(task).to_owned();
         let label = format!("litellm:{model}");
         let messages = messages_for_request(request, task);
         let audit = request_audit(request, "litellm", &model, &messages);
@@ -217,6 +217,22 @@ impl LiteLlmProvider {
 }
 
 impl Provider for LiteLlmProvider {
+    fn class_name(&self) -> &'static str {
+        "LiteLLMProvider"
+    }
+
+    fn model(&self) -> Option<String> {
+        Some(self.model.clone())
+    }
+
+    fn suggest_model(&self) -> Option<String> {
+        self.suggest_model.clone()
+    }
+
+    fn model_for_task(&self, task: &str) -> Option<String> {
+        Some(self.task_model(task).to_owned())
+    }
+
     fn summarize(&self, request: &ProviderRequest) -> ProviderResponse {
         self.invoke(summarize_task(&request.task), request)
     }

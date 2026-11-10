@@ -40,6 +40,52 @@ pub struct Commit {
     pub files: Vec<ChangedFile>,
     /// IntentumDiff digest for `parent_sha..sha`, attached by the collector.
     pub semantics: Option<CommitSemantics>,
+    /// Model-inferred conventional metadata used for grouping low-signal commits.
+    pub inferred_intent: Option<CommitIntent>,
+    /// Conventional commit the model derived from the diff alone.
+    pub derived_intent: Option<CommitIntent>,
+}
+
+/// A model-inferred or model-derived conventional commit (ports `CommitIntent`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CommitIntent {
+    pub kind: String,
+    pub scope: Option<String>,
+    pub description: String,
+    pub breaking: bool,
+    pub confidence: f64,
+    pub model: String,
+    pub source: String,
+    pub rationale: String,
+}
+
+impl CommitIntent {
+    /// `conventional_commit_message`.
+    pub fn message(&self) -> String {
+        let scope = self
+            .scope
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("({s})"))
+            .unwrap_or_default();
+        let breaking = if self.breaking { "!" } else { "" };
+        format!("{}{scope}{breaking}: {}", self.kind, self.description)
+    }
+
+    /// `commit_intent_payload`: the dataclass fields plus `message`.
+    pub fn payload(&self) -> Value {
+        serde_json::json!({
+            "type": self.kind,
+            "scope": self.scope,
+            "description": self.description,
+            "breaking": self.breaking,
+            "confidence": self.confidence,
+            "model": self.model,
+            "source": self.source,
+            "rationale": self.rationale,
+            "message": self.message(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default)]

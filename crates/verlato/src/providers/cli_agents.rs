@@ -350,6 +350,17 @@ fn parse_claude_json_result(stdout: &str) -> String {
 }
 
 impl Provider for CliAgentProvider {
+    fn class_name(&self) -> &'static str {
+        match self.agent {
+            Agent::Codex => "CodexCliProvider",
+            Agent::ClaudeCode => "ClaudeCodeProvider",
+        }
+    }
+
+    fn model(&self) -> Option<String> {
+        Some(self.model.clone())
+    }
+
     fn summarize(&self, request: &ProviderRequest) -> ProviderResponse {
         self.invoke(agent_summarize_task(&request.task), request)
     }

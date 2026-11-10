@@ -324,6 +324,14 @@ pub fn agent_summarize_task(task: &str) -> &str {
 }
 
 impl Provider for GitHubModelsProvider {
+    fn class_name(&self) -> &'static str {
+        "GitHubCopilotProvider"
+    }
+
+    fn model(&self) -> Option<String> {
+        Some(self.model.clone())
+    }
+
     fn summarize(&self, request: &ProviderRequest) -> ProviderResponse {
         self.invoke(agent_summarize_task(&request.task), request)
     }

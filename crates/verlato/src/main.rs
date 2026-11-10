@@ -20,11 +20,14 @@ const NATIVE: &[&[&str]] = &[
     &["draft", "preview"],
     &["draft", "apply"],
     &["draft", "review"],
+    &["draft", "prompt"],
+    &["draft", "suggest"],
     &["state", "show"],
     &["state", "mark-published"],
     &["state", "clear-working"],
     &["feedback", "record"],
     &["doctor", "engine"],
+    &["commit", "conventional"],
 ];
 
 #[derive(Parser)]
@@ -118,6 +121,29 @@ enum Command {
     Feedback(FeedbackCommand),
     #[command(subcommand)]
     Doctor(DoctorCommand),
+    #[command(subcommand)]
+    Commit(CommitCommand),
+}
+
+#[derive(Subcommand)]
+enum CommitCommand {
+    /// Draft a full Conventional Commits message for one existing commit.
+    Conventional {
+        #[arg(long)]
+        base: String,
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+        #[arg(long)]
+        sha: String,
+        #[arg(long)]
+        model_provider: Option<String>,
+        #[arg(long, value_parser = ["diff-only", "subject-hint"], default_value = "diff-only")]
+        evidence_mode: String,
+        #[arg(long = "privacy")]
+        privacy: Option<String>,
+        #[arg(long)]
+        allow_remote_patches: bool,
+    },
 }
 
 #[derive(Args, Clone)]
@@ -153,6 +179,58 @@ enum DraftCommand {
         summary_provenance_json: Option<String>,
         #[arg(long)]
         reviewer: Option<String>,
+        #[command(flatten)]
+        model: ModelArgs,
+    },
+    /// Model suggestions for draft items (native for the single strategy with `--preview`).
+    Suggest {
+        #[command(flatten)]
+        range: RangeArgs,
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long)]
+        all_visible: bool,
+        #[arg(long)]
+        preview: bool,
+        /// Build planned AI request envelopes without calling the provider.
+        #[arg(long)]
+        preflight: bool,
+        #[arg(long)]
+        count: Option<i64>,
+        #[arg(long)]
+        parallelism: Option<i64>,
+        #[arg(long)]
+        batch_size: Option<i64>,
+        #[arg(long, value_parser = ["auto", "single", "paired", "full-diff-json", "tool-retrieval"])]
+        strategy: Option<String>,
+        #[arg(long, value_parser = ["conservative", "lean", "minimal"])]
+        prompt_profile: Option<String>,
+        #[arg(long)]
+        adaptive_recommendations: bool,
+        #[arg(long)]
+        suggest_model: Option<String>,
+        #[arg(long)]
+        no_cache: bool,
+        #[arg(long)]
+        refresh_cache: bool,
+        #[arg(long, value_parser = ["release-note", "concise", "technical", "customer-facing"])]
+        tone: Option<String>,
+        #[arg(long)]
+        reviewer: Option<String>,
+        /// Emit compact suggestion lifecycle trace logs for this invocation.
+        #[arg(long)]
+        trace_suggestions: bool,
+        #[command(flatten)]
+        model: ModelArgs,
+    },
+    /// The exact prompt, evidence and audit record a suggestion for one item would send.
+    Prompt {
+        #[command(flatten)]
+        range: RangeArgs,
+        #[arg(long)]
+        id: String,
+        #[arg(long, value_parser = ["release-note", "concise", "technical", "customer-facing"])]
+        tone: Option<String>,
         #[command(flatten)]
         model: ModelArgs,
     },
@@ -227,14 +305,9 @@ fn json_out(value: &impl serde::Serialize) -> Result<()> {
     Ok(())
 }
 
-/// Why a native command must still run in Python, if it must: every model provider is
-/// native, but commit intent inference and the GitHub PR adapter are not ported yet.
-fn python_reason(ctx: &Context, model: Option<&ModelArgs>) -> Option<String> {
-    if let Some(model) = model {
-        if ctx.config.commit_intent_inference(model.inference()) != "off" {
-            return Some("commit intent inference uses a model provider".into());
-        }
-    }
+/// Why a native command must still run in Python, if it must: everything these commands use is
+/// native except the GitHub PR adapter.
+fn python_reason(ctx: &Context, _model: Option<&ModelArgs>) -> Option<String> {
     if ctx.pr_adapter().is_err() {
         return Some("the github PR adapter".into());
     }
@@ -247,6 +320,7 @@ impl ModelArgs {
             provider: self.model_provider.clone(),
             privacy: self.privacy.clone(),
             allow_remote_patches: self.allow_remote_patches,
+            infer_commit_intents: self.inference(),
         }
     }
 }
@@ -346,6 +420,110 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
                 let document = draft(&ctx, &args)?;
                 json_out(&ctx.apply_draft(&document, &target, file.as_deref())?)?;
             }
+            DraftCommand::Suggest {
+                range,
+                id,
+                all_visible,
+                preview,
+                preflight,
+                count,
+                parallelism,
+                batch_size: _,
+                strategy,
+                prompt_profile,
+                adaptive_recommendations,
+                suggest_model,
+                no_cache,
+                refresh_cache,
+                tone,
+                reviewer,
+                trace_suggestions,
+                model,
+            } => {
+                if let Some(code) = delegate_if(python_reason(&ctx, Some(&model))) {
+                    return code;
+                }
+                let args = verlato::suggest::SuggestArgs {
+                    item_id: id,
+                    all_visible,
+                    count,
+                    parallelism,
+                    strategy,
+                    prompt_profile,
+                    suggest_model,
+                    no_cache,
+                    refresh_cache,
+                    adaptive_recommendations,
+                    preflight,
+                    options: verlato::suggest::SuggestOptions {
+                        model_provider: model.model_provider.clone(),
+                        tone,
+                        privacy: model.privacy.clone(),
+                        allow_remote_patches: model.allow_remote_patches,
+                        infer_commit_intents: model.inference(),
+                    },
+                };
+                if let Some(code) =
+                    delegate_if(verlato::suggest::python_reason(&ctx, &args, preview)?)
+                {
+                    return code;
+                }
+                if trace_suggestions {
+                    std::env::set_var("VERLATO_TRACE_MODEL_CALLS", "1");
+                }
+                let (base, head) = ctx.resolve_range(
+                    range.base.as_deref(),
+                    &range.head,
+                    range.from_latest_tag,
+                    range.from_latest_published,
+                )?;
+                if preview || args.preflight {
+                    json_out(&verlato::suggest::preview_suggestions(
+                        &ctx, &base, &head, &args,
+                    )?)?;
+                } else {
+                    if args.all_visible {
+                        anyhow::bail!("--all-visible requires --preview");
+                    }
+                    let Some(item_id) = args.item_id.as_deref() else {
+                        anyhow::bail!("Provide --id for draft suggest");
+                    };
+                    json_out(&verlato::suggest::apply_model_suggestion(
+                        &ctx,
+                        &base,
+                        &head,
+                        item_id,
+                        reviewer.as_deref(),
+                        &args.options,
+                    )?)?;
+                }
+            }
+            DraftCommand::Prompt {
+                range,
+                id,
+                tone,
+                model,
+            } => {
+                if let Some(code) = delegate_if(python_reason(&ctx, Some(&model))) {
+                    return code;
+                }
+                let (base, head) = ctx.resolve_range(
+                    range.base.as_deref(),
+                    &range.head,
+                    range.from_latest_tag,
+                    range.from_latest_published,
+                )?;
+                let options = verlato::suggest::SuggestOptions {
+                    model_provider: model.model_provider.clone(),
+                    tone,
+                    privacy: model.privacy.clone(),
+                    allow_remote_patches: model.allow_remote_patches,
+                    infer_commit_intents: model.inference(),
+                };
+                json_out(&verlato::suggest::draft_prompt(
+                    &ctx, &base, &head, &id, &options,
+                )?)?;
+            }
             DraftCommand::Review {
                 range,
                 id,
@@ -383,9 +561,10 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
                     summary.as_deref(),
                     reviewer.as_deref(),
                     provenance,
-                    // Python passes only the provider to review detection.
+                    // Python passes only the provider and inference choice to review detection.
                     Some(&verlato::pipeline::ModelRequest {
                         provider: model.model_provider.clone(),
+                        infer_commit_intents: model.inference(),
                         ..Default::default()
                     }),
                 )?;
@@ -424,6 +603,23 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
                 }
             };
             json_out(&ctx.record_feedback(&event, &item_id, metadata)?)?;
+        }
+        Command::Commit(CommitCommand::Conventional {
+            base,
+            head,
+            sha,
+            model_provider,
+            evidence_mode,
+            privacy,
+            allow_remote_patches,
+        }) => {
+            let request = verlato::pipeline::ConventionalDraftRequest {
+                model_provider,
+                privacy,
+                allow_remote_patches,
+                evidence_mode,
+            };
+            json_out(&ctx.draft_conventional_commit(&base, &head, &sha, &request)?)?;
         }
         Command::Doctor(DoctorCommand::Engine) => {
             json_out(&engine::engine_info(
@@ -502,13 +698,15 @@ mod tests {
             "draft", "json", "--base", "v1"
         ]))));
         assert!(is_native(&command_path(&args(&["scan", "--base", "v1"]))));
-        assert!(!is_native(&command_path(&args(&[
+        // `draft suggest` is parsed natively; unported strategies/flags delegate at run time.
+        assert!(is_native(&command_path(&args(&[
             "draft", "suggest", "--base", "v1"
         ]))));
         assert!(!is_native(&command_path(&args(&[
-            "commit",
-            "conventional"
+            "state",
+            "clear-suggestion-cache"
         ]))));
+        assert!(is_native(&command_path(&args(&["commit", "conventional"]))));
         assert!(!is_native(&command_path(&args(&["doctor", "ollama"]))));
         assert!(!is_native(&command_path(&args(&["serve"]))));
     }

@@ -1,14 +1,14 @@
-//! Groups commits into PR-level change sets. Ports `verlato/core/grouper.py`.
-//!
-//! Commit intent inference (model-inferred conventional metadata) is not part of the Rust
-//! pipeline yet, so the effective conventional commit is always the authored one.
+//! Groups commits into PR-level change sets. Ports `verlato/core/grouper.py`. Conventional
+//! scopes come from the effective conventional commit: the authored one, completed by the
+//! model-inferred intent of low-signal commits when inference is on.
 
 use std::collections::{BTreeSet, HashMap};
 
 use indexmap::IndexMap;
 
+use crate::intents::effective_conventional_commit;
 use crate::models::{ChangeGroup, ChangedFile, Commit, PullRequest};
-use crate::vocab::{infer_area, parse_conventional_commit};
+use crate::vocab::infer_area;
 
 const USER_FACING_AREAS: &[&str] = &["api", "frontend", "backend", "infra", "general"];
 
@@ -34,18 +34,23 @@ pub fn group(commits: &[Commit], prs_by_commit: &HashMap<String, PullRequest>) -
 enum GroupKey {
     Single(String),
     ConventionalScope(String, String),
+    InferredConventionalScope(String, String),
     FileOverlap(Vec<String>),
 }
 
 fn non_pr_group_key(commit: &Commit) -> GroupKey {
-    match parse_conventional_commit(&commit.message) {
-        Some(parsed) => match parsed.scope {
+    match effective_conventional_commit(commit) {
+        (Some(parsed), used_inferred) => match parsed.scope.filter(|s| !s.is_empty()) {
+            Some(scope) if used_inferred => GroupKey::InferredConventionalScope(
+                parsed.kind.to_lowercase(),
+                scope.to_lowercase(),
+            ),
             Some(scope) => {
                 GroupKey::ConventionalScope(parsed.kind.to_lowercase(), scope.to_lowercase())
             }
             None => GroupKey::Single(commit.sha.clone()),
         },
-        None => GroupKey::Single(commit.sha.clone()),
+        (None, _) => GroupKey::Single(commit.sha.clone()),
     }
 }
 
@@ -53,6 +58,9 @@ fn non_pr_group_reason(key: &GroupKey) -> String {
     match key {
         GroupKey::ConventionalScope(kind, scope) => format!(
             "Grouped because these non-PR commits share conventional type `{kind}` and scope `{scope}`."
+        ),
+        GroupKey::InferredConventionalScope(kind, scope) => format!(
+            "Grouped because these non-PR commits share inferred conventional type `{kind}` and scope `{scope}`."
         ),
         GroupKey::FileOverlap(files) => {
             let shown: Vec<&str> = files.iter().take(3).map(String::as_str).collect();
@@ -192,9 +200,11 @@ fn split_pr_group_by_scope(pr: &PullRequest, commits: &[Commit]) -> Option<Vec<C
         return None;
     }
     let mut buckets: IndexMap<String, Vec<Commit>> = IndexMap::new();
+    let mut inferred_scopes = false;
     for commit in commits {
-        let parsed = parse_conventional_commit(&commit.message)?;
-        let scope = parsed.scope?;
+        let (parsed, used_inferred) = effective_conventional_commit(commit);
+        let scope = parsed?.scope.filter(|s| !s.is_empty())?;
+        inferred_scopes = inferred_scopes || used_inferred;
         buckets
             .entry(scope.to_lowercase())
             .or_default()
@@ -208,15 +218,24 @@ fn split_pr_group_by_scope(pr: &PullRequest, commits: &[Commit]) -> Option<Vec<C
             .into_iter()
             .map(|(scope, scope_commits)| {
                 let files = commit_files(&scope_commits);
-                let scope_pr = PullRequest { title: format!("{} [{scope}]", pr.title), files: files.clone(), ..pr.clone() };
+                let scope_pr = PullRequest {
+                    title: format!("{} [{scope}]", pr.title),
+                    files: files.clone(),
+                    ..pr.clone()
+                };
                 ChangeGroup {
                     pr: Some(scope_pr),
                     commits: scope_commits,
                     files,
                     grouping_reason: format!(
-                        "Grouped by PR #{}, then split because the PR contains multiple explicit conventional \
-                         scopes; this changeset uses scope `{scope}`.",
-                        pr.number
+                        "Grouped by PR #{}, then split because the PR contains multiple {} \
+                         conventional scopes; this changeset uses scope `{scope}`.",
+                        pr.number,
+                        if inferred_scopes {
+                            "inferred or explicit"
+                        } else {
+                            "explicit"
+                        }
                     ),
                 }
             })

@@ -483,6 +483,10 @@ fn response(content: String, confidence: f64) -> ProviderResponse {
 }
 
 impl Provider for MockProvider {
+    fn class_name(&self) -> &'static str {
+        "MockProvider"
+    }
+
     fn summarize(&self, request: &ProviderRequest) -> ProviderResponse {
         match request.task.as_str() {
             "draft-conventional" => response(

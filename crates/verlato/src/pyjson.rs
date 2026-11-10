@@ -86,6 +86,52 @@ fn write_value(out: &mut String, value: &Value, options: Options) {
     }
 }
 
+/// `json.dumps(value, indent=indent, sort_keys=True)` (ASCII-only, `", "`/`": "` separators
+/// collapsed to `","` + newline as Python does when indenting).
+pub fn dumps_indented(value: &Value, indent: usize) -> String {
+    let mut out = String::new();
+    write_indented(&mut out, value, indent, 0);
+    out
+}
+
+fn write_indented(out: &mut String, value: &Value, indent: usize, level: usize) {
+    let pad = |out: &mut String, level: usize| {
+        out.push('\n');
+        out.push_str(&" ".repeat(indent * level));
+    };
+    match value {
+        Value::Array(items) if !items.is_empty() => {
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                pad(out, level + 1);
+                write_indented(out, item, indent, level + 1);
+            }
+            pad(out, level);
+            out.push(']');
+        }
+        Value::Object(map) if !map.is_empty() => {
+            out.push('{');
+            let mut entries: Vec<(&String, &Value)> = map.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            for (index, (key, item)) in entries.into_iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                pad(out, level + 1);
+                write_string(out, key, true);
+                out.push_str(": ");
+                write_indented(out, item, indent, level + 1);
+            }
+            pad(out, level);
+            out.push('}');
+        }
+        other => write_value(out, other, DEFAULT_SORTED),
+    }
+}
+
 fn write_number(out: &mut String, number: &Number) {
     if let Some(value) = number.as_i64() {
         let _ = write!(out, "{value}");
@@ -230,6 +276,15 @@ mod tests {
         assert_eq!(
             dumps(&value, CANONICAL),
             "{\"a\":\"é\\n\\\"x\\\"\u{1F600}\",\"b\":[1,2.5,null,true],\"c\":{\"y\":1e-05,\"z\":0.7}}"
+        );
+    }
+
+    #[test]
+    fn indented_matches_python() {
+        let value = json!({"b": [1, {"c": []}], "a": {}, "d": "é"});
+        assert_eq!(
+            dumps_indented(&value, 2),
+            "{\n  \"a\": {},\n  \"b\": [\n    1,\n    {\n      \"c\": []\n    }\n  ],\n  \"d\": \"\\u00e9\"\n}"
         );
     }
 

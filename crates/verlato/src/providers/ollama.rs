@@ -215,7 +215,7 @@ impl OllamaProvider {
         }
     }
 
-    fn model_for_task(&self, task: &str) -> &str {
+    fn task_model(&self, task: &str) -> &str {
         match (&self.suggest_model, task) {
             (Some(model), "suggest") => model,
             _ => &self.model,
@@ -404,7 +404,7 @@ impl OllamaProvider {
     }
 
     fn invoke(&self, task: &str, request: &ProviderRequest) -> ProviderResponse {
-        let model = self.model_for_task(task).to_owned();
+        let model = self.task_model(task).to_owned();
         let system_prompt = default_system_prompt(task);
         let model_detail = if model != self.model {
             format!("model={model} base_model={}", self.model)
@@ -579,6 +579,22 @@ impl OllamaProvider {
 }
 
 impl Provider for OllamaProvider {
+    fn class_name(&self) -> &'static str {
+        "OllamaProvider"
+    }
+
+    fn model(&self) -> Option<String> {
+        Some(self.model.clone())
+    }
+
+    fn suggest_model(&self) -> Option<String> {
+        self.suggest_model.clone()
+    }
+
+    fn model_for_task(&self, task: &str) -> Option<String> {
+        Some(self.task_model(task).to_owned())
+    }
+
     fn summarize(&self, request: &ProviderRequest) -> ProviderResponse {
         self.invoke(summarize_task(&request.task), request)
     }

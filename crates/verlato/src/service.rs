@@ -20,6 +20,8 @@ const NATIVE_METHODS: &[&str] = &[
     "feedback.record",
     "state.show",
     "state.clear_working",
+    "commit.conventional",
+    "commit.conventional_many",
 ];
 
 struct ProtocolError(String);
@@ -169,22 +171,60 @@ fn handle_line(cwd: &Path, line: &str, python: &mut Option<PythonService>) -> (S
         Err(Dispatch::Protocol(ProtocolError(message))) => {
             (error_response(&id, "invalid_request", &message), false)
         }
-        Err(Dispatch::Handler(error)) => (
-            error_response(&id, "handler_error", &format!("{error:#}")),
-            false,
-        ),
+        Err(Dispatch::Handler(error)) => {
+            match error.downcast_ref::<crate::pipeline::ServiceError>() {
+                // Python answers unexpected exceptions with their class name and message.
+                Some(typed) => (error_response(&id, typed.code, &typed.message), false),
+                None => (
+                    error_response(&id, "handler_error", &format!("{error:#}")),
+                    false,
+                ),
+            }
+        }
+    }
+}
+
+/// `_optional_string(params.get(a) or params.get(b))`.
+fn optional_either(params: &Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|k| params.get(*k).filter(|v| value_truthy(v)))
+        .map(|v| {
+            v.as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| v.to_string())
+        })
+}
+
+fn value_truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64() != Some(0.0),
+        Value::String(s) => !s.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(o) => !o.is_empty(),
+    }
+}
+
+fn conventional_request(params: &Map<String, Value>) -> crate::pipeline::ConventionalDraftRequest {
+    crate::pipeline::ConventionalDraftRequest {
+        model_provider: optional_either(params, &["model_provider", "modelProvider"]),
+        privacy: optional_either(params, &["model_privacy", "modelPrivacy"]),
+        allow_remote_patches: truthy(params, &["allow_remote_patches", "allowRemotePatches"]),
+        evidence_mode: optional_either(params, &["evidence_mode", "evidenceMode"])
+            .unwrap_or_else(|| "diff-only".into()),
     }
 }
 
 /// Whether a native method must still run in Python. Draft methods detect changes, so they
-/// keep Python semantics for the same prerequisites as the CLI (`python_reason` in main.rs):
-/// commit intent inference or the GitHub PR adapter. Model providers are all native.
+/// keep Python semantics for the same prerequisite as the CLI (`python_reason` in main.rs): the
+/// GitHub PR adapter. Model providers and commit intent inference are native.
 fn needs_python(cwd: &Path, method: &str) -> bool {
     if !method.starts_with("draft.") {
         return false;
     }
     match Context::load(cwd) {
-        Ok(ctx) => ctx.pr_adapter().is_err() || ctx.config.commit_intent_inference(None) != "off",
+        Ok(ctx) => ctx.pr_adapter().is_err(),
         // Let the native handler report the configuration error.
         Err(_) => false,
     }
@@ -352,6 +392,43 @@ fn dispatch(cwd: &Path, method: &str, params: &Map<String, Value>) -> Result<Val
                 required(params, "item_id")?,
                 metadata,
             )?)
+        }
+        "commit.conventional" | "commit.conventional_many" => {
+            let base = required(params, "base")?;
+            let head = params
+                .get("head")
+                .filter(|h| value_truthy(h))
+                .map(|h| {
+                    h.as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| h.to_string())
+                })
+                .unwrap_or_else(|| "HEAD".into());
+            let request = conventional_request(params);
+            if method == "commit.conventional" {
+                let sha = required(params, "sha")?;
+                return Ok(ctx.draft_conventional_commit(base, &head, sha, &request)?);
+            }
+            let shas: Option<Vec<String>> = match params.get("shas") {
+                None | Some(Value::Null) => None,
+                Some(Value::Array(items)) => Some(
+                    items
+                        .iter()
+                        .map(|v| {
+                            v.as_str()
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| v.to_string())
+                        })
+                        .filter(|s| !s.trim().is_empty())
+                        .collect(),
+                ),
+                Some(_) => {
+                    return Err(Dispatch::Protocol(ProtocolError(
+                        "Expected list param: shas".into(),
+                    )))
+                }
+            };
+            Ok(ctx.draft_conventional_commits(base, &head, shas.as_deref(), &request)?)
         }
         "state.show" => Ok(ctx.state_show()?),
         "state.clear_working" => Ok(ctx.clear_working_state()?),

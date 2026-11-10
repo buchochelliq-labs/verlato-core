@@ -14,7 +14,7 @@ use crate::models::{ChangeGroup, ChangedFile, Commit};
 use crate::providers::{is_provider_error_marker, Provider, ProviderRequest};
 use crate::pyjson::{self, py_len};
 use crate::semantic::{render_semantic_diff, semantic_diff_for_prompt, semantic_prompt_payload};
-use crate::vocab::{normalize_change_kind, parse_conventional_commit, subject, SECTION_ORDER};
+use crate::vocab::{normalize_change_kind, subject, SECTION_ORDER};
 
 pub const DEFAULT_MODEL_PRIVACY: &str = "metadata-only";
 const MODEL_PRIVACY_CHOICES: &[&str] = &[
@@ -119,13 +119,14 @@ fn sorted_unique(values: &[&str]) -> Vec<String> {
 
 /// Ports `model_request_record` (the audit record attached to model requests).
 #[allow(clippy::too_many_arguments)]
-fn model_request_record(
+pub fn model_request_record(
     task: &str,
     provider: Option<&str>,
     privacy_mode: &str,
     prompt: &str,
     evidence: &Value,
     raw_patch_chars_available: usize,
+    raw_patch_chars_sent: usize,
     omitted_fields: &[&str],
     omission_reasons: &[&str],
 ) -> Value {
@@ -136,7 +137,7 @@ fn model_request_record(
     let prompt_chars = py_len(prompt);
     json!({
         "task": task,
-        "provider": provider.unwrap_or("configured"),
+        "provider": provider.filter(|p| !p.is_empty()).unwrap_or("configured"),
         "model": null,
         "privacy_mode": privacy,
         "request_hash": stable_json_hash(&json!({
@@ -153,7 +154,7 @@ fn model_request_record(
         "evidence_chars": evidence_chars,
         "estimated_tokens": estimate_token_count(prompt_chars + evidence_chars),
         "raw_patch_chars_available": raw_patch_chars_available,
-        "raw_patch_chars_sent": 0,
+        "raw_patch_chars_sent": raw_patch_chars_sent,
         "omitted_fields": sorted_unique(omitted_fields),
         "omission_reasons": sorted_unique(omission_reasons),
         "contains_raw_patch_markers": contains_raw_patch_markers(&json!({"prompt": prompt, "evidence": evidence})),
@@ -164,7 +165,76 @@ fn model_request_record(
 // change summary payload (ports `build_change_summary_payload` for scan-time evidence)
 // ---------------------------------------------------------------------------
 
-fn raw_patch_chars_available(files: &[ChangedFile]) -> usize {
+const LOCAL_PATCH_PROVIDERS: &[&str] = &["ollama", "local", "stub", "mock"];
+
+/// `can_send_raw_patches`: whether a privacy mode lets this provider see source content.
+pub fn can_send_raw_patches(provider_mode: &str, privacy_mode: &str) -> bool {
+    match normalize_model_privacy(privacy_mode).as_str() {
+        "local-summary-then-ai" => {
+            LOCAL_PATCH_PROVIDERS.contains(&provider_mode.trim().to_lowercase().as_str())
+        }
+        "trusted-provider-patch" => true,
+        _ => false,
+    }
+}
+
+/// `_can_send_raw_patches_for_config`: local-only modes require every provider in the chain
+/// (fallbacks included) to be local.
+pub fn can_send_raw_patches_for_config(
+    config: &crate::providers::ProviderConfig,
+    provider_mode: Option<&str>,
+    privacy_mode: &str,
+) -> bool {
+    let mode = provider_mode
+        .filter(|m| !m.is_empty())
+        .unwrap_or(&config.name)
+        .to_owned();
+    if !can_send_raw_patches(&mode, privacy_mode) {
+        return false;
+    }
+    if normalize_model_privacy(privacy_mode) != "local-summary-then-ai" {
+        return true;
+    }
+    config.fallbacks.iter().all(|fallback| {
+        let name = fallback
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_owned();
+        can_send_raw_patches(&name, privacy_mode)
+    })
+}
+
+/// `privacy_summary`.
+pub fn privacy_summary(
+    provider: &str,
+    privacy_mode: &str,
+    raw_patch_chars_available: usize,
+    raw_patch_chars_sent: usize,
+) -> Value {
+    let sends = raw_patch_chars_sent > 0;
+    let mut will_send = vec![
+        "change summary",
+        "PR metadata",
+        "commit metadata",
+        "file paths and statuses",
+        "deterministic diff facts",
+    ];
+    if sends {
+        will_send.push("raw patches");
+    }
+    json!({
+        "mode": normalize_model_privacy(privacy_mode),
+        "provider": if provider.is_empty() { "configured" } else { provider },
+        "raw_patch_chars_available": raw_patch_chars_available,
+        "raw_patch_chars_sent": raw_patch_chars_sent,
+        "will_send": will_send,
+        "will_not_send": if sends { Vec::<&str>::new() } else { vec!["raw patches", "patch excerpts", "representative hunks"] },
+    })
+}
+
+pub fn raw_patch_chars_available(files: &[ChangedFile]) -> usize {
     files.iter().map(|f| py_len(&f.patch)).sum()
 }
 
@@ -215,13 +285,14 @@ fn sorted(values: &[String]) -> Vec<String> {
 }
 
 fn commit_payload(commit: &Commit) -> Value {
-    let conventional = parse_conventional_commit(&commit.message).map(|parsed| {
+    let (effective, inferred_used) = crate::intents::effective_conventional_commit(commit);
+    let conventional = effective.map(|parsed| {
         json!({
             "type": parsed.kind,
             "scope": parsed.scope,
             "description": parsed.description,
             "breaking": parsed.breaking,
-            "source": "authored",
+            "source": if inferred_used { "inferred" } else { "authored" },
         })
     });
     json!({
@@ -232,8 +303,8 @@ fn commit_payload(commit: &Commit) -> Value {
         "previous_sha": commit.parent_sha,
         "initial_commit": commit.parent_sha.is_none(),
         "authored_or_inferred_conventional": conventional,
-        "inferred_intent": null,
-        "derived_conventional": null,
+        "inferred_intent": commit.inferred_intent.as_ref().map(|i| i.payload()),
+        "derived_conventional": commit.derived_intent.as_ref().map(|i| i.payload()),
         "files_total": commit.files.len(),
     })
 }
@@ -244,7 +315,7 @@ fn boundary_payload(commit: &Commit) -> Value {
         "subject": subject(&commit.message),
         "previous_sha": commit.parent_sha,
         "initial_commit": commit.parent_sha.is_none(),
-        "derived_conventional": null,
+        "derived_conventional": commit.derived_intent.as_ref().map(|i| i.message()),
     })
 }
 
@@ -320,8 +391,9 @@ fn public_symbols_from_patches(files: &[ChangedFile]) -> BTreeMap<String, Vec<St
     result
 }
 
-fn change_summary_payload(
+pub fn change_summary_payload(
     group: &ChangeGroup,
+    item: Option<&crate::models::ChangeItem>,
     diff: &DiffEvidence,
     files: &[ChangedFile],
 ) -> Value {
@@ -407,9 +479,10 @@ fn change_summary_payload(
         .into_iter()
         .map(|(area, paths)| (area.clone(), json!(sorted(paths))))
         .collect();
-    let title = match &group.pr {
-        Some(pr) => pr.title.clone(),
-        None => group
+    let title = match (item, &group.pr) {
+        (Some(item), _) => item.content.title.clone(),
+        (None, Some(pr)) => pr.title.clone(),
+        (None, None) => group
             .commits
             .first()
             .map(|c| subject(&c.message).to_owned())
@@ -419,8 +492,13 @@ fn change_summary_payload(
     let mut payload = json!({
         "schema": "verlato.change-summary.v1",
         "title": title,
-        "current_summary": "",
-        "classification": null,
+        "current_summary": item.map(|i| i.content.summary.as_str()).unwrap_or(""),
+        "classification": item.map(|i| json!({
+            "kind": i.classification.kind,
+            "area": i.classification.area,
+            "audience": i.classification.audience,
+            "semver": i.classification.semver,
+        })),
         "pull_request": group.pr.as_ref().map(|pr| json!({
             "number": pr.number, "title": pr.title, "body": pr.body, "labels": pr.labels,
         })),
@@ -473,11 +551,33 @@ fn commit_boundary_line(commit: &Commit) -> String {
         None => "initial commit".to_owned(),
         Some(parent) => format!("previous {}", parent.chars().take(12).collect::<String>()),
     };
+    let derived = commit
+        .derived_intent
+        .as_ref()
+        .map(|i| format!("; derived {}", i.message()))
+        .unwrap_or_default();
     format!(
-        "{} ({base}) {}",
+        "{} ({base}) {}{derived}",
         commit.sha.chars().take(12).collect::<String>(),
         subject(&commit.message)
     )
+}
+
+/// `_commit_prompt_line`: the subject, annotated with inferred and derived intents.
+fn commit_prompt_line(commit: &Commit) -> String {
+    let mut annotations = Vec::new();
+    if let Some(intent) = &commit.inferred_intent {
+        annotations.push(format!("inferred {}", intent.message()));
+    }
+    if let Some(intent) = &commit.derived_intent {
+        annotations.push(format!("derived {}", intent.message()));
+    }
+    let subject = subject(&commit.message);
+    if annotations.is_empty() {
+        subject.to_owned()
+    } else {
+        format!("{subject} [{}]", annotations.join(" | "))
+    }
 }
 
 fn tone_instruction(tone: &str) -> &'static str {
@@ -496,6 +596,7 @@ pub struct Style {
     pub guidance: String,
     pub vocabulary: Vec<String>,
     pub banned: Vec<String>,
+    pub specificity_floor: f64,
 }
 
 fn env_list(name: &str) -> Vec<String> {
@@ -512,6 +613,21 @@ fn env_list(name: &str) -> Vec<String> {
 
 impl Style {
     pub fn from_config(raw: &Value) -> Style {
+        Self::resolve(raw, None)
+    }
+
+    /// The `style_profile` record shown with suggestion prompts.
+    pub fn profile(&self) -> Value {
+        json!({
+            "guidance": self.guidance,
+            "project_vocabulary": self.vocabulary,
+            "banned_phrases": self.banned,
+            "specificity_floor": self.specificity_floor,
+        })
+    }
+
+    /// Style with a requested tone (`--tone`) taking precedence (`_resolve_suggestion_tone`).
+    pub fn resolve(raw: &Value, requested_tone: Option<&str>) -> Style {
         let tone_choices = ["release-note", "concise", "technical", "customer-facing"];
         let configured_tone = raw
             .get("suggestion_tone")
@@ -525,9 +641,14 @@ impl Style {
             })
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| "release-note".into());
-        let tone = std::env::var("VERLATO_SUGGESTION_TONE")
-            .ok()
+        let tone = requested_tone
             .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                std::env::var("VERLATO_SUGGESTION_TONE")
+                    .ok()
+                    .filter(|v| !v.is_empty())
+            })
             .unwrap_or(configured_tone)
             .trim()
             .to_lowercase();
@@ -576,6 +697,17 @@ impl Style {
             guidance: guidance.trim().to_owned(),
             vocabulary,
             banned,
+            specificity_floor: {
+                let configured = style
+                    .and_then(|s| s.get("specificity_floor"))
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0);
+                std::env::var("VERLATO_SPECIFICITY_FLOOR")
+                    .ok()
+                    .map(|raw| raw.parse::<f64>().unwrap_or(configured))
+                    .unwrap_or(configured)
+                    .clamp(0.0, 1.0)
+            },
         }
     }
 
@@ -617,31 +749,97 @@ impl Style {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn summary_prompt(
-    title: &str,
-    labels: &[String],
-    pr_body: &str,
-    diff: &DiffEvidence,
-    commits: &[Commit],
-    kind: &str,
-    audience: &str,
-    style: &Style,
-) -> String {
-    let commit_subjects: Vec<&str> = commits
+/// A prompt budget profile (ports `PromptBudgetProfile`).
+#[derive(Debug, Clone, Copy)]
+pub struct PromptProfile {
+    pub name: &'static str,
+    pub changed_files: usize,
+    pub commits: usize,
+    pub pr_body_chars: usize,
+    pub diff_summary_chars: usize,
+    pub hunk_files: usize,
+    pub hunks_per_file: usize,
+    pub hunk_chars: usize,
+}
+
+pub const SUMMARY_PROFILE: PromptProfile = PromptProfile {
+    name: "summary",
+    changed_files: PROMPT_CHANGED_FILES,
+    commits: PROMPT_COMMITS,
+    pr_body_chars: PROMPT_PR_BODY_CHARS,
+    diff_summary_chars: PROMPT_DIFF_SUMMARY_CHARS,
+    hunk_files: PROMPT_HUNK_FILES,
+    hunks_per_file: PROMPT_HUNKS_PER_FILE,
+    hunk_chars: PROMPT_HUNK_CHARS,
+};
+
+/// `_prompt_budget_profile`.
+pub fn prompt_profile(name: &str) -> PromptProfile {
+    let profile = |name,
+                   changed_files,
+                   commits,
+                   pr_body_chars,
+                   diff_summary_chars,
+                   hunk_files,
+                   hunks_per_file,
+                   hunk_chars| PromptProfile {
+        name,
+        changed_files,
+        commits,
+        pr_body_chars,
+        diff_summary_chars,
+        hunk_files,
+        hunks_per_file,
+        hunk_chars,
+    };
+    match name.trim().to_lowercase().as_str() {
+        "suggest" | "suggestion" | "conservative" | "suggestion-conservative" => {
+            profile("suggestion-conservative", 8, 2, 240, 420, 2, 1, 160)
+        }
+        "lean" | "suggestion-lean" => profile("suggestion-lean", 5, 1, 160, 280, 1, 1, 120),
+        "minimal" | "suggestion-minimal" => profile("suggestion-minimal", 3, 1, 80, 180, 1, 1, 80),
+        _ => SUMMARY_PROFILE,
+    }
+}
+
+/// Inputs of `_build_summary_prompt_with_budget`.
+pub struct PromptInput<'a> {
+    pub title: &'a str,
+    pub labels: &'a [String],
+    pub pr_body: &'a str,
+    pub diff: &'a DiffEvidence,
+    pub commits: &'a [Commit],
+    pub suggestion_count: usize,
+    pub kind: Option<&'a str>,
+    pub audience: Option<&'a str>,
+    pub style: &'a Style,
+    pub profile: PromptProfile,
+    pub include_hunks: bool,
+}
+
+pub struct SummaryPrompt {
+    pub prompt: String,
+    pub budget: Map<String, Value>,
+}
+
+/// Ports `Classifier._build_summary_prompt_with_budget`.
+pub fn build_summary_prompt(input: &PromptInput) -> SummaryPrompt {
+    let profile = input.profile;
+    let (commits, diff) = (input.commits, input.diff);
+    let commit_subjects: Vec<String> = commits
         .iter()
-        .take(PROMPT_COMMITS)
-        .map(|c| subject(&c.message))
+        .take(profile.commits)
+        .map(commit_prompt_line)
         .collect();
     let mut commit_lines = if commit_subjects.is_empty() {
         "none".to_owned()
     } else {
         commit_subjects.join("; ")
     };
-    if commits.len() > PROMPT_COMMITS {
+    if commits.len() > profile.commits {
         commit_lines.push_str(&format!(
             "; ... and {} more",
-            commits.len() - PROMPT_COMMITS
+            commits.len() - profile.commits
         ));
     }
     let boundary_text = match (commits.first(), commits.last()) {
@@ -652,51 +850,92 @@ fn summary_prompt(
         ),
         _ => "First commit: none\nLast commit: none".into(),
     };
-    let label_text = if labels.is_empty() {
+    let label_text = if input.labels.is_empty() {
         "none".to_owned()
     } else {
-        labels.join(", ")
+        input.labels.join(", ")
     };
     let mut file_statuses: Vec<(&String, &String)> = diff.file_statuses.iter().collect();
     file_statuses.sort();
+    let included_files = file_statuses.len().min(profile.changed_files);
     let mut file_lines = file_statuses
         .iter()
-        .take(PROMPT_CHANGED_FILES)
+        .take(profile.changed_files)
         .map(|(path, status)| format!("- {status} {path}"))
         .collect::<Vec<_>>()
         .join("\n");
     if file_lines.is_empty() {
         file_lines = "- none".into();
     }
-    if file_statuses.len() > PROMPT_CHANGED_FILES {
+    if file_statuses.len() > profile.changed_files {
         file_lines.push_str(&format!(
             "\n- ... and {} more",
-            file_statuses.len() - PROMPT_CHANGED_FILES
+            file_statuses.len() - profile.changed_files
         ));
     }
+    let total_hunk_files = diff.representative_hunks.len();
+    let total_hunks: usize = diff.representative_hunks.values().map(Vec::len).sum();
+    let total_hunk_chars: usize = diff
+        .representative_hunks
+        .values()
+        .flatten()
+        .map(|h| py_len(h))
+        .sum();
+    let (mut included_hunk_files, mut included_hunks, mut included_hunk_chars) = (0, 0, 0);
     let use_semantic_diff = diff.semantic.is_some();
+    let semantic_detail = if input.include_hunks {
+        "detailed"
+    } else {
+        "structure"
+    };
+    let mut semantic_text = String::new();
     let hunk_text = if use_semantic_diff {
-        let budget = (PROMPT_HUNK_FILES * PROMPT_HUNKS_PER_FILE * PROMPT_HUNK_CHARS).max(1200);
-        Some(render_semantic_diff(
-            &diff.semantic_diff,
-            false,
-            Some(budget),
-        ))
-        .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| "no reviewed changes".into())
+        let budget = (profile.hunk_files * profile.hunks_per_file * profile.hunk_chars).max(1200);
+        semantic_text =
+            render_semantic_diff(&diff.semantic_diff, input.include_hunks, Some(budget));
+        if semantic_text.is_empty() {
+            "no reviewed changes".to_owned()
+        } else {
+            semantic_text.clone()
+        }
+    } else if input.include_hunks {
+        let mut lines: Vec<String> = Vec::new();
+        for (path, hunks) in diff.representative_hunks.iter().take(profile.hunk_files) {
+            included_hunk_files += 1;
+            lines.push(format!("{path}:"));
+            for hunk in hunks.iter().take(profile.hunks_per_file) {
+                let compact = truncate_prompt_text(hunk, profile.hunk_chars);
+                included_hunks += 1;
+                included_hunk_chars += py_len(&compact);
+                lines.push(format!("  {compact}"));
+            }
+            if hunks.len() > profile.hunks_per_file {
+                lines.push(format!(
+                    "  ... and {} more hunk(s)",
+                    hunks.len() - profile.hunks_per_file
+                ));
+            }
+        }
+        if lines.is_empty() {
+            "none".to_owned()
+        } else {
+            lines.join("\n")
+        }
     } else {
         "omitted by privacy mode; use the deterministic change summary and file/status signals"
             .into()
     };
-    let pr_body_text = Some(truncate_prompt_text(pr_body.trim(), PROMPT_PR_BODY_CHARS))
+    let raw_hunks_sent = input.include_hunks && !use_semantic_diff;
+    let pr_body = input.pr_body.trim();
+    let pr_body_text = Some(truncate_prompt_text(pr_body, profile.pr_body_chars))
         .filter(|t| !t.is_empty())
         .unwrap_or_else(|| "none".into());
-    let diff_summary = truncate_prompt_text(&diff.summary, PROMPT_DIFF_SUMMARY_CHARS);
+    let diff_summary = truncate_prompt_text(&diff.summary, profile.diff_summary_chars);
     let mut context = Vec::new();
-    if !kind.is_empty() {
+    if let Some(kind) = input.kind.filter(|k| !k.is_empty()) {
         context.push(format!("kind={kind}"));
     }
-    if !audience.is_empty() {
+    if let Some(audience) = input.audience.filter(|a| !a.is_empty()) {
         context.push(format!("audience={audience}"));
     }
     let context_text = if context.is_empty() {
@@ -704,7 +943,19 @@ fn summary_prompt(
     } else {
         context.join(", ")
     };
-    let style_lines = style.lines();
+    let output_instruction = if input.suggestion_count <= 1 {
+        "Return one complete release-note entry. Use a short paragraph or focused bullet points when that helps \
+         downstream consumers understand the change; avoid padding."
+            .to_owned()
+    } else {
+        format!(
+            "Return exactly {} distinct complete release-note options as a numbered list. \
+             Each option may use a short paragraph or focused bullet points when that helps downstream consumers \
+             understand the change; avoid padding.",
+            input.suggestion_count
+        )
+    };
+    let style_lines = input.style.lines();
     let style_text = if style_lines.is_empty() {
         String::new()
     } else {
@@ -716,12 +967,12 @@ fn summary_prompt(
              changes (with the enclosing symbol), behavior-preserving refactorings and moved code, and \
              formatting that was ignored. Describe meaningful changes; never present moved code, \
              refactorings or formatting as new behavior.\n\
-             Semantic diff (IntentumDiff, structure):\n{hunk_text}"
+             Semantic diff (IntentumDiff, {semantic_detail}):\n{hunk_text}"
         )
     } else {
         format!("Representative hunks:\n{hunk_text}")
     };
-    format!(
+    let prompt = format!(
         "Write a useful Verlato release-note description based on privacy-filtered change evidence.\n\
          Verlato renders the final release note as Markdown with a version heading and change-type \
          subheadings; return only the entry body for this change, without top-level Markdown headings.\n\
@@ -734,8 +985,7 @@ fn summary_prompt(
          or maintenance changes, use concise commit-like wording.\n\
          Tone: {tone}\n\
          {style_text}\
-         Return one complete release-note entry. Use a short paragraph or focused bullet points when that helps \
-         downstream consumers understand the change; avoid padding.\n\
+         {output_instruction}\n\
          Title: {title}\n\
          Release context: {context_text}\n\
          Labels: {label_text}\n\
@@ -745,8 +995,83 @@ fn summary_prompt(
          Changed files:\n{file_lines}\n\
          Diff summary: {diff_summary}\n\
          {evidence_section}",
-        tone = tone_instruction(&style.tone),
-    )
+        tone = tone_instruction(&input.style.tone),
+        title = input.title,
+    );
+    let pr_body_included = if pr_body_text == "none" {
+        0
+    } else {
+        py_len(&pr_body_text)
+    };
+    let (pr_total, summary_total, summary_included) = (
+        py_len(pr_body),
+        py_len(&diff.summary),
+        py_len(&diff_summary),
+    );
+    let budget = json!({
+        "profile": profile.name,
+        "prompt_chars": py_len(&prompt),
+        "files_included": included_files,
+        "files_total": file_statuses.len(),
+        "files_skipped": file_statuses.len() - included_files,
+        "commits_included": commit_subjects.len(),
+        "commits_total": commits.len(),
+        "commits_skipped": commits.len() - commit_subjects.len(),
+        "commit_boundaries_included": !commits.is_empty(),
+        "pr_body_chars_included": pr_body_included,
+        "pr_body_chars_total": pr_total,
+        "pr_body_chars_skipped": pr_total.saturating_sub(pr_body_included),
+        "diff_summary_chars_included": summary_included,
+        "diff_summary_chars_total": summary_total,
+        "diff_summary_chars_skipped": summary_total.saturating_sub(summary_included),
+        "hunk_files_included": included_hunk_files,
+        "hunk_files_total": total_hunk_files,
+        "hunk_files_skipped": total_hunk_files.saturating_sub(included_hunk_files),
+        "hunks_included": included_hunks,
+        "hunks_total": total_hunks,
+        "hunks_skipped": total_hunks.saturating_sub(included_hunks),
+        "hunk_chars_included": included_hunk_chars,
+        "hunk_chars_total": total_hunk_chars,
+        "hunk_chars_skipped": total_hunk_chars.saturating_sub(included_hunk_chars),
+        "evidence_source": if use_semantic_diff { "intentumdiff-semantic-diff" } else { "git-patch" },
+        "semantic_diff_detail": if use_semantic_diff { json!(semantic_detail) } else { Value::Null },
+        "semantic_diff_chars_included": py_len(&semantic_text),
+        "semantic_diff_files": diff.semantic_diff.len(),
+        "raw_patch_text_included": raw_hunks_sent,
+        "raw_patch_chars_sent": if raw_hunks_sent { included_hunk_chars } else { 0 },
+        "omitted_fields": if raw_hunks_sent { String::new() } else { OMITTED_PATCH_EVIDENCE.join(", ") },
+    });
+    SummaryPrompt {
+        prompt,
+        budget: budget.as_object().cloned().unwrap_or_default(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn summary_prompt(
+    title: &str,
+    labels: &[String],
+    pr_body: &str,
+    diff: &DiffEvidence,
+    commits: &[Commit],
+    kind: &str,
+    audience: &str,
+    style: &Style,
+) -> String {
+    build_summary_prompt(&PromptInput {
+        title,
+        labels,
+        pr_body,
+        diff,
+        commits,
+        suggestion_count: 1,
+        kind: Some(kind),
+        audience: Some(audience),
+        style,
+        profile: SUMMARY_PROFILE,
+        include_hunks: false,
+    })
+    .prompt
 }
 
 fn classification_prompt(
@@ -757,7 +1082,7 @@ fn classification_prompt(
 ) -> String {
     let commit_lines = commits
         .iter()
-        .map(|c| subject(&c.message))
+        .map(commit_prompt_line)
         .collect::<Vec<_>>()
         .join("; ");
     let label_text = if labels.is_empty() {
@@ -805,7 +1130,7 @@ fn parse_classification(content: &str) -> Option<(String, String, String, String
     ))
 }
 
-fn summary_rejection(content: &str, title: &str, group: &ChangeGroup) -> Option<&'static str> {
+pub fn summary_rejection(content: &str, title: &str, group: &ChangeGroup) -> Option<&'static str> {
     let normalized = content.trim();
     if normalized.is_empty() {
         return Some("empty");
@@ -865,6 +1190,8 @@ pub struct ModelAssist {
     pub provider_mode: Option<String>,
     pub privacy: String,
     pub style: Style,
+    /// Only rewrite the summary, never the classification (`classify(..., summary_only=True)`).
+    pub summary_only: bool,
 }
 
 impl ModelAssist {
@@ -883,8 +1210,12 @@ impl ModelAssist {
         let mut evidence = json!({
             "title": title,
             "labels": labels,
-            "change_summary": change_summary_payload(group, diff, files),
-            "inferred_commit_intents": [],
+            "change_summary": change_summary_payload(group, None, diff, files),
+            "inferred_commit_intents": group
+                .commits
+                .iter()
+                .filter_map(|c| c.inferred_intent.as_ref().map(|i| i.payload()))
+                .collect::<Vec<_>>(),
         });
         let prompt = summary_prompt(
             title,
@@ -903,6 +1234,7 @@ impl ModelAssist {
             &prompt,
             &evidence,
             raw_patch_chars_available(files),
+            0,
             OMITTED_PATCH_EVIDENCE,
             &["classifier provider assist uses ChangeSummary evidence by default"],
         );
