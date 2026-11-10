@@ -58,18 +58,25 @@ fn text(entry: &Value, key: &str) -> Option<String> {
     }
 }
 
+/// An exclusive interprocess lock on `<cache>.lock`, held until dropped. `File::lock` is
+/// `flock(LOCK_EX)` on Unix (as Python's `fcntl.flock`) and `LockFileEx` over the whole file
+/// on Windows, which overlaps the one-byte `msvcrt.locking` region Python takes, so native and
+/// Python writers exclude each other on both platforms.
 struct FileLock {
-    #[cfg(unix)]
     _file: std::fs::File,
 }
 
-fn lock_file(path: &Path) -> Result<FileLock> {
-    let lock_path = path.with_file_name(format!(
+fn lock_path(path: &Path) -> std::path::PathBuf {
+    path.with_file_name(format!(
         "{}.lock",
         path.file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default()
-    ));
+    ))
+}
+
+fn lock_file(path: &Path) -> Result<FileLock> {
+    let lock_path = lock_path(path);
     if let Some(parent) = lock_path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
     }
@@ -78,19 +85,8 @@ fn lock_file(path: &Path) -> Result<FileLock> {
         .append(true)
         .read(true)
         .open(&lock_path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::io::AsRawFd;
-        unsafe {
-            libc::flock(file.as_raw_fd(), libc::LOCK_EX);
-        }
-        Ok(FileLock { _file: file })
-    }
-    #[cfg(not(unix))]
-    {
-        drop(file);
-        Ok(FileLock {})
-    }
+    file.lock()?;
+    Ok(FileLock { _file: file })
 }
 
 impl JsonSuggestionCache {
@@ -277,5 +273,28 @@ impl JsonSuggestionCache {
         written?;
         self.dirty = false;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn save_lock_excludes_other_holders_until_released() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache.json");
+        let held = lock_file(&cache).unwrap();
+        let other = std::fs::OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(lock_path(&cache))
+            .unwrap();
+        assert!(matches!(
+            other.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        drop(held);
+        other.try_lock().unwrap();
     }
 }
