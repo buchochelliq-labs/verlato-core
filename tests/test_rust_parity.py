@@ -226,8 +226,12 @@ def test_draft_prompt_matches(tmp_path: Path, engine: str, privacy: str):
 def test_unported_commands_are_delegated_to_python(tmp_path: Path):
     py_repo, rs_repo, env = _pair(tmp_path, "git")
     env = {**env, "VERLATO_PYTHON_CLI": f"{sys.executable} -m verlato.cli"}
-    args = ("state", "clear-suggestion-cache")
-    assert json.loads(_run(_rust(*args), rs_repo, env)) == json.loads(_run(_python(*args), py_repo, env))
+    # A command path the native binary does not know is handed to Python unchanged.
+    args = ("no-such-command",)
+    delegated = subprocess.run(_rust(*args), cwd=rs_repo, env=env, capture_output=True, text=True)
+    python = subprocess.run(_python(*args), cwd=py_repo, env=env, capture_output=True, text=True)
+    assert (delegated.returncode, delegated.stdout) == (python.returncode, python.stdout)
+    assert "invalid choice" in delegated.stderr
 
     result = subprocess.run(_rust(*args), cwd=rs_repo, env=_native_only(env), capture_output=True, text=True)
     assert result.returncode != 0
@@ -1271,3 +1275,289 @@ def test_mcp_request_model_input_matches(tmp_path: Path):
     assert json.loads((rs_repo / ".verlato_state.json").read_text()) == json.loads(
         (py_repo / ".verlato_state.json").read_text()
     )
+
+
+# ---------------------------------------------------------------------------
+# maintenance commands
+# ---------------------------------------------------------------------------
+
+_MODEL_LOG_LINES = [
+    {
+        "Timestamp": "2026-01-02T03:04:05.000006Z",
+        "ObservedTimestamp": "2026-01-02T03:04:05.000007Z",
+        "SeverityText": "INFO",
+        "SeverityNumber": 9,
+        "EventName": "verlato.model.request",
+        "Body": "post http://x/api/chat token=sk-abcdefghijklmnopqrstuvwx é",
+        "Attributes": {"provider": "ollama", "nested": {"api_key": "AKIAABCDEFGHIJKLMNOP"}, "ratio": 0.5, "n": 1e-05},
+        "Resource": {"service.name": "verlato"},
+        "InstrumentationScope": {"name": "verlato.providers"},
+    },
+    {"EventName": "", "Body": 7, "Attributes": [1], "InstrumentationScope": "bad"},
+    {
+        "event": "verlato.model.response",
+        "message": "done",
+        "payload": "Bearer abcdefghijklmnopqrstuvwxyz",
+        "attributes": {"redacted": 1},
+    },
+    {"message": None, "attributes": {"tags": ["a", "ghp_" + "a" * 36]}},
+]
+
+
+def _maintenance_setup(tmp_path: Path):
+    py_repo, rs_repo, env = _pair(tmp_path, "git")
+    log = tmp_path / "model-log.jsonl"
+    log.write_text("\n".join(json.dumps(line) for line in _MODEL_LOG_LINES) + "\n\n")
+    events = [
+        ("suggestion_applied", "a", {"tone": "concise", "specificity_score": 0.3}),
+        ("suggestion_applied", "b", {"tone": "concise", "specificity_score": "0.2"}),
+        ("summary_edited", "c", {"tone": "technical", "specificity_score": 0.41}),
+        ("suggestion_regenerated", "a", {"tone": "technical"}),
+        ("suggestion_regenerated", "b", {}),
+        ("suggestion_skipped", "c", {"tone": "é"}),
+        ("suggestion_rejected", "d", {}),
+    ]
+    for repo in (py_repo, rs_repo):
+        for event, item_id, metadata in events:
+            args = ("feedback", "record", "--event", event, "--item-id", item_id, "--metadata-json", json.dumps(metadata))
+            _run(_python(*args), repo, env)
+    return py_repo, rs_repo, env, log
+
+
+def test_maintenance_commands_match(tmp_path: Path):
+    """`model-logs export`, `feedback export|recommend` and `state clear-suggestion-cache`."""
+    py_repo, rs_repo, env, log = _maintenance_setup(tmp_path)
+    rs_env = _native_only(env)
+    for args in (
+        ("model-logs", "export", "--file", str(log)),
+        ("model-logs", "export", "--file", str(log), "--format", "jsonl"),
+        ("model-logs", "export", "--file", str(log), "--event", "verlato.model.response", "--event", "verlato.model.log"),
+        ("feedback", "export"),
+        ("feedback", "export", "--format", "jsonl", "--event", "suggestion_applied"),
+        ("feedback", "export", "--event", "nothing"),
+        ("feedback", "export", "--event", "nothing", "--format", "jsonl"),
+        ("feedback", "recommend"),
+    ):
+        assert _run(_rust(*args), rs_repo, rs_env) == _run(_python(*args), py_repo, env), args
+    for redact in ("0", "1"):
+        args = ("model-logs", "export", "--file", str(log))
+        redact_env = {**env, "VERLATO_REDACT_MODEL_PAYLOADS": redact}
+        assert _run(_rust(*args), rs_repo, _native_only(redact_env)) == _run(_python(*args), py_repo, redact_env)
+
+    for name, repo, command, run_env in (("py", py_repo, _python, env), ("rs", rs_repo, _rust, rs_env)):
+        out = tmp_path / f"{name}-feedback.json"
+        _run(command("feedback", "export", "--output", str(out)), repo, run_env)
+        _run(command("model-logs", "export", "--file", str(log), "--format", "jsonl", "--output", f"{out}l"), repo, run_env)
+    for suffix in ("json", "jsonl"):
+        assert (tmp_path / f"rs-feedback.{suffix}").read_text() == (tmp_path / f"py-feedback.{suffix}").read_text()
+
+    empty_py, empty_rs = tmp_path / "empty-py", tmp_path / "empty-rs"
+    empty_py.mkdir()
+    empty_rs.mkdir()
+    assert _run(_rust("feedback", "recommend"), empty_rs, rs_env) == _run(_python("feedback", "recommend"), empty_py, env)
+
+    entry = {"created_at": "2099-01-01T00:00:00Z", "updated_at": "2099-01-01T00:00:00Z", "item": {"summary": "x"}}
+    cache = {
+        "schema_version": "v1",
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2099-01-01T00:00:00Z",
+        "entries": {"k1": entry, "k2": entry},
+    }
+    args = ("state", "clear-suggestion-cache")
+    for cache_env in ({}, {"VERLATO_SUGGESTION_CACHE_PATH": "./cache//sub/c.json"}):
+        relative = cache_env.get("VERLATO_SUGGESTION_CACHE_PATH", ".verlato_suggestion_cache.json")
+        for repo in (py_repo, rs_repo):
+            (repo / relative).parent.mkdir(parents=True, exist_ok=True)
+            (repo / relative).write_text(json.dumps(cache))
+        rust_out = _run(_rust(*args), rs_repo, {**rs_env, **cache_env})
+        assert rust_out == _run(_python(*args), py_repo, {**env, **cache_env})
+        assert json.loads(rust_out)["removed_entries"] == 2
+        assert not (rs_repo / relative).exists()
+        # Clearing again finds nothing.
+        assert _run(_rust(*args), rs_repo, {**rs_env, **cache_env}) == _run(_python(*args), py_repo, {**env, **cache_env})
+
+
+def test_maintenance_errors_match(tmp_path: Path):
+    py_repo, rs_repo, env, _ = _maintenance_setup(tmp_path)
+    for args, extra in (
+        (("model-logs", "export", "--file", "missing.jsonl"), {}),
+        (("state", "clear-suggestion-cache"), {"VERLATO_SUGGESTION_CACHE_BACKEND": "Redis"}),
+    ):
+        python = subprocess.run(_python(*args), cwd=py_repo, env={**env, **extra}, capture_output=True, text=True)
+        rust = subprocess.run(
+            _rust(*args), cwd=rs_repo, env=_native_only({**env, **extra}), capture_output=True, text=True
+        )
+        assert python.returncode != 0 and rust.returncode != 0, args
+        assert rust.stderr.strip().splitlines()[-1] in python.stderr, (rust.stderr, python.stderr)
+
+
+def _doctor_ollama_handler(*, ps_status: int = 200, content: str = "Adds a model health check."):
+    from http.server import BaseHTTPRequestHandler
+
+    class Handler(BaseHTTPRequestHandler):
+        bodies: list[dict] = []
+
+        def _send(self, status: int, payload: dict) -> None:
+            data = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):  # noqa: N802 - http.server API
+            if ps_status != 200:
+                self._send(ps_status, {"error": "nope"})
+                return
+            self._send(200, {"models": [
+                {"name": "other:7b", "model": "other:7b", "size_vram": 1},
+                {
+                    "name": "parity-model:latest", "model": "parity-model:latest", "size": 5,
+                    "size_vram": 0, "context_length": 16384, "expires_at": "2999-01-01T00:00:00.123456Z",
+                },
+            ]})
+
+        def do_POST(self):  # noqa: N802 - http.server API
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            Handler.bodies.append(body)
+            answer = content
+            if "Input JSON" in body["messages"][-1]["content"]:
+                answer = json.dumps({"items": [{"item_id": "doctor_model", "suggestions": [" Clarifies notes. ", 3]}]})
+            self._send(200, {
+                "message": {"role": "assistant", "content": answer},
+                "done": True, "done_reason": "stop", "eval_count": 12, "prompt_eval_count": 50,
+                "total_duration": 1_000_000_000_000, "load_duration": 900_000_000_000,
+                "prompt_eval_duration": 30_000_000, "eval_duration": 40_000_000,
+            })
+
+        def log_message(self, *args):
+            pass
+
+    return Handler
+
+
+_ELAPSED = re.compile(r'"(elapsed_ms|model_ms|queue_ms)": \d+')
+_WARMUP_ELAPSED = re.compile(r"Warmup completed in \d+ms")
+
+
+def _doctor_pair(tmp_path: Path, handler, args: tuple[str, ...], config: dict, runtime_env=None):
+    """Run a doctor command in both runtimes against a fake Ollama; returns (stdout, request bodies)."""
+    server = _serve(handler)
+    try:
+        py_repo, rs_repo, env = _pair(tmp_path, "git")
+        env.pop("VERLATO_MODEL_PROVIDER")
+        env.update({
+            "VERLATO_OLLAMA_ENDPOINT": f"http://127.0.0.1:{server.server_address[1]}/api/chat",
+            "VERLATO_OLLAMA_MODEL": "parity-model",
+        })
+        outputs = []
+        for name, repo, command in (("py", py_repo, _python), ("rs", rs_repo, _rust)):
+            run_env = {**env, **(runtime_env(name) if runtime_env else {})}
+            if name == "rs":
+                run_env = _native_only(run_env)
+            (repo / "verlato.json").write_text(json.dumps(config))
+            handler.bodies.clear()
+            out = _run(command(*args), repo, run_env)
+            out = _WARMUP_ELAPSED.sub("Warmup completed in 0ms", _ELAPSED.sub(r'"\1": 0', out))
+            outputs.append((out, list(handler.bodies)))
+    finally:
+        server.shutdown()
+    return outputs
+
+
+@pytest.mark.parametrize("ps_status", [200, 404])
+def test_doctor_ollama_matches(tmp_path: Path, ps_status: int):
+    handler = _doctor_ollama_handler(ps_status=ps_status)
+    config = {"provider": {"name": "ollama", "num_ctx": 8192}, "suggestion_parallelism": 3}
+    args = ("doctor", "ollama", "--warmup", "--parallel-probe", "--suggest-model", " ")
+    (py_out, py_bodies), (rs_out, rs_bodies) = _doctor_pair(tmp_path, handler, args, config)
+    assert rs_out == py_out
+    assert rs_bodies == py_bodies and len(rs_bodies) == 4
+    report = json.loads(rs_out)
+    assert report["summary"]["bottleneck"] == "load"
+    assert [probe["name"] for probe in report["probes"]] == ["warmup", "single", "parallel-a", "parallel-b"]
+    assert report["runtime"]["selected_model"]["loaded"] is (True if ps_status == 200 else None)
+
+
+def test_doctor_ollama_failures_match(tmp_path: Path):
+    handler = _doctor_ollama_handler(content="")
+    (py_out, _), (rs_out, _) = _doctor_pair(tmp_path, handler, ("doctor", "ollama"), {"provider": {"name": "ollama"}})
+    assert rs_out == py_out
+    assert json.loads(rs_out)["summary"]["status"] == "error"
+
+
+def test_doctor_ollama_adaptive_is_delegated(tmp_path: Path):
+    _, rs_repo, env = _pair(tmp_path, "git")
+    result = subprocess.run(
+        _rust("doctor", "ollama", "--adaptive-recommendations"),
+        cwd=rs_repo, env=_native_only(env), capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert "adaptive suggestion recommendations" in result.stderr
+
+
+@pytest.mark.parametrize("provider", ["ollama", "plugin"])
+def test_doctor_model_matches(tmp_path: Path, provider: str):
+    handler = _doctor_ollama_handler()
+    logs = {name: tmp_path / f"{name}.jsonl" for name in ("py", "rs")}
+    if provider == "plugin":
+        plugin = tmp_path / "plugin.py"
+        plugin.write_text(_PARITY_PLUGIN)
+        config = {
+            "provider": {"name": "plugin", "plugin_command": [sys.executable, str(plugin)], "plugin_env": ["PARITY_LOG"]},
+            "suggestion_tone": "technical",
+            "suggestion_style": {"guidance": "Name the user-visible effect.", "specificity_floor": 0.3},
+        }
+        args = ("doctor", "model", "--timeout-seconds", "0.000001")
+    else:
+        config = {"provider": {"name": "ollama", "timeout_seconds": 30}}
+        args = ("doctor", "model", "--model-provider", "ollama", "--suggest-model", "tiny")
+    (py_out, py_bodies), (rs_out, rs_bodies) = _doctor_pair(
+        tmp_path, handler, args, config, lambda name: {"PARITY_LOG": str(logs[name])}
+    )
+    assert rs_out == py_out
+    assert rs_bodies == py_bodies
+    if provider == "plugin":
+        assert _read_log(logs["rs"]) == _read_log(logs["py"]) != []
+        assert json.loads(rs_out)["status"] == "error"
+    else:
+        assert json.loads(rs_out)["status"] == "ok"
+        assert rs_bodies[0]["model"] == "tiny" and rs_bodies[0]["format"]["required"] == ["items"]
+
+
+@pytest.mark.parametrize("engine", ["git", "intentumdiff"])
+def test_suggestion_service_methods_match(tmp_path: Path, engine: str):
+    py_repo, rs_repo, env = _pair(tmp_path, engine)
+    items = json.loads(_run(_python("scan", "--base", "v1.0.0"), py_repo, env))
+    item = next(entry for entry in items if entry["evidence"]["files"])
+    item_id, path = item["id"], item["evidence"]["files"][0]
+    base = {"base": "v1.0.0", "item_id": item_id}
+    requests = [
+        {"id": 1, "method": "suggestion.items", "params": {"base": "v1.0.0", "include_files": True}},
+        {"id": 2, "method": "suggestion.items", "params": {"base": "v1.0.0"}},
+        {"id": 3, "method": "suggestion.item", "params": base},
+        {"id": 4, "method": "suggestion.item", "params": {"base": "v1.0.0", "item_id": "missing"}},
+        {"id": 5, "method": "suggestion.patch", "params": {**base, "path": path, "offset": "3", "limit": 2.9}},
+        {"id": 6, "method": "suggestion.patch", "params": base},
+        {"id": 7, "method": "suggestion.semantic_diff", "params": {**base, "path": path}},
+        {"id": 8, "method": "suggestion.semantic_search", "params": {**base, "query": "export", "limit": "x"}},
+        {"id": 9, "method": "suggestion.search", "params": {**base, "query": "return"}},
+        {"id": 10, "method": "suggestion.items", "params": {}},
+        {"id": 11, "method": "state.clear_suggestion_cache"},
+        {"id": 12, "method": "shutdown"},
+    ]
+    for repo in (py_repo, rs_repo):
+        (repo / ".verlato_suggestion_cache.json").write_text(json.dumps({"schema_version": "v1", "entries": {}}))
+    payload = "".join(json.dumps(request) + "\n" for request in requests)
+
+    def serve(cmd: list[str], repo: Path, run_env: dict[str, str]) -> list[dict]:
+        result = subprocess.run(cmd, cwd=repo, env=run_env, input=payload, capture_output=True, text=True, timeout=600)
+        return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+
+    python_responses = serve(_python("service"), py_repo, env)
+    rust_responses = serve(_rust("service"), rs_repo, _native_only(env))
+    compare = (lambda value: value) if engine == "git" else _strip_engine_identity
+    assert len(rust_responses) == len(python_responses) == len(requests)
+    for python_response, rust_response in zip(python_responses, rust_responses, strict=True):
+        assert compare(rust_response) == compare(python_response), python_response["id"]
+    assert rust_responses[0]["ok"] and rust_responses[3]["error"]["code"] == "KeyError"

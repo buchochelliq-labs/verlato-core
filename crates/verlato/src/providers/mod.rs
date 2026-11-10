@@ -10,7 +10,7 @@ pub mod mock;
 pub mod model_log;
 pub mod ollama;
 pub mod plugin;
-mod process;
+pub mod process;
 
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -72,6 +72,13 @@ pub trait Provider: Send + Sync {
 
     /// The Python class name, used where Python falls back to `provider.__class__.__name__`.
     fn class_name(&self) -> &'static str;
+
+    /// The Ollama connection and option attributes `verlato doctor ollama` reports
+    /// (`endpoint`, `timeout_seconds`, `num_ctx`, ... and the effective suggest `num_predict`
+    /// for `request`). Only the Ollama provider has them.
+    fn ollama_attributes(&self, _request: &ProviderRequest) -> Option<Map<String, Value>> {
+        None
+    }
 }
 
 /// `_provider_effective_model`: the model a task would use.

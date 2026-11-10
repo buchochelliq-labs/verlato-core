@@ -548,7 +548,7 @@ fn get_prompt(name: &str, arguments: &Map<String, Value>) -> Result<Value, RpcEr
 
 /// `MCPService._suggestion_tool_provider`: groups classified deterministically (no review state
 /// merge). Agents are remote models, so only `trusted-provider-patch` unlocks semantic detail.
-fn suggestion_tools(
+pub(crate) fn suggestion_tools(
     ctx: &Context,
     base: &str,
     head: &str,

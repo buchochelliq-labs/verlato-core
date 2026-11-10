@@ -274,6 +274,32 @@ impl JsonSuggestionCache {
         self.dirty = false;
         Ok(())
     }
+
+    /// `JsonSuggestionCacheStore.clear`: delete the cache file under the lock and return how
+    /// many entries it held (0 for an unreadable file).
+    pub fn clear(&mut self) -> Result<usize> {
+        if let Some(parent) = self.path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut count = 0;
+        {
+            let _lock = lock_file(&self.path)?;
+            if self.path.exists() {
+                let raw: Value = std::fs::read_to_string(&self.path)
+                    .ok()
+                    .and_then(|text| serde_json::from_str(&text).ok())
+                    .unwrap_or(Value::Null);
+                count = raw
+                    .get("entries")
+                    .and_then(Value::as_object)
+                    .map_or(0, Map::len);
+                std::fs::remove_file(&self.path)?;
+            }
+        }
+        self.entries.clear();
+        self.dirty = false;
+        Ok(count)
+    }
 }
 
 #[cfg(test)]

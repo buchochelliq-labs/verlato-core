@@ -20,6 +20,13 @@ const NATIVE_METHODS: &[&str] = &[
     "feedback.record",
     "state.show",
     "state.clear_working",
+    "state.clear_suggestion_cache",
+    "suggestion.items",
+    "suggestion.item",
+    "suggestion.patch",
+    "suggestion.semantic_diff",
+    "suggestion.semantic_search",
+    "suggestion.search",
     "commit.conventional",
     "commit.conventional_many",
 ];
@@ -431,9 +438,81 @@ fn dispatch(cwd: &Path, method: &str, params: &Map<String, Value>) -> Result<Val
         }
         "state.show" => Ok(ctx.state_show()?),
         "state.clear_working" => Ok(ctx.clear_working_state()?),
+        "state.clear_suggestion_cache" => Ok(crate::maintenance::clear_suggestion_cache(&ctx)?),
+        "suggestion.items"
+        | "suggestion.item"
+        | "suggestion.patch"
+        | "suggestion.semantic_diff"
+        | "suggestion.semantic_search"
+        | "suggestion.search" => {
+            let base = required(params, "base")?;
+            let head = params
+                .get("head")
+                .filter(|h| value_truthy(h))
+                .map(|h| {
+                    h.as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| h.to_string())
+                })
+                .unwrap_or_else(|| "HEAD".into());
+            // Python validates the remaining required params before building the provider.
+            let item_id = if method == "suggestion.items" {
+                ""
+            } else {
+                required(params, "item_id")?
+            };
+            let path = match method {
+                "suggestion.patch" | "suggestion.semantic_diff" => required(params, "path")?,
+                _ => "",
+            };
+            let query = match method {
+                "suggestion.semantic_search" | "suggestion.search" => required(params, "query")?,
+                _ => "",
+            };
+            let tools = crate::mcp::suggestion_tools(&ctx, base, &head)?;
+            Ok(match method {
+                "suggestion.items" => {
+                    tools.list_suggestion_items(truthy(params, &["include_files", "includeFiles"]))
+                }
+                "suggestion.item" => tools.get_suggestion_item(item_id)?,
+                "suggestion.patch" => tools.get_file_patch(
+                    item_id,
+                    path,
+                    optional_int(params.get("offset"), 0),
+                    optional_int(params.get("limit"), 12_000),
+                )?,
+                "suggestion.semantic_diff" => tools.get_file_semantic_diff(item_id, path)?,
+                "suggestion.semantic_search" => tools.search_semantic_diff(
+                    item_id,
+                    query,
+                    optional_int(params.get("limit"), 5),
+                )?,
+                _ => {
+                    tools.search_item_diff(item_id, query, optional_int(params.get("limit"), 5))?
+                }
+            })
+        }
         other => Err(Dispatch::Protocol(ProtocolError(format!(
             "Unknown service method: {other}"
         )))),
+    }
+}
+
+/// `_optional_int`: Python `int(value)`, or `default` when that fails.
+fn optional_int(value: Option<&Value>, default: i64) -> i64 {
+    match value {
+        None | Some(Value::Null) => default,
+        Some(Value::Bool(b)) => i64::from(*b),
+        Some(Value::Number(n)) => n
+            .as_i64()
+            .or_else(|| {
+                n.as_f64()
+                    .filter(|f| f.is_finite())
+                    .map(|f| f.trunc() as i64)
+            })
+            .unwrap_or(default),
+        Some(Value::String(s)) => s.trim().replace('_', "").parse().unwrap_or(default),
+        Some(_) => default,
     }
 }
 

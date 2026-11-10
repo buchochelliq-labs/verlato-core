@@ -7,7 +7,7 @@ use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Map, Value};
 use std::process::ExitCode;
 
-use verlato::{delegate, engine, pipeline::Context, service};
+use verlato::{delegate, engine, maintenance, pipeline::Context, service};
 
 /// Command paths implemented natively. Everything else goes to Python.
 const NATIVE: &[&[&str]] = &[
@@ -26,8 +26,10 @@ const NATIVE: &[&[&str]] = &[
     &["state", "show"],
     &["state", "mark-published"],
     &["state", "clear-working"],
-    &["feedback", "record"],
-    &["doctor", "engine"],
+    &["state", "clear-suggestion-cache"],
+    &["feedback"],
+    &["doctor"],
+    &["model-logs"],
     &["commit", "conventional"],
 ];
 
@@ -126,6 +128,25 @@ enum Command {
     Doctor(DoctorCommand),
     #[command(subcommand)]
     Commit(CommitCommand),
+    #[command(subcommand)]
+    ModelLogs(ModelLogsCommand),
+}
+
+#[derive(Subcommand)]
+enum ModelLogsCommand {
+    Export {
+        /// JSONL model debug log produced by VERLATO_MODEL_LOG_PATH.
+        #[arg(long)]
+        file: String,
+        #[arg(long, value_parser = ["json", "jsonl"], default_value = "json")]
+        format: String,
+        /// Optional output path. Defaults to stdout.
+        #[arg(long)]
+        output: Option<String>,
+        /// Filter to one event name. Can be provided more than once.
+        #[arg(long)]
+        event: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -251,6 +272,7 @@ enum StateCommand {
         all_unpublished: bool,
     },
     ClearWorking,
+    ClearSuggestionCache,
 }
 
 #[derive(Subcommand)]
@@ -263,11 +285,47 @@ enum FeedbackCommand {
         #[arg(long)]
         metadata_json: Option<String>,
     },
+    Export {
+        #[arg(long, value_parser = ["json", "jsonl"], default_value = "json")]
+        format: String,
+        #[arg(long)]
+        output: Option<String>,
+        /// Filter to one feedback event type. Can be provided more than once.
+        #[arg(long)]
+        event: Vec<String>,
+    },
+    Recommend,
 }
 
 #[derive(Subcommand)]
 enum DoctorCommand {
+    /// Report the IntentumDiff semantic engine status.
     Engine,
+    Ollama {
+        /// Run two tiny Ollama suggestion probes concurrently to detect server queueing.
+        #[arg(long)]
+        parallel_probe: bool,
+        /// Run a tiny suggestion-style warmup request before measuring Ollama health.
+        #[arg(long)]
+        warmup: bool,
+        /// Include opt-in adaptive suggestion tuning recommendations in the JSON output.
+        #[arg(long)]
+        adaptive_recommendations: bool,
+        /// Use a specific Ollama model for the suggestion-style health probe.
+        #[arg(long)]
+        suggest_model: Option<String>,
+    },
+    Model {
+        /// Override the configured model provider.
+        #[arg(long, value_parser = ["stub", "mock", "ollama", "litellm", "plugin", "github-copilot", "codex-cli", "claude-code"])]
+        model_provider: Option<String>,
+        /// Use a specific model for the suggestion-style health probe.
+        #[arg(long)]
+        suggest_model: Option<String>,
+        /// Advisory timeout budget used to label slow probes.
+        #[arg(long)]
+        timeout_seconds: Option<f64>,
+    },
 }
 
 /// The positional command path of `args` (skipping the global `--diff-engine` option).
@@ -578,6 +636,9 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
         Command::State(command) => match command {
             StateCommand::Show => json_out(&ctx.state_show()?)?,
             StateCommand::ClearWorking => json_out(&ctx.clear_working_state()?)?,
+            StateCommand::ClearSuggestionCache => {
+                maintenance::print_unsorted(&maintenance::clear_suggestion_cache(&ctx)?)
+            }
             StateCommand::MarkPublished {
                 version,
                 ids,
@@ -608,6 +669,44 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
             };
             json_out(&ctx.record_feedback(&event, &item_id, metadata)?)?;
         }
+        Command::Feedback(FeedbackCommand::Export {
+            format,
+            output,
+            event,
+        }) => maintenance::feedback_export(&ctx, &format, output.as_deref(), &event)?,
+        Command::Feedback(FeedbackCommand::Recommend) => maintenance::feedback_recommend(&ctx)?,
+        Command::ModelLogs(ModelLogsCommand::Export {
+            file,
+            format,
+            output,
+            event,
+        }) => maintenance::model_logs_export(&file, &format, output.as_deref(), &event)?,
+        Command::Doctor(DoctorCommand::Ollama {
+            parallel_probe,
+            warmup,
+            adaptive_recommendations,
+            suggest_model,
+        }) => {
+            if maintenance::adaptive_recommendations_enabled(&ctx, adaptive_recommendations) {
+                return delegate::run(&raw_args, "adaptive suggestion recommendations");
+            }
+            maintenance::print_unsorted(&maintenance::doctor_ollama(
+                &ctx,
+                parallel_probe,
+                warmup,
+                suggest_model.as_deref(),
+            )?);
+        }
+        Command::Doctor(DoctorCommand::Model {
+            model_provider,
+            suggest_model,
+            timeout_seconds,
+        }) => maintenance::print_unsorted(&maintenance::doctor_model(
+            &ctx,
+            model_provider.as_deref(),
+            suggest_model.as_deref(),
+            timeout_seconds,
+        )?),
         Command::Commit(CommitCommand::Conventional {
             base,
             head,
@@ -706,12 +805,14 @@ mod tests {
         assert!(is_native(&command_path(&args(&[
             "draft", "suggest", "--base", "v1"
         ]))));
-        assert!(!is_native(&command_path(&args(&[
+        assert!(is_native(&command_path(&args(&[
             "state",
             "clear-suggestion-cache"
         ]))));
         assert!(is_native(&command_path(&args(&["commit", "conventional"]))));
-        assert!(!is_native(&command_path(&args(&["doctor", "ollama"]))));
+        assert!(is_native(&command_path(&args(&["doctor", "ollama"]))));
+        assert!(is_native(&command_path(&args(&["model-logs", "export"]))));
+        assert!(is_native(&command_path(&args(&["feedback", "recommend"]))));
         assert!(is_native(&command_path(&args(&["serve"]))));
     }
 }

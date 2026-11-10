@@ -17,6 +17,7 @@ pub mod evidence;
 pub mod git;
 pub mod grouper;
 pub mod intents;
+pub mod maintenance;
 pub mod mcp;
 pub mod models;
 pub mod pipeline;

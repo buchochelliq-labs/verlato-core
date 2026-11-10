@@ -595,6 +595,27 @@ impl Provider for OllamaProvider {
         Some(self.task_model(task).to_owned())
     }
 
+    fn ollama_attributes(&self, request: &ProviderRequest) -> Option<Map<String, Value>> {
+        let options = self.options_for_task("suggest", request);
+        Some(Map::from_iter([
+            ("endpoint".to_owned(), json!(self.endpoint)),
+            ("timeout_seconds".to_owned(), json!(self.timeout_seconds)),
+            ("stream".to_owned(), json!(self.stream)),
+            ("keep_alive".to_owned(), json!(self.keep_alive)),
+            ("num_ctx".to_owned(), json!(self.num_ctx)),
+            ("num_predict".to_owned(), json!(self.num_predict)),
+            (
+                "suggest_num_predict".to_owned(),
+                json!(self.suggest_num_predict),
+            ),
+            (
+                "suggest_num_predict_effective".to_owned(),
+                options.get("num_predict").cloned().unwrap_or(Value::Null),
+            ),
+            ("suggest_think".to_owned(), json!(self.suggest_think)),
+        ]))
+    }
+
     fn summarize(&self, request: &ProviderRequest) -> ProviderResponse {
         self.invoke(summarize_task(&request.task), request)
     }

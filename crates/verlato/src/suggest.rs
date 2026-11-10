@@ -1136,7 +1136,7 @@ fn provider_cache_model_id(provider: &dyn Provider, mode: &str) -> String {
 }
 
 /// `_provider_model_context`.
-fn provider_model_context(provider: &dyn Provider, mode: &str) -> Map<String, Value> {
+pub(crate) fn provider_model_context(provider: &dyn Provider, mode: &str) -> Map<String, Value> {
     if !matches!(
         mode.trim().to_lowercase().as_str(),
         "ollama" | "local" | "litellm" | "plugin" | "external-plugin"
@@ -1188,7 +1188,7 @@ fn configured_ollama_context(
 }
 
 /// `_normalized_provider_timings`.
-fn provider_timings(metadata: &Map<String, Value>, model_ms: i64) -> Map<String, Value> {
+pub(crate) fn provider_timings(metadata: &Map<String, Value>, model_ms: i64) -> Map<String, Value> {
     let number = |key: &str| -> Option<f64> {
         match metadata.get(key) {
             Some(Value::Number(n)) => n.as_f64(),

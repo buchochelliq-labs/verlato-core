@@ -39,6 +39,7 @@ About 16k lines of Python (plus ~7k lines of tests):
 | Suggestions: prompt preview, single-strategy `--preview`/`--preflight`, applying a suggestion, JSON cache, scoring, traces | `cli/main.py` (parts), `state/suggestion_cache.py` (JSON), `core/change_summary.py` | ~2.5k | **Ported** |
 | Suggestions: batched strategies (paired, full-diff-json), tool retrieval, non-JSON (plugin-registered) cache backends, adaptive recommendations | `cli/main.py` (parts), `core/suggestion_tools.py` | ~2k | Delegated |
 | Commit intent inference and Conventional Commit drafting | `core/commit_intent.py` | ~1.1k | **Ported** |
+| Maintenance: `doctor ollama`, `doctor model`, `model-logs export`, `feedback export`, `feedback recommend`, `state clear-suggestion-cache`; the `suggestion.*` and `state.clear_suggestion_cache` service methods | `cli/main.py` (parts), `service_stdio.py`, `mcp/service.py` | ~1k | **Ported** (adaptive recommendations in `doctor ollama` are delegated with the suggestion strategies) |
 | MCP server (`verlato serve`): FastMCP's handshake, tool/resource/prompt catalog, argument validation and result shapes; the MCP evidence tools (`SuggestionEvidenceToolProvider`) | `mcp/server.py`, `mcp/service.py`, `core/suggestion_tools.py` | ~1.7k | **Ported** |
 | GitHub API PR adapter | `github/adapter.py` | ~0.1k | **Ported** |
 
@@ -58,18 +59,29 @@ draft suggest --preview | --preflight (single strategy, JSON cache; see below)
 draft suggest --id (applies a model summary to review state)
 commit conventional
 render
-state show | mark-published | clear-working
-feedback record
-doctor engine
-service                              (health, info, draft.* incl. model providers and intent inference,
-                                      commit.conventional[_many], feedback.record, state.show, state.clear_working)
+state show | mark-published | clear-working | clear-suggestion-cache
+feedback record | export | recommend
+model-logs export
+doctor engine | ollama | model       (doctor ollama --adaptive-recommendations is delegated)
+service                              (every method: health, info, draft.* incl. model providers and intent
+                                      inference, commit.conventional[_many], feedback.record, state.*,
+                                      suggestion.*)
 serve                                (MCP server on stdio; all tools, resources and prompts)
 ```
 
-Everything else is delegated to the Python implementation with the original arguments:
-the rest of `draft suggest` (see below), `doctor ollama|model`,
-`model-logs`, `feedback export|recommend`, `state clear-suggestion-cache`, and the
-`suggestion.*` service methods (proxied to a lazily started Python service).
+Everything else is delegated to the Python implementation with the original arguments: the
+rest of `draft suggest` (see below) and adaptive recommendations (`doctor ollama
+--adaptive-recommendations`, `VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS` or
+`"suggestion_adaptive_recommendations": true`). The service no longer starts a Python process
+for any method it knows; unknown methods are still proxied.
+
+The maintenance commands print Python's exact bytes (including `\uXXXX` escapes and key order).
+`doctor ollama` probes the configured Ollama with the same requests (warmup, single and two
+concurrent probes), reads `/api/ps` and `ollama ps`, and reports the same bottleneck analysis;
+`doctor model` sends the same full-diff-json probe (prompt, evidence and response schema) to any
+provider. Only the non-JSON cache backends differ by design: Python has none registered either,
+so both report `Unknown suggestion cache backend '<name>'; available: json` (new native backends
+go in `maintenance::clear_suggestion_cache_backend` and the suggestion cache).
 
 `scan`/`generate`/`reconcile` (and drafts or reviews with `--model-provider`) ask the provider
 to enrich summaries and, on the diff-fallback path, classifications. This runs natively for every
