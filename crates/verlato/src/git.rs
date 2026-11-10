@@ -513,7 +513,8 @@ impl GitHubApi {
     }
 
     /// PRs for each commit; a failed commit lookup means "no PR", a failed PR fetch is an error.
-    fn map_commits(&self, commits: &[Commit]) -> anyhow::Result<HashMap<String, PullRequest>> {
+    /// Public so forge adapters for other GitHub deployments can reuse the read-only lookup.
+    pub fn map_commits(&self, commits: &[Commit]) -> anyhow::Result<HashMap<String, PullRequest>> {
         let mut by_commit: HashMap<String, Option<PullRequest>> = HashMap::new();
         let mut by_number: HashMap<i64, PullRequest> = HashMap::new();
         let mut mapping = HashMap::new();
