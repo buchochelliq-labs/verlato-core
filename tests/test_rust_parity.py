@@ -1606,25 +1606,35 @@ def _mcp_versions() -> set[str]:
     return {_LEGACY_PYTHON_VERSION, rust_version}
 
 
-_README_RESOURCE = "verlato://guidance/readme"
+# Resources that serve repository files, which keep changing after the goldens were recorded.
+_LIVE_RESOURCES = {
+    "verlato://guidance/readme": "README.md",
+    "verlato://guidance/agent": "AGENT.md",
+    "verlato://guidance/architecture": "docs/technical/architecture.md",
+    "verlato://guidance/copilot": ".github/copilot-instructions.md",
+    "verlato://guidance/skill": ".codex/skills/verlato/SKILL.md",
+    "verlato://sample-config": "verlato.sample.json",
+}
 
 
-def _mcp_readme_text(response: dict) -> list[dict]:
-    """The `verlato://guidance/readme` resource contents (the repository's README.md)."""
+def _mcp_live_resources(response: dict) -> list[dict]:
+    """Resource contents that serve repository files (see `_LIVE_RESOURCES`)."""
     contents = response.get("result", {}).get("contents", []) if isinstance(response.get("result"), dict) else []
-    return [item for item in contents if isinstance(item, dict) and item.get("uri") == _README_RESOURCE and "text" in item]
+    return [item for item in contents if isinstance(item, dict) and item.get("uri") in _LIVE_RESOURCES and "text" in item]
 
 
 def _mcp_compare(python: dict, rust: dict, py_repo: Path, rs_repo: Path, *, engine_identity: bool, label) -> None:
     versions = _mcp_versions()
-    # The readme resource serves the repository's own README.md, which keeps changing after the
-    # goldens were recorded: the native server must serve the current README, and everything
-    # else about the answer must match the recording.
-    for item in _mcp_readme_text(rust):
-        assert item["text"] == (ROOT / "README.md").read_text(encoding="utf-8"), label
-        item["text"] = "<README>"
-    for item in _mcp_readme_text(python):
-        item["text"] = "<README>"
+    # The guidance and sample-config resources serve the repository's own files (README.md,
+    # AGENT.md, the architecture page, verlato.sample.json, ...), which keep changing after the
+    # goldens were recorded: the native server must serve the current file, and everything else
+    # about the answer must match the recording.
+    for item in _mcp_live_resources(rust):
+        path = _LIVE_RESOURCES[item["uri"]]
+        assert item["text"] == (ROOT / path).read_text(encoding="utf-8"), label
+        item["text"] = f"<{path}>"
+    for item in _mcp_live_resources(python):
+        item["text"] = f"<{_LIVE_RESOURCES[item['uri']]}>"
     expected = _mcp_normalize(python, py_repo, versions, engine_identity=engine_identity)
     actual = _mcp_normalize(rust, rs_repo, versions, engine_identity=engine_identity)
     assert actual == expected, label

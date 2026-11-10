@@ -46,10 +46,10 @@ coverage of more forges, governance, analytics and multi-user operation are paid
   - the `verlato` wheel on PyPI;
   - the VS Code extension.
 
-  See [RELEASING.md](RELEASING.md).
+  See [Releasing](technical/releasing.md).
 - **Enterprise:** a separate `verlato` binary, built in the private repository.
   - It depends on core's crates through Cargo (a git dependency pinned to a core commit).
-  - It calls [`verlato::cli::run_with`](../crates/verlato/src/cli.rs) with its extensions
+  - It calls [`verlato::cli::run_with`](https://github.com/buchochelliq-labs/verlato-core/blob/main/crates/verlato/src/cli.rs) with its extensions
     installed.
   - Its commands, output formats and editor protocol are a superset of core's, so the VS Code
     extension and MCP clients work with either binary.
@@ -61,8 +61,8 @@ coverage of more forges, governance, analytics and multi-user operation are paid
 
 ## Extension points
 
-These are defined in [`crates/verlato/src/extensions.rs`](../crates/verlato/src/extensions.rs).
-`tests/extensions.rs` exercises all of them from outside the crate.
+These are defined in [`crates/verlato/src/extensions.rs`](https://github.com/buchochelliq-labs/verlato-core/blob/main/crates/verlato/src/extensions.rs).
+`tests/extensions.rs` exercises all of them from outside the crate; [Extension points](technical/extending.md) shows how to use them.
 
 | Point | Registered with | Used for |
 |---|---|---|

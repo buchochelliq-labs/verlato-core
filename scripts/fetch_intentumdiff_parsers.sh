@@ -3,7 +3,7 @@
 # native verlato engine loads. This script is the single pinned source of the bundle: the
 # components are extracted from the pinned, checksum-verified intentumdiff-python wheel on PyPI
 # (the .wasm components are platform independent). The pin must match the intentumdiff-core
-# revision in Cargo.toml (see docs/RELEASING.md).
+# revision in Cargo.toml (see docs/technical/releasing.md).
 #
 # Usage: scripts/fetch_intentumdiff_parsers.sh [DEST_DIR]
 #   DEST_DIR defaults to target/release/wasm (next to the release binary). The Python package

@@ -37,7 +37,7 @@ fn guidance_document(name: &str) -> Option<&'static str> {
     Some(match name {
         "readme" => include_str!("../../../README.md"),
         "agent" => include_str!("../../../AGENT.md"),
-        "architecture" => include_str!("../../../ARCHITECTURE.md"),
+        "architecture" => include_str!("../../../docs/technical/architecture.md"),
         "copilot" => include_str!("../../../.github/copilot-instructions.md"),
         "skill" => include_str!("../../../.codex/skills/verlato/SKILL.md"),
         _ => return None,
