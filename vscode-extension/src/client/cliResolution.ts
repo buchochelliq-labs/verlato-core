@@ -23,8 +23,11 @@ export function resolveVerlatoExecutable(options: {
   }
 
   const platform = options.platform ?? process.platform;
-  // The native Rust binary is preferred: bundled with the extension (bin/ + wasm/), or built in
-  // the Verlato checkout. It delegates model-backed commands to the Python CLI (verlato-py).
+  // The native binary is preferred: an unpacked release bundle in the extension's bin/ (with
+  // wasm/ beside it), or a build in the Verlato checkout. Then a `verlato` installed with pip
+  // into a .venv, then `verlato` on PATH (e.g. `pip install verlato`, or a release bundle's
+  // directory on PATH). A downloaded bundle can also be used directly by pointing
+  // `verlato.cliPath` at its `verlato` executable.
   const nativeCandidates = getNativeExecutables(options.extensionPath, platform);
   const workspaceCli = getVenvExecutable(options.workspacePath, platform);
   const extensionCli = getVenvExecutable(options.extensionPath, platform);
@@ -57,19 +60,6 @@ export function getNativeExecutables(extensionPath: string, platform: NodeJS.Pla
     path.join(extensionPath, "bin", binary),
     path.join(path.dirname(extensionPath), "target", "release", binary),
   ];
-}
-
-/** The Python implementation (`verlato-py`) the native binary delegates model features to. */
-export function resolvePythonDelegate(options: {
-  workspacePath: string;
-  extensionPath: string;
-  existsSync: (candidate: string) => boolean;
-  platform?: NodeJS.Platform;
-}): string | undefined {
-  const platform = options.platform ?? process.platform;
-  const binary = platform === "win32" ? path.join("Scripts", "verlato-py.exe") : path.join("bin", "verlato-py");
-  const roots = [options.workspacePath, options.extensionPath, path.dirname(options.extensionPath)];
-  return roots.map((root) => path.join(root, ".venv", binary)).find((candidate) => options.existsSync(candidate));
 }
 
 export function getVenvExecutable(rootPath: string, platform: NodeJS.Platform = process.platform): string {

@@ -10,11 +10,13 @@ export type NotificationAction =
   | "Install IntentumDiff"
   | "Use Git Engine";
 
-export const INTENTUMDIFF_INSTALL_COMMAND = "pip install --pre intentumdiff-python";
+// The `verlato` wheel ships the IntentumDiff parser bundle; so does each native release bundle
+// (wasm/ beside the executable) on GitHub Releases.
+export const INTENTUMDIFF_INSTALL_COMMAND = "pip install --upgrade verlato";
 
 /** True when a Verlato error says the IntentumDiff semantic engine could not be loaded. */
 export function isSemanticEngineUnavailable(message: string): boolean {
-  return /IntentumDiff/i.test(message) && /could not be loaded|not available|intentumdiff-python/i.test(message);
+  return /IntentumDiff/i.test(message) && /could not be loaded|not available|parser bundle was not found|intentumdiff-python/i.test(message);
 }
 
 export async function showSuccessNotification(

@@ -137,7 +137,8 @@ test("cancelCommand kills the tracked Windows process tree before aborting", () 
   client.cancelCommand(7);
 
   assert.equal(aborted, true);
-  assert.equal(childKillCalled, false);
+  // Windows stops the whole tree with taskkill; elsewhere the child is signalled directly.
+  assert.equal(childKillCalled, process.platform !== "win32");
   assert.equal(spawnCalls.length, process.platform === "win32" ? 1 : 0);
   if (process.platform === "win32") {
     assert.deepEqual(spawnCalls[0], {
