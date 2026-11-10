@@ -1,15 +1,18 @@
 # Moving Verlato from Python to Rust
 
-Verlato is moving to Rust. The native `verlato` binary (crate `crates/verlato`) now owns the
-release-note pipeline and links the IntentumDiff engine in-process, and every model provider
-is native: scans and drafts call Ollama (the default), LiteLLM/OpenAI-compatible endpoints,
-GitHub Models, the external-command plugin, the Codex CLI and Claude Code agents, the mock and
-stub providers, and fallback chains of those. Commit intent inference and Conventional Commit
-drafting are native too, and so is the MCP server (`verlato serve`), and so is every suggestion
-strategy (single, paired, full-diff-json and tool-retrieval with Ollama tool calling) with adaptive
-recommendations. Python is now only needed for unknown commands and for a PR adapter that fails to
-configure natively, which the binary delegates to transparently. This document records the
-assessment, the current state, and the remaining phases.
+Verlato has moved to Rust, and the Python implementation is retired. The `verlato` crate
+(`crates/verlato`) owns everything: the release-note pipeline with the IntentumDiff engine linked
+in-process, every model provider (Ollama, LiteLLM/OpenAI-compatible endpoints, GitHub Models, the
+external-command plugin, the Codex CLI and Claude Code agents, mock, stub and fallback chains),
+commit intent inference and Conventional Commit drafting, every suggestion strategy (single,
+paired, full-diff-json and tool-retrieval with Ollama tool calling) with adaptive
+recommendations, the maintenance commands, the editor service and the MCP server
+(`verlato serve`). Nothing is delegated to Python any more.
+
+The `verlato` Python package is now a thin wrapper over that runtime: PyO3 bindings
+(`crates/verlato-python`, the `verlato._native` extension module) plus a few lines of Python
+(`python/verlato`). See [The Python package](#the-python-package). This document records the
+assessment, how the port was checked, and the result.
 
 ## Why Rust
 
@@ -35,7 +38,7 @@ About 16k lines of Python (plus ~7k lines of tests):
 | Pipeline core: git collection, grouping, conventional commits, areas, checksums, evidence, deterministic classification, reconciliation | `core/{collector,adapters,grouper,conventional,areas,checksum,diff_evidence,classifier (deterministic path),reconciler}` | ~1.9k | **Ported** |
 | IntentumDiff semantic evidence (digest, verdicts, summary, cache) | `core/semantic.py` | ~1k | **Ported** (engine linked natively) |
 | Drafts, rendering, changelog apply, state store, review/feedback/state commands | `core/{drafts,generator,changelog}`, `state/store.py`, parts of `cli/main.py` | ~1.5k | **Ported** |
-| Editor stdio service (deterministic methods) | `service_stdio.py`, parts of `mcp/service.py` | ~0.5k | **Ported**; other methods proxied |
+| Editor stdio service (deterministic methods) | `service_stdio.py`, parts of `mcp/service.py` | ~0.5k | **Ported** |
 | Model providers: stub, mock, Ollama (incl. streaming), LiteLLM, GitHub Models, plugin, Codex/Claude CLI, fallback chains; request audits, privacy records, OTEL-style model logs | `providers/*`, `core/model_privacy.py` | ~2.4k | **Ported** (including Ollama tool calling) |
 | Classifier model assists (summary rewrite, diff-fallback classification, change-summary payload) | parts of `core/classifier.py`, `core/change_summary.py` | ~0.6k | **Ported** |
 | Suggestions: prompt preview, `--preview`/`--preflight` for every strategy (single, paired, full-diff-json, tool-retrieval), batch fallbacks, applying a suggestion, the suggestion cache, scoring, adaptive recommendations, traces | `cli/main.py` (parts), `state/suggestion_cache.py`, `core/change_summary.py`, `core/suggestion_tools.py` | ~4.5k | **Ported** |
@@ -70,9 +73,9 @@ service                              (every method: health, info, draft.* incl. 
 serve                                (MCP server on stdio; all tools, resources and prompts)
 ```
 
-Only unknown commands and a PR adapter that fails to configure natively are delegated to the
-Python implementation with the original arguments. The service no longer starts a Python process
-for any method it knows; unknown methods are still proxied.
+Every command and service method runs natively. An unknown command is a usage error (exit code
+2, as Python's argparse), an unknown service method answers `invalid_request`, and a PR adapter
+that fails to configure is a plain error.
 
 The maintenance commands print Python's exact bytes (including `\uXXXX` escapes and key order).
 `doctor ollama` probes the configured Ollama with the same requests (warmup, single and two
@@ -116,10 +119,32 @@ fake Ollama server (including tool calls and tool errors). Under IntentumDiff th
 strategies embed engine-derived fields (version, sizes) in their prompts, so prompt hashes and
 cache keys legitimately differ between the runtimes there; the suite masks only those.
 
-The Python CLI is found through `VERLATO_PYTHON_CLI` (a path to `verlato-py` or a command line
-such as `python3 -m verlato.cli`), then `verlato-py` on `PATH`. The Python package installs
-`verlato-py` for this purpose. Set `VERLATO_TRACE_DELEGATION=1` to log delegations. If no Python
-implementation is available, delegated commands fail with an explanation.
+## The Python package
+
+The `verlato` PyPI package (`pyproject.toml`, built with maturin) holds:
+
+- **`verlato._native`** (`crates/verlato-python`): a PyO3 extension module, built for the stable
+  ABI (`abi3-py312`: one wheel per platform for CPython 3.12+). It exposes `run(argv)`, which
+  runs `verlato::cli::run` in-process without the GIL and returns the exit code;
+  `call(method, params_json, repo)`, which answers one service request through
+  `verlato::service::call` (the same dispatch as `verlato service`); `version()` and
+  `engine_version()`.
+- **`python/verlato`**: `verlato.run`, `verlato.call` (parses the response, raising
+  `ServiceError` on an error answer), `verlato.engine_version`, `verlato.parser_bundle`,
+  `__version__`, the `verlato` and `verlato-mcp` console scripts (`verlato-mcp` is
+  `verlato serve`) and `python -m verlato`.
+- **`verlato/wasm`**: the IntentumDiff parser bundle, provisioned at build time. Before running
+  a command the wrapper sets `VERLATO_INTENTUMDIFF_WASM_DIR` to it unless that or
+  `INTENTUMDIFF_WASM_DIR` is already set, so the package has no runtime dependencies.
+
+The command line never exits the process: `verlato::cli::run` prints clap's usage errors and
+`--help`/`--version` and returns clap's exit code, prints command errors and returns 1, and
+flushes stdout and stderr before returning. The console scripts restore the default Ctrl-C
+handler before running, because a command running without the GIL cannot see Python's
+`KeyboardInterrupt`.
+
+Versions: `[workspace.package] version` in `Cargo.toml` is the only version. Both crates inherit
+it and `pyproject.toml` declares `dynamic = ["version"]`, so maturin writes it into the wheel.
 
 ## Engine and parser bundle
 
@@ -132,32 +157,46 @@ same JSON format as the Python implementation and are cached in `.verlato_semant
 (cache keys include the engine build, so the two runtimes do not share entries).
 
 The engine loads its language parsers (WebAssembly components) from a parser bundle:
-`parser_manifest.json` plus `*.wasm`. The binary looks in `VERLATO_INTENTUMDIFF_WASM_DIR`,
-`INTENTUMDIFF_WASM_DIR`, then `wasm/` next to the executable. Provision it with:
+`parser_manifest.json` plus `*.wasm`. The runtime looks in `VERLATO_INTENTUMDIFF_WASM_DIR`,
+`INTENTUMDIFF_WASM_DIR`, then `wasm/` next to the executable. The Python package and the release
+bundles ship it (`verlato/wasm` in the wheel, `wasm/` beside the executable in a bundle).
+Provision it with:
 
 ```bash
-scripts/fetch_intentumdiff_parsers.sh            # -> target/release/wasm
+scripts/fetch_intentumdiff_parsers.sh                       # -> target/release/wasm
+scripts/fetch_intentumdiff_parsers.sh python/verlato/wasm   # for the Python package
 ```
 
-The script extracts the components from the checksum-pinned `intentumdiff-python` 0.0.2b2
-wheel on PyPI (the components are platform independent). When IntentumDiff publishes native
-releases with a standalone parser bundle, the script should switch to that artifact.
+The script is the bundle's single pinned source. It extracts the components from the
+checksum-pinned `intentumdiff-python` 0.0.2b2 wheel on PyPI (the components are platform
+independent), checks that every component the manifest names is present, and checks each
+against a SHA-256 recorded in the manifest when there is one (0.0.2b2's manifest records none).
+**The pin must move together with the `intentumdiff-core` revision in `Cargo.toml`**: the
+parsers are built for that engine. When IntentumDiff publishes native releases with a standalone
+parser bundle, the script should switch to that artifact.
 
 ## Parity
 
 `tests/test_rust_parity.py` builds repositories with conventional commits, PR merges, area
 splits, docs/test-only changes, formatting-only edits, added/removed functions and breaking
-markers, runs every native command through both implementations, and requires identical JSON,
-Markdown, changelog files and state files (with `--diff-engine git` exactly; with IntentumDiff,
-ignoring only the engine version strings). It also checks the stdio service protocol and that
-delegated commands produce the Python output.
+markers, and runs every command, the stdio service and the MCP server against them, comparing
+with the Python implementation: identical JSON, Markdown, changelog and state files, model
+requests, traces and telemetry (with `--diff-engine git` exactly; with IntentumDiff, ignoring
+only engine build identity).
+
+The Python implementation is retired, so its side of every comparison is replayed from
+recordings in `tests/golden/parity`, made from the last commit that had it (see
+`tests/golden/README.md`): each Python invocation's exit code, stdout, stderr, the files it
+changed, the requests fake servers received from it and its MCP traffic. The native side runs
+live, through the installed Python package (`python -m verlato`) or the executable in
+`VERLATO_RUST_BIN`. A replay fails if a test asks anything that was not recorded.
 
 Known, intentional differences:
 
 - JSON output escapes: Python writes `\uXXXX` for non-ASCII characters, Rust writes UTF-8.
   Both parse to the same values.
-- `health`/`info` service responses add `"runtime": "rust"` (and `info` reports the Python
-  delegate and parser bundle).
+- `health`/`info` service responses add `"runtime": "rust"` (and `info` reports the parser
+  bundle).
 - Cross-file move detection (`semantic_cross_file`) is not available natively yet; it is
   opt-in and off by default in Python as well.
 
@@ -181,11 +220,10 @@ is fixed (both runtimes implement the same workaround):
 
 ## LLM evidence
 
-Model-backed features (native or still in Python) consume the IntentumDiff semantic
-diff instead of raw patches (see "What the LLM sees" in the README). The semantic diff lives in
-the per-commit digest (`FileSemantics.changes`, digest format `v2`), which the Rust engine
-produces in the identical format, so the providers ported in the next phase receive the same
-evidence without depending on patch text.
+Model-backed features consume the IntentumDiff semantic diff instead of raw patches (see "What
+the LLM sees" in the README). The semantic diff lives in the per-commit digest
+(`FileSemantics.changes`, digest format `v2`), which the Rust engine produces in the format the
+Python implementation used.
 
 ## Remaining phases
 
@@ -200,26 +238,31 @@ evidence without depending on patch text.
    drafting (`commit conventional`, `commit.*` service methods).
 4. **MCP server** (done): `verlato serve` speaks newline-delimited JSON-RPC on stdio without an
    MCP SDK. The tool/resource/prompt catalog is FastMCP's own output, embedded in
-   `crates/verlato/src/mcp_catalog.json` (regenerate it from `python -m verlato.cli serve` when a
-   tool signature changes; the parity suite fails on drift), and the legacy patch tools are
+   `crates/verlato/src/mcp_catalog.json` (it was FastMCP's output from the Python server; edit it
+   by hand now, and the parity suite fails on drift from the recorded catalog), and the legacy patch tools are
    listed only with the `git` engine. Arguments are validated against the catalog schemas with
    pydantic's lax coercions and error messages. Known differences: the stateless `2026-07-28`
    protocol is not offered (clients negotiate `2025-11-25`), requests are answered one at a time,
    and pydantic messages are reproduced only for the schema shapes the catalog uses. The GitHub
    adapter is done.
-5. **Retire Python**: remove delegation, ship the extension with the native binary and parser
-   bundle per platform, and drop the Python package (or keep it only as a library binding).
+5. **Retire Python** (done): delegation is removed, the Python implementation is deleted (its
+   answers are kept as golden recordings), and the `verlato` Python package is a thin PyO3
+   wrapper that ships the native runtime and parser bundle. Releases (rab, see
+   [RELEASING.md](RELEASING.md)) publish the wheels and sdist to PyPI and per-platform native
+   bundles (executable + `wasm/`) to GitHub Releases, which the VS Code extension can use.
 
-Each phase moves a command from "delegated" to "native" behind the same CLI contract and
-extends the parity suite before the Python code for it is deleted.
+Each phase moved commands from "delegated" to "native" behind the same CLI contract and extended
+the parity suite before the Python code for them was deleted.
 
 ## Building
 
 ```bash
 cargo build --release -p verlato                 # links the IntentumDiff engine (first build ~6 min)
 scripts/fetch_intentumdiff_parsers.sh            # parser bundle next to the binary
-cargo test -p verlato                            # unit tests
-pytest tests/test_rust_parity.py                 # parity against the Python implementation
+cargo test --workspace                           # unit tests
+scripts/fetch_intentumdiff_parsers.sh python/verlato/wasm
+maturin develop --release                        # the Python package, into the active virtualenv
+pytest                                           # package tests and parity (golden replay)
 ```
 
 `cargo build -p verlato --no-default-features` builds without the engine (only

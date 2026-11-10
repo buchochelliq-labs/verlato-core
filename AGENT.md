@@ -17,7 +17,7 @@ GitHub release-note drafts.
 
 ## Current Product Shape
 
-- Python backend for scan, generate, reconcile, render, and draft workflows.
+- Native (Rust) backend for scan, generate, reconcile, render, and draft workflows, also shipped as the `verlato` Python package.
 - Local state store for unpublished items, publication metadata, lineage, and review state.
 - MCP-facing service layer for editor and agent integrations.
 - VS Code extension scaffold for scan, preview, apply, and review actions.
@@ -31,7 +31,7 @@ GitHub release-note drafts.
 
 ## Repo Working Rules
 
-- Keep core logic in Python; keep the VS Code extension thin.
+- Keep core logic in the Rust crate (`crates/verlato`); keep the Python package and the VS Code extension thin.
 - Prefer shared service-layer behavior over duplicated CLI and editor logic.
 - Add tests whenever contracts change, especially for CLI JSON output and state migration.
 - When changing release rendering, consider both draft flows and persisted-state render flows.

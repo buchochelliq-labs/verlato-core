@@ -224,3 +224,6 @@ __marimo__/
 /python/verlato/wasm/
 /python/verlato/*.so
 /python/verlato/*.pyd
+
+# rab's installed copy has a build/ action
+!/.github/rab/build/

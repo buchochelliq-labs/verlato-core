@@ -137,11 +137,46 @@ evidence with `diff_engine: "git"`):
 
 ## Install
 
-### Native binary (Rust)
+Verlato is a native (Rust) program that links the IntentumDiff engine in-process. It ships two ways,
+both carrying the IntentumDiff parser bundle, so nothing else needs installing.
 
-Verlato is moving from Python to Rust (see [docs/RUST_MIGRATION.md](docs/RUST_MIGRATION.md)). The native
-`verlato` binary links the IntentumDiff engine in-process and runs the release-note pipeline, drafts, review
-state and the editor service without Python:
+### From PyPI
+
+```bash
+pip install verlato          # CPython 3.12+, Linux (x86_64, aarch64), macOS (arm64, x86_64), Windows (x64)
+verlato draft preview --from-latest-tag
+```
+
+The `verlato` package is a thin wrapper over the native runtime (PyO3 bindings; see
+[docs/RUST_MIGRATION.md](docs/RUST_MIGRATION.md)). It installs the `verlato` and `verlato-mcp` commands and a
+small Python API:
+
+```python
+import verlato
+
+verlato.run(["draft", "json", "--base", "v1.0.0"])          # the CLI in-process; returns the exit code
+draft = verlato.call("draft.get", {"request": {"base": "v1.0.0"}}, repo=".")  # one service request
+verlato.__version__, verlato.engine_version()
+```
+
+`verlato.call` takes the `verlato service` methods (see [Command behavior](#command-behavior)) and raises
+`verlato.ServiceError` (with `.code` and `.message`) when the service answers with an error.
+
+### Release bundles (GitHub Releases)
+
+Each [GitHub release](https://github.com/buchochelliq-labs/verlato/releases) has a self-contained bundle per
+platform, `verlato-v<version>-<target>.tar.gz` (`.zip` on Windows), holding the `verlato` executable with the
+parser bundle beside it in `wasm/`, plus `SHA256SUMS`:
+
+```bash
+tar -xzf verlato-v0.2.0-x86_64-unknown-linux-gnu.tar.gz
+verlato-v0.2.0-x86_64-unknown-linux-gnu/verlato --version
+```
+
+Keep `wasm/` next to the executable (or point `VERLATO_INTENTUMDIFF_WASM_DIR` at it). Put the directory on
+`PATH`, or point the VS Code extension's `verlato.cliPath` at the `verlato` executable.
+
+### From source
 
 ```bash
 cargo build --release -p verlato
@@ -149,18 +184,7 @@ scripts/fetch_intentumdiff_parsers.sh      # IntentumDiff parser bundle -> targe
 target/release/verlato draft preview --from-latest-tag
 ```
 
-Model-backed commands (suggestions, LLM summaries, commit-message drafting, MCP server) run natively too;
-only unknown commands and a PR adapter that fails to configure natively are delegated to the Python
-implementation below (`verlato-py`). See `docs/RUST_MIGRATION.md`.
-
-### Python implementation
-
-```bash
-python -m pip install -e .
-```
-
-Verlato requires Python 3.12+ and installs the IntentumDiff engine (`intentumdiff-python`, currently a pre-release)
-as a dependency. To install the engine on its own: `pip install --pre intentumdiff-python`.
+For the Python package from a checkout, see [CONTRIBUTING.md](CONTRIBUTING.md) (`maturin develop`).
 
 ## CLI usage
 
@@ -239,7 +263,7 @@ Environment variables:
 - `VERLATO_COMMIT_INTENT_INFERENCE`: optional inferred conventional commit pass: `off` (default) or `low-signal`. When enabled, Verlato asks the configured provider to infer conventional type/scope only for non-conventional commits or conventional commits without a scope before grouping.
 - `VERLATO_SUGGESTION_PROMPT_PROFILE`: suggestion prompt budget profile: `conservative` (default), `lean`, or `minimal`.
 - `VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS`: set to `1` to include recommendation-only adaptive suggestion tuning advice in preview and doctor JSON.
-- `VERLATO_SUGGESTION_CACHE_BACKEND`: suggestion cache backend name (default and only CLI backend `json`; Python integrations can register more for their own in-process use).
+- `VERLATO_SUGGESTION_CACHE_BACKEND`: suggestion cache backend name (`json`, the only backend).
 - `VERLATO_SUGGESTION_CACHE_PATH`: overrides the persistent suggestion cache file (default `.verlato_suggestion_cache.json`; set it to an OS cache directory path if you prefer cache files outside the repo).
 - `VERLATO_SUGGESTION_CACHE_TTL_DAYS`: number of days before suggestion cache entries expire (default `30`; key changes always invalidate entries first).
 - `VERLATO_GITHUB_MODEL`: model name when using `github-copilot` (default `openai/gpt-4o-mini`; legacy values such as `gpt-4o-mini` are normalized).
@@ -357,9 +381,12 @@ Editor integration:
 
 MCP setup:
 
-- Install the optional FastMCP v3+ dependency with `python -m pip install -e .[mcp]`.
-- The checked-in [.vscode/mcp.json](.vscode/mcp.json) runs the workspace virtualenv Python module entrypoint (`python -m verlato.mcp.server`) so attached MCP clients do not depend on `verlato-mcp` being on PATH.
-- Start the MCP server manually with `verlato serve` or `verlato-mcp` if you are not using the workspace config. This is separate from the extension's built-in `verlato service` transport and still requires FastMCP.
+- The MCP server is part of the native runtime (`verlato serve`, or `verlato-mcp` from the Python package); it
+  needs nothing else installed.
+- The checked-in [.vscode/mcp.json](.vscode/mcp.json) runs the workspace virtualenv's `verlato-mcp`, so attached
+  MCP clients do not depend on it being on PATH.
+- Start the MCP server manually with `verlato serve` or `verlato-mcp` if you are not using the workspace config.
+  This is separate from the extension's built-in `verlato service` transport.
 - The VS Code Verlato control view shows whether Verlato has started an MCP server terminal from the current window and includes a Start action for `verlato serve`; stdio MCP clients such as VS Code/Copilot still launch their own attached server from `.vscode/mcp.json`, so the best attached-client health check is calling `verlato_service_health`.
 
 VS Code extension local testing:
@@ -370,7 +397,7 @@ Install into VS Code from this checkout:
 .\scripts\install_vscode_extension.cmd
 ```
 
-The wrapper runs the PowerShell installer with a process-local execution-policy bypass, which avoids the common Windows "running scripts is disabled" failure. The script installs the Python backend in editable mode, installs the extension dependencies, builds the TypeScript, packages a local VSIX, and installs it into VS Code with `--force`. It uses `code.cmd` when available, which is more reliable on Windows than accidentally resolving `code` to `Code.exe`.
+The wrapper runs the PowerShell installer with a process-local execution-policy bypass, which avoids the common Windows "running scripts is disabled" failure. The script installs the `verlato` package from this checkout in editable mode (built with maturin, so it needs a Rust toolchain; provision the parser bundle first with `scripts/fetch_intentumdiff_parsers.sh python/verlato/wasm`), installs the extension dependencies, builds the TypeScript, packages a local VSIX, and installs it into VS Code with `--force`. It uses `code.cmd` when available, which is more reliable on Windows than accidentally resolving `code` to `Code.exe`.
 
 Useful script options:
 
@@ -383,8 +410,8 @@ Useful script options:
 
 Manual install path:
 
-1. Install the Python package for the repo:
-   `python -m pip install -e .`
+1. Install Verlato: `pip install verlato`, unpack a release bundle, or install this checkout
+   (`scripts/fetch_intentumdiff_parsers.sh python/verlato/wasm && python -m pip install -e .`)
 2. Install the extension dependencies:
    `cd vscode-extension && npm install`
 3. Build the extension:
@@ -403,19 +430,22 @@ Development host path:
 
 After installation, open a repository and use the `Verlato` activity bar view. The extension expects the `verlato` CLI to be available through one of these paths:
 
-1. The `verlato.cliPath` VS Code setting.
+1. The `verlato.cliPath` VS Code setting (for example the `verlato` executable of an unpacked release bundle).
 2. A workspace-local `.venv\Scripts\verlato.exe` on Windows, or `.venv/bin/verlato` on macOS/Linux.
 3. The installed extension's `.venv`, or the checked-out repo's `.venv` when developing this extension.
-4. `verlato` on VS Code's inherited `PATH`.
+4. `verlato` on VS Code's inherited `PATH` (`pip install verlato`, or a release bundle's directory).
 
 On Windows, `scripts\install_vscode_extension.ps1` installs the backend into this repo's `.venv` and writes the matching `verlato.cliPath` VS Code user setting so the extension can run from other repositories.
 
-To exercise the MCP server in the same workspace, ensure `fastmcp>=3` is installed and keep [.vscode/mcp.json](.vscode/mcp.json) enabled.
+To exercise the MCP server in the same workspace, keep [.vscode/mcp.json](.vscode/mcp.json) enabled.
 
 ## Testing
 
 ```bash
-python -m pytest
+cargo test --workspace
+scripts/fetch_intentumdiff_parsers.sh python/verlato/wasm && maturin develop --release
+python -m pytest        # the package tests and the parity suite (tests/golden)
+(cd vscode-extension && npm test)
 ```
 
 ## Notes on signal priority
