@@ -2,36 +2,38 @@
 
 ## Purpose
 
-Verlato turns git history and pull-request evidence into draftable release notes.
-The project exists to help teams scan a range, review grouped changes, generate notes,
-and safely apply those notes back into repo-managed files such as `CHANGELOG.md` and
-GitHub release-note drafts.
+Verlato turns git history and pull-request evidence into draftable release notes. It helps
+teams scan a range, review grouped changes, generate notes, and safely apply them to
+repository files such as `CHANGELOG.md` and GitHub release-note drafts. Change evidence comes
+from the IntentumDiff semantic diff engine.
 
 ## What Good Behavior Looks Like
 
-- Stay PR-first when possible. A pull request or grouped changeset is the default note unit.
-- Prefer deterministic evidence first, then provider-assisted wording and low-confidence help.
-- Preserve idempotency. Re-running generation should not duplicate items in state.
-- Keep repo edits safe and reviewable. Generated output should land in normal Markdown files.
+- Stay PR-first. A pull request or grouped changeset is the default release-note unit.
+- Prefer deterministic evidence first (Conventional Commits, labels, the semantic review), then
+  provider-assisted wording and low-confidence help.
+- Preserve idempotency. Re-running generation must not duplicate items in state.
+- Keep repository edits safe and reviewable. Output lands in normal Markdown files.
 - Treat hidden and edited items as reviewer intent, not as disposable suggestions.
+- Base release notes on the semantic diff: never describe moved code, refactorings or
+  formatting as new behaviour.
 
 ## Current Product Shape
 
-- Native (Rust) backend for scan, generate, reconcile, render, and draft workflows, also shipped as the `verlato` Python package.
-- Local state store for unpublished items, publication metadata, lineage, and review state.
-- MCP-facing service layer for editor and agent integrations.
-- VS Code extension scaffold for scan, preview, apply, and review actions.
-
-## Preferred Next Steps
-
-1. Add stronger review workflows and richer editor actions.
-2. Expose a real local service transport so the extension stops shelling out to the CLI.
-3. Expand config and target support for multi-file release-note strategies.
-4. Improve confidence calibration and evidence explanations.
+- A native (Rust) runtime, `crates/verlato`, with the IntentumDiff engine linked in-process:
+  the CLI, the JSON-lines editor service (`verlato service`) and the MCP server
+  (`verlato serve`).
+- The `verlato` Python package: a thin PyO3 wrapper (`crates/verlato-python`, `python/verlato`).
+- A local state store for unpublished items, publication metadata, lineage, review state and
+  feedback.
+- The VS Code extension (`vscode-extension/`) for scanning, reviewing, suggesting and applying.
+- Documentation in `docs/` (Zensical); see `docs/technical/architecture.md`.
 
 ## Repo Working Rules
 
-- Keep core logic in the Rust crate (`crates/verlato`); keep the Python package and the VS Code extension thin.
-- Prefer shared service-layer behavior over duplicated CLI and editor logic.
-- Add tests whenever contracts change, especially for CLI JSON output and state migration.
+- Keep core logic in the Rust crate; keep the Python package and the VS Code extension thin.
+- Prefer shared service-layer behaviour over duplicated CLI and editor logic.
+- Add tests whenever contracts change, especially CLI JSON output and state migrations.
 - When changing release rendering, consider both draft flows and persisted-state render flows.
+- Keep `docs/` current, regenerate `docs/reference/cli.md` with `scripts/gen_cli_reference.py`
+  when commands change, and never add paid-feature code here (see `docs/open-core.md`).

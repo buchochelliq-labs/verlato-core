@@ -248,7 +248,7 @@ Python implementation used.
 5. **Retire Python** (done): delegation is removed, the Python implementation is deleted (its
    answers are kept as golden recordings), and the `verlato` Python package is a thin PyO3
    wrapper that ships the native runtime and parser bundle. Releases (rab, see
-   [RELEASING.md](RELEASING.md)) publish the wheels and sdist to PyPI and per-platform native
+   [Releasing](releasing.md)) publish the wheels and sdist to PyPI and per-platform native
    bundles (executable + `wasm/`) to GitHub Releases, which the VS Code extension can use.
 
 Each phase moved commands from "delegated" to "native" behind the same CLI contract and extended

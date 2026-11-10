@@ -1,0 +1,85 @@
+# The Verlato documentation site, built with Zensical:
+#   pip install zensical==0.0.74 && zensical build --strict
+# The built site makes no third-party requests: no web fonts, no external
+# scripts, and no repository-statistics widget (so no `repo_url`).
+site_name: Verlato
+site_description: >-
+  Verlato turns git history and pull requests into reviewed release notes,
+  powered by the IntentumDiff semantic diff engine, from the command line,
+  the VS Code extension or an MCP client.
+site_url: https://buchochelliq-labs.github.io/verlato-core/
+docs_dir: docs
+site_dir: site
+copyright: Buchochelliq Labs. Verlato is licensed under Apache-2.0.
+
+theme:
+  name: material
+  font: false
+  logo: assets/verlato.svg
+  favicon: assets/verlato.svg
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - content.code.copy
+    - search.highlight
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - User guide:
+      - guide/index.md
+      - Concepts: guide/concepts.md
+      - The command line: guide/cli.md
+      - The VS Code extension: guide/vscode.md
+      - Models and providers: guide/models.md
+      - Privacy modes: guide/privacy.md
+      - Writing style and vocabulary: guide/style.md
+      - The MCP server: guide/mcp.md
+      - Troubleshooting: guide/troubleshooting.md
+  - Reference:
+      - reference/index.md
+      - CLI reference: reference/cli.md
+      - verlato.json: reference/configuration.md
+      - Environment variables: reference/environment.md
+      - Service and MCP protocol: reference/protocol.md
+      - Python API: reference/python.md
+      - Output formats: reference/output-formats.md
+  - Technical guide:
+      - technical/index.md
+      - Architecture: technical/architecture.md
+      - Semantic evidence: technical/semantic-evidence.md
+      - Extension points: technical/extending.md
+      - Building from source: technical/building.md
+      - Testing: technical/testing.md
+      - Releasing: technical/releasing.md
+      - Model telemetry: technical/model-telemetry.md
+      - Screenshots: technical/screenshots.md
+      - The move to Rust: technical/rust-migration.md
+      - Public-readiness review: technical/public-readiness.md
+  - Open core: open-core.md
+  - Changelog: changelog.md

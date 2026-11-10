@@ -197,6 +197,7 @@ cython_debug/
 .verlato_state.json
 .verlato_suggestion_cache.json
 .verlato_suggestion_cache.json.tmp
+.verlato_suggestion_cache.json.lock
 .verlato_semantic_cache.json
 .verlato-semantic-*
 
@@ -228,3 +229,6 @@ __marimo__/
 
 # rab's installed copy has a build/ action
 !/.github/rab/build/
+
+# Packaged VS Code extensions (npx @vscode/vsce package)
+*.vsix

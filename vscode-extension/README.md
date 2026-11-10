@@ -1,187 +1,81 @@
-# Verlato VS Code Extension
+# Verlato for VS Code
 
 Diff-first release notes. Understands your code changes. Writes your releases.
 
-Powered by [IntentumDiff](https://github.com/buchochelliq-labs/intentumdiff-python): every changeset is reviewed
-semantically, so the Control view shows whether a change is behavioral, additive, a refactoring/move, or formatting
-only, and which symbols were added, removed, renamed or re-signatured. Changesets with public API removals, protected
-config guardrails, or commit messages that contradict the semantic review are routed to **needs-review**.
+Verlato drafts your changelog and GitHub release notes from the commits since your last
+release, and lets you review them in the side bar. It is powered by the
+[IntentumDiff](https://github.com/buchochelliq-labs/intentumdiff-core) semantic diff engine:
+every changeset shows whether it is behavioural, additive, a refactoring or move, or
+formatting only, and which symbols were added, removed, renamed or re-signatured. Changesets
+with possible API breaks, protected-config changes, or commit messages that contradict the
+review are routed to **needs-review**.
 
-![Semantic review in the Control view](media/semantic-review.png)
+![A changeset with its semantic review in the Control view](media/semantic-review.png)
 
-### Requirements
+## Features
 
-- The Verlato CLI (`pip install -e .` from the repository root, Python 3.12+). It installs the IntentumDiff engine; to
-  install the engine alone run `pip install --pre intentumdiff-python`.
-- If the engine is missing, Verlato's error notification offers **Install IntentumDiff** or **Use Git Engine**.
+- **Control view:** pick a base and head, generate the draft, and review every changeset with
+  its semantic review, commits and confidence. Accept, edit or hide items.
+- **Model suggestions:** ask a model (local Ollama by default; or LiteLLM, GitHub Models, the
+  Codex or Claude Code CLIs, or a plugin) for better wording, in the tone you choose, then
+  apply the one you like. Models see the semantic diff, never raw patches, unless you allow
+  it.
+- **Conventional Commits:** infer a Conventional Commit message for any commit from its diff.
+- **Apply:** write the notes to `CHANGELOG.md` or a release file in one click.
+- **Releases, Activity and Sources views:** the rendered notes, live request and model
+  activity, and the tags, branches, commits and releases a range can start from.
+- **MCP:** start Verlato's MCP server for Copilot agent mode from the Control view.
 
-### Engine settings
+## Requirements
+
+The extension runs the `verlato` program. Install it with `pip install verlato`, or download
+a release bundle from [GitHub Releases](https://github.com/buchochelliq-labs/verlato-core/releases)
+and set **`verlato.cliPath`** to its `verlato` executable. Run **Verlato: Show IntentumDiff
+Engine Status** to check the installation.
+
+## Getting started
+
+1. Open a git repository and click the Verlato icon in the activity bar.
+2. Choose the base (for example your latest tag) and head, set the version, and click
+   **Generate release notes**.
+3. Review the changesets, starting with those in **needs-review**.
+4. Apply to the **CHANGELOG** or the **Release file**.
+
+## Settings
+
+The most useful settings:
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `verlato.diffEngine` | `intentumdiff` | `intentumdiff` semantic review, or `git` for legacy text-patch evidence |
-| `verlato.semanticParallelism` | `0` (auto) | Worker processes for commits that are not cached yet |
-| `verlato.semanticCrossFile` | `false` | Detect symbols moved/renamed across files (slower) |
+| `verlato.cliPath` | `verlato` | the `verlato` executable |
+| `verlato.diffEngine` | `intentumdiff` | `intentumdiff` semantic review, or `git` text patches |
+| `verlato.modelProvider` | `ollama` | the model provider, or `configured` to use `verlato.json` |
+| `verlato.ollamaModel` | `gemma4:latest` | the Ollama model |
+| `verlato.modelPrivacy` | `metadata-only` | what models may see |
+| `verlato.suggestionTone` | `release-note` | `release-note`, `concise`, `technical` or `customer-facing` |
 
-Run **Verlato: Show IntentumDiff Engine Status** to check the engine.
+Every setting and command is described in the
+[VS Code extension guide](https://buchochelliq-labs.github.io/verlato-core/guide/vscode/).
 
-## Planned workflow
+## Documentation
 
-1. Scan the current repository for unpublished changes.
-2. Preview generated release notes in a webview panel.
-3. Apply a generated changelog or release-note draft back into the repo.
-
-## Current scaffold
-
-- Activity Bar view for Verlato release control
-- Webview interface for draft sections, repository activity, and release actions
-- Repository activity view for branches, tags, recent commits, and release associations
-- CLI-backed client abstraction
-- Configurable AI provider/model controls with an LLM fanout guard
-- Preview panel for rendered notes
-- Apply commands for changelog and GitHub release-note targets
+<https://buchochelliq-labs.github.io/verlato-core/>: getting started, the full user guide,
+and the reference for the CLI, configuration and protocols.
 
 ## Development
 
-```bash
-npm install
+From the repository's `vscode-extension/` directory:
+
+```sh
+npm ci
 npm run build
+npm test
+npx @vscode/vsce package
 ```
 
-## Local testing
+Press **F5** from the repository root to start an Extension Development Host. See
+[Building from source](https://buchochelliq-labs.github.io/verlato-core/technical/building/#the-vs-code-extension).
 
-### Option 1: Run in an Extension Development Host
+## License
 
-1. From the repo root, install the backend package:
-
-   ```bash
-   python -m pip install -e .
-   ```
-
-2. In `vscode-extension/`, install dependencies:
-
-   ```bash
-   npm install
-   ```
-
-3. Build the extension:
-
-   ```bash
-   npm run build
-   ```
-
-4. Open the repo root in VS Code:
-
-   ```bash
-   code .
-   ```
-
-5. Open the Run and Debug view, select `Verlato Extension`, and start debugging.
-6. In the Extension Development Host window, open the `Verlato` activity bar view and run `Verlato: Scan Repository`.
-
-The default provider is local Ollama with `gemma4:latest`. Change it from `Verlato: Change AI Model` or with these workspace settings:
-
-```json
-"verlato.serviceMode": "auto",
-"verlato.modelProvider": "ollama",
-"verlato.ollamaModel": "gemma4:latest",
-"verlato.ollamaSuggestionModel": "",
-"verlato.ollamaEndpoint": "http://127.0.0.1:11434/api/chat",
-"verlato.maxModelItems": 25,
-"verlato.suggestionParallelism": 2,
-"verlato.suggestionBatchSize": 5,
-"verlato.suggestionStrategy": "auto",
-"verlato.suggestionAutoWarmCache": false,
-"verlato.suggestionPromptProfile": "conservative",
-"verlato.suggestionAdaptiveRecommendations": false
-```
-
-`verlato.serviceMode` defaults to `auto`, which uses the built-in `verlato service` JSON-lines stdio process for core draft/review/state/feedback flows and falls back to direct CLI commands if the service is unavailable. Set it to `cli` to force the older one-command-per-action path.
-`verlato.maxModelItems` prevents a large comparison range from sending one LLM request per grouped change. Set it to `-1` only when you intentionally want no fanout guard.
-`verlato.ollamaSuggestionModel` can point suggestions at a smaller/faster local model while summaries and classification keep using `verlato.ollamaModel`; leave it empty to use the main model.
-`verlato.suggestionParallelism` controls how many draft suggestion preview requests may run at once.
-`verlato.suggestionBatchSize` controls how many uncached suggestion items can share one structured model request. `verlato.suggestionStrategy` defaults to `auto`, which uses full-diff structured JSON batches for capable providers; `instant` has been removed because suggestions must be backed by diff evidence and a model response.
-`verlato.suggestionAutoWarmCache` quietly warms the local suggestion cache after a draft loads when the active provider is Ollama; it is off by default so foreground Suggest never waits on hidden background work.
-`verlato.suggestionPromptProfile` chooses the suggestion prompt budget: `conservative`, `lean`, or `minimal`; `conservative` is the default.
-`verlato.suggestionAdaptiveRecommendations` shows opt-in suggestion performance advice from preview and doctor telemetry without changing settings.
-Set `verlato.modelProvider` to `litellm` for the recommended BYOM proxy path, `plugin` for an audited external-command adapter, or `codex-cli`/`claude-code` for locally authenticated agent CLIs instead of Ollama.
-The Intent Inference panel includes Model health and Warm model actions for Ollama. Model health runs a tiny suggestion-style probe, reads `/api/ps` through the configured endpoint, and optionally enriches the result with `ollama ps` processor details when the CLI is available. Warm model runs the same style of tiny request before larger suggestion runs. If Ollama diagnostics show queue time, set server variables such as `OLLAMA_NUM_PARALLEL`, `OLLAMA_MAX_QUEUE`, and `OLLAMA_CONTEXT_LENGTH` before starting Ollama; the extension can only tune Verlato's client-side request fanout.
-
-If the launch config does not appear, open `.vscode/launch.json` from the repo root and start the `Verlato Extension` configuration from the editor's debug controls.
-
-### Option 2: Install a local VSIX
-
-Use this path when you want to test the extension as an installed extension instead of through the debugger.
-
-1. From the repo root, install the backend package:
-
-   ```bash
-   python -m pip install -e .
-   ```
-
-2. Install dependencies and build the extension:
-
-   ```bash
-   cd vscode-extension
-   npm install
-   npm run build
-   ```
-
-3. Package the extension:
-
-   ```bash
-   npx @vscode/vsce package
-   ```
-
-4. Return to the repo root and install the generated `.vsix`:
-
-   ```bash
-   cd ..
-   & "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd" --install-extension .\vscode-extension\verlato-vscode-0.0.1.vsix --force
-   ```
-
-5. Reload VS Code, open a repository, then run `Verlato: Scan Repository`.
-
-The extension looks for the Verlato CLI in this order:
-
-1. The `verlato.cliPath` VS Code setting, if you set it.
-2. A workspace-local `.venv\Scripts\verlato.exe` on Windows, or `.venv/bin/verlato` on macOS/Linux.
-3. The installed extension's `.venv`, or during extension development, the checked-out Verlato repo beside `vscode-extension/`.
-4. `verlato` on VS Code's inherited `PATH`.
-
-On Windows, the repo-level `scripts\install_vscode_extension.ps1` script installs the backend into the Verlato checkout's `.venv` and writes the matching `verlato.cliPath` VS Code user setting. That setting is needed when you open the extension from another repository that does not have Verlato installed in its own `.venv`.
-
-If scanning fails with `spawn verlato ENOENT`, install the backend into the
-workspace virtual environment:
-
-```bash
-.\.venv\Scripts\python.exe -m pip install -e .
-```
-
-Or set `verlato.cliPath` to the full executable path, for example:
-
-```json
-"verlato.cliPath": "C:\\path\\to\\verlato.exe"
-```
-
-On Windows, prefer the `code.cmd` command above if `code --list-extensions`
-does not print anything. That means PowerShell is resolving `code` to
-`Code.exe` instead of the VS Code command-line shim.
-
-To verify the extension is installed:
-
-```bash
-& "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd" --list-extensions --show-versions | Select-String verlato
-```
-
-To test a freshly packaged build, uninstall the existing local copy first:
-
-```bash
-& "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd" --uninstall-extension verlato.verlato-vscode
-```
-
-For agent-side MCP testing in the same workspace:
-
-- Install the optional MCP dependency:
-  `python -m pip install -e .[mcp]`
-- Keep `.vscode/mcp.json` enabled so VS Code/Copilot can start the FastMCP server from `scripts/verlato_mcp_server.py:mcp`.
+Apache-2.0. See [LICENSE](LICENSE).

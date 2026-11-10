@@ -11,7 +11,7 @@ description: |
 # Verlato Skill
 
 ## When to Use
-- Working on Python backend in `verlato/`
+- Working on the Rust backend in `crates/verlato/` (CLI, service, MCP server, pipeline)
 - Editing release-note draft generation, classification, or apply logic
 - Changing state handling, MCP/editor integration, or review metadata
 - Modifying the VS Code extension in `vscode-extension/`
@@ -23,12 +23,12 @@ description: |
 4. **Preserve Determinism**: Keep classification/grouping logic deterministic; providers (AI, etc.) are assists, not authorities. When determinism conflicts with backend-only logic, keep the logic in the backend but design it deterministically — for example, if a backend service receives non-deterministic AI suggestions, apply a deterministic rule inside that same service to produce the final classification rather than surfacing the raw AI output.
 5. **Respect Review Metadata**: Preserve `ChangeItem` review metadata (edited summaries, hidden items) across edits by default. Only three actions qualify as explicit user updates that override a preserved value: (1) saving an edited summary via the UI editor, (2) toggling an item's hidden flag via the UI, or (3) sending a PATCH or edit API request that targets that specific metadata field. Every other operation must leave existing metadata unchanged.
 6. **Safe Output Updates**: Make output changes via normal Markdown files and reviewable diffs, not direct file overwrites.
-7. **Align Documentation**: Update docs when commands, config, or workflows change.
+7. **Align Documentation**: Update `docs/` when commands, config, or workflows change, and regenerate `docs/reference/cli.md` with `scripts/gen_cli_reference.py` when commands or flags change.
 
 ## Quality Criteria
 > **Constraint priority** (highest to lowest): determinism → backend-only logic → test coverage → documentation alignment. When constraints conflict, apply this order. For example, if achieving determinism requires refactoring backend logic, refactor the backend rather than compromising determinism.
 
-- All business logic remains in Python services.
+- All business logic remains in the Rust crate (`crates/verlato`); the Python package and the extension stay thin.
 - Tests cover new/changed contracts and output.
 - Extension is thin, delegating to backend.
 - Output is deterministic and reviewable.

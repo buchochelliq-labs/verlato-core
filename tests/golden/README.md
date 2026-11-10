@@ -4,7 +4,7 @@
 `tests/test_rust_parity.py`, so the native runtime keeps being checked against it after the
 Python implementation was removed.
 
-- **Recorded from:** commit `960e094` ("Share suggestion batch helpers with the doctor; native
+- **Recorded from:** commit `9098ce2` ("Share suggestion batch helpers with the doctor; native
   doctor adaptive advice"), the last commit with the Python implementation (`verlato/`,
   version 0.1.0), with intentumdiff-python 0.0.2b2.
 - **One file per test:** each holds, in order, every Python invocation the test made: its
@@ -19,7 +19,7 @@ Python implementation was removed.
 Recording needs the Python implementation, so it is only possible from that commit:
 
 ```sh
-git checkout 960e094
+git checkout 9098ce2
 pip install -e .[dev,mcp]
 cargo build --release -p verlato && scripts/fetch_intentumdiff_parsers.sh
 VERLATO_GOLDEN_RECORD=1 VERLATO_RUST_BIN=$PWD/target/release/verlato pytest tests/test_rust_parity.py
