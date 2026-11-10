@@ -5,9 +5,11 @@ release-note pipeline and links the IntentumDiff engine in-process, and every mo
 is native: scans and drafts call Ollama (the default), LiteLLM/OpenAI-compatible endpoints,
 GitHub Models, the external-command plugin, the Codex CLI and Claude Code agents, the mock and
 stub providers, and fallback chains of those. Commit intent inference and Conventional Commit
-drafting are native too, and so is the MCP server (`verlato serve`). The remaining
-model-backed features (batched and tool-retrieval suggestions) still run in the Python implementation, which the binary delegates to transparently. This document records the assessment, the current state, and the
-remaining phases.
+drafting are native too, and so is the MCP server (`verlato serve`), and so is every suggestion
+strategy (single, paired, full-diff-json and tool-retrieval with Ollama tool calling) with adaptive
+recommendations. Python is now only needed for unknown commands and for a PR adapter that fails to
+configure natively, which the binary delegates to transparently. This document records the
+assessment, the current state, and the remaining phases.
 
 ## Why Rust
 
@@ -34,12 +36,11 @@ About 16k lines of Python (plus ~7k lines of tests):
 | IntentumDiff semantic evidence (digest, verdicts, summary, cache) | `core/semantic.py` | ~1k | **Ported** (engine linked natively) |
 | Drafts, rendering, changelog apply, state store, review/feedback/state commands | `core/{drafts,generator,changelog}`, `state/store.py`, parts of `cli/main.py` | ~1.5k | **Ported** |
 | Editor stdio service (deterministic methods) | `service_stdio.py`, parts of `mcp/service.py` | ~0.5k | **Ported**; other methods proxied |
-| Model providers: stub, mock, Ollama (incl. streaming), LiteLLM, GitHub Models, plugin, Codex/Claude CLI, fallback chains; request audits, privacy records, OTEL-style model logs | `providers/*`, `core/model_privacy.py` | ~2.4k | **Ported** (Ollama tool calling stays in Python with the suggestion strategies) |
+| Model providers: stub, mock, Ollama (incl. streaming), LiteLLM, GitHub Models, plugin, Codex/Claude CLI, fallback chains; request audits, privacy records, OTEL-style model logs | `providers/*`, `core/model_privacy.py` | ~2.4k | **Ported** (including Ollama tool calling) |
 | Classifier model assists (summary rewrite, diff-fallback classification, change-summary payload) | parts of `core/classifier.py`, `core/change_summary.py` | ~0.6k | **Ported** |
-| Suggestions: prompt preview, single-strategy `--preview`/`--preflight`, applying a suggestion, JSON cache, scoring, traces | `cli/main.py` (parts), `state/suggestion_cache.py` (JSON), `core/change_summary.py` | ~2.5k | **Ported** |
-| Suggestions: batched strategies (paired, full-diff-json), tool retrieval, non-JSON (plugin-registered) cache backends, adaptive recommendations | `cli/main.py` (parts), `core/suggestion_tools.py` | ~2k | Delegated |
+| Suggestions: prompt preview, `--preview`/`--preflight` for every strategy (single, paired, full-diff-json, tool-retrieval), batch fallbacks, applying a suggestion, the suggestion cache, scoring, adaptive recommendations, traces | `cli/main.py` (parts), `state/suggestion_cache.py`, `core/change_summary.py`, `core/suggestion_tools.py` | ~4.5k | **Ported** |
 | Commit intent inference and Conventional Commit drafting | `core/commit_intent.py` | ~1.1k | **Ported** |
-| Maintenance: `doctor ollama`, `doctor model`, `model-logs export`, `feedback export`, `feedback recommend`, `state clear-suggestion-cache`; the `suggestion.*` and `state.clear_suggestion_cache` service methods | `cli/main.py` (parts), `service_stdio.py`, `mcp/service.py` | ~1k | **Ported** (adaptive recommendations in `doctor ollama` are delegated with the suggestion strategies) |
+| Maintenance: `doctor ollama`, `doctor model`, `model-logs export`, `feedback export`, `feedback recommend`, `state clear-suggestion-cache`; the `suggestion.*` and `state.clear_suggestion_cache` service methods | `cli/main.py` (parts), `service_stdio.py`, `mcp/service.py` | ~1k | **Ported** |
 | MCP server (`verlato serve`): FastMCP's handshake, tool/resource/prompt catalog, argument validation and result shapes; the MCP evidence tools (`SuggestionEvidenceToolProvider`) | `mcp/server.py`, `mcp/service.py`, `core/suggestion_tools.py` | ~1.7k | **Ported** |
 | GitHub API PR adapter | `github/adapter.py` | ~0.1k | **Ported** |
 
@@ -55,33 +56,33 @@ The native binary handles these command paths itself:
 scan | generate | reconcile          (with any model provider; see below)
 draft json | preview | apply | review (including --model-provider)
 draft prompt
-draft suggest --preview | --preflight (single strategy, JSON cache; see below)
+draft suggest --preview | --preflight (every strategy; see below)
 draft suggest --id (applies a model summary to review state)
 commit conventional
 render
 state show | mark-published | clear-working | clear-suggestion-cache
 feedback record | export | recommend
 model-logs export
-doctor engine | ollama | model       (doctor ollama --adaptive-recommendations is delegated)
+doctor engine | ollama | model
 service                              (every method: health, info, draft.* incl. model providers and intent
                                       inference, commit.conventional[_many], feedback.record, state.*,
                                       suggestion.*)
 serve                                (MCP server on stdio; all tools, resources and prompts)
 ```
 
-Everything else is delegated to the Python implementation with the original arguments: the
-rest of `draft suggest` (see below) and adaptive recommendations (`doctor ollama
---adaptive-recommendations`, `VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS` or
-`"suggestion_adaptive_recommendations": true`). The service no longer starts a Python process
+Only unknown commands and a PR adapter that fails to configure natively are delegated to the
+Python implementation with the original arguments. The service no longer starts a Python process
 for any method it knows; unknown methods are still proxied.
 
 The maintenance commands print Python's exact bytes (including `\uXXXX` escapes and key order).
 `doctor ollama` probes the configured Ollama with the same requests (warmup, single and two
 concurrent probes), reads `/api/ps` and `ollama ps`, and reports the same bottleneck analysis;
 `doctor model` sends the same full-diff-json probe (prompt, evidence and response schema) to any
-provider. Only the non-JSON cache backends differ by design: Python has none registered either,
-so both report `Unknown suggestion cache backend '<name>'; available: json` (new native backends
-go in `maintenance::clear_suggestion_cache_backend` and the suggestion cache).
+provider. Suggestion cache backends: Python's `register_suggestion_cache_backend` only works
+inside the registering interpreter, so a CLI or service process has just `json`, and both
+runtimes report `Unknown suggestion cache backend '<name>'; available: json` for any other name
+(`suggestion_cache::open_backend` is the one place to add a native backend; previews and
+`clear-suggestion-cache` both use it).
 
 `scan`/`generate`/`reconcile` (and drafts or reviews with `--model-provider`) ask the provider
 to enrich summaries and, on the diff-fallback path, classifications. This runs natively for every
@@ -101,15 +102,19 @@ classifying, and reports `derived_conventional_commits` on items. `commit conven
 `commit.conventional`/`commit.conventional_many` service methods draft messages natively in both
 evidence modes (`diff-only`, `subject-hint`).
 
-`draft suggest --preview`/`--preflight` runs natively when the effective strategy is `single`:
-`--strategy single`, or `auto`/`paired`/`full-diff-json`/`tool-retrieval` whenever the privacy
-mode doesn't let the provider see source content (the default `metadata-only`), because Python
-downgrades those to `single`. It is delegated for a strategy that stays batched or uses tool
-retrieval, a non-JSON cache backend, and adaptive recommendations. `draft suggest --id` without
+`draft suggest --preview`/`--preflight` runs natively for every strategy: `single`; `paired` and
+`full-diff-json` batches (batch prompts and JSON response schema, per-item and whole-batch
+fallback to single calls, the 80k-character full-diff guard, `--batch-size`, parallel chunks and
+the batch counters in `performance`); and `tool-retrieval`, where Ollama calls the suggestion
+evidence tools (`verlato_get_suggestion_item`, the IntentumDiff semantic-diff tools, or bounded
+patches with the `git` engine) for up to four rounds with the same `tool-call` trace lines and
+tool metadata. `--adaptive-recommendations` (also `doctor ollama`) is native. `draft suggest --id` without
 `--preview` (asks the provider for one summary and records it as an edited, model-generated summary
 with provenance and a `suggestion_applied` feedback event) is native too. The parity suite compares outputs, cache files,
 recorded model requests and trace lines against Python for both engines, a recording plugin and a
-fake Ollama server.
+fake Ollama server (including tool calls and tool errors). Under IntentumDiff the structured
+strategies embed engine-derived fields (version, sizes) in their prompts, so prompt hashes and
+cache keys legitimately differ between the runtimes there; the suite masks only those.
 
 The Python CLI is found through `VERLATO_PYTHON_CLI` (a path to `verlato-py` or a command line
 such as `python3 -m verlato.cli`), then `verlato-py` on `PATH`. The Python package installs
@@ -187,13 +192,10 @@ evidence without depending on patch text.
 1. **Providers** (done): the `Provider` trait, request/prompt/evidence hashes (byte-identical
    canonical JSON), privacy records, every provider, fallback chains, model telemetry and the
    classifier's model assists.
-2. **Suggestions** (in progress): done: `draft prompt`, and `draft suggest --preview`/`--preflight`
-   for the single strategy (target selection, fan-out guard, prompt budgets, the JSON cache with
-   the same file format and lock, candidate parsing and filters, parallel workers, and the
-   `[verlato:suggestion]`/`[verlato:model]`/progress traces). Next: the paired and full-diff-json
-   batch strategies, tool retrieval (Ollama tool calling and `core/suggestion_tools.py`), the
-   registered non-JSON cache backends and adaptive recommendations. Applying a suggestion to
-   review state (`draft suggest --id`) is native.
+2. **Suggestions** (done): `draft prompt`, `draft suggest --preview`/`--preflight` for every
+   strategy (single, paired, full-diff-json, tool-retrieval with Ollama tool calling), the
+   suggestion cache, adaptive recommendations, and applying a suggestion to review state
+   (`draft suggest --id`).
 3. **Commit intents** (done): inference for grouping/classification and Conventional Commit
    drafting (`commit conventional`, `commit.*` service methods).
 4. **MCP server** (done): `verlato serve` speaks newline-delimited JSON-RPC on stdio without an

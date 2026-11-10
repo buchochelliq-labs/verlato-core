@@ -1736,14 +1736,36 @@ def test_doctor_ollama_failures_match(tmp_path: Path):
     assert json.loads(rs_out)["summary"]["status"] == "error"
 
 
-def test_doctor_ollama_adaptive_is_delegated(tmp_path: Path):
-    _, rs_repo, env = _pair(tmp_path, "git")
-    result = subprocess.run(
-        _rust("doctor", "ollama", "--adaptive-recommendations"),
-        cwd=rs_repo, env=_native_only(env), capture_output=True, text=True,
-    )
-    assert result.returncode != 0
-    assert "adaptive suggestion recommendations" in result.stderr
+def _adaptive_doctor_view(report: dict) -> dict:
+    """Doctor adaptive output without the parts that depend on real queueing time."""
+    adaptive = report["adaptive_recommendations"]
+    signals = {
+        key: value
+        for key, value in adaptive["signals"].items()
+        if not key.endswith(("_ms", "_share")) and key != "dominant_bottleneck"
+    }
+    kinds = [item["kind"] for item in adaptive["recommendations"] if item["kind"] != "reduce-queueing"]
+    return {"current": adaptive["current"], "signals": signals, "kinds": kinds, "schema": adaptive["schema_version"]}
+
+
+def test_doctor_ollama_adaptive_matches(tmp_path: Path):
+    handler = _doctor_ollama_handler()
+    config = {
+        "provider": {"name": "ollama"},
+        "suggestion_parallelism": 2,
+        "suggestion_prompt_profile": "lean",
+        "suggestion_batch_size": 3,
+        "suggestion_strategy": "paired",
+        "suggestion_count": 2,
+    }
+    args = ("doctor", "ollama", "--parallel-probe", "--adaptive-recommendations")
+    (py_out, py_bodies), (rs_out, rs_bodies) = _doctor_pair(tmp_path, handler, args, config)
+    py_report, rs_report = json.loads(py_out), json.loads(rs_out)
+    assert list(rs_report) == list(py_report)
+    assert list(rs_report["adaptive_recommendations"]) == list(py_report["adaptive_recommendations"])
+    assert _adaptive_doctor_view(rs_report) == _adaptive_doctor_view(py_report)
+    assert rs_bodies == py_bodies
+    assert rs_report["adaptive_recommendations"]["signals"]["source"] == "doctor"
 
 
 @pytest.mark.parametrize("provider", ["ollama", "plugin"])

@@ -35,11 +35,12 @@ pub struct ProviderRequest {
     pub max_tool_rounds: usize,
 }
 
+/// A tool call handler: `Ok(result)` or `Err(str(exception))`.
+pub type ToolFn = dyn Fn(&str, &Map<String, Value>) -> Result<Value, String> + Send + Sync;
+
 /// Executes one model tool call (Python `ProviderRequest.tool_executor`).
 #[derive(Clone)]
-pub struct ToolExecutor(
-    pub std::sync::Arc<dyn Fn(&str, &Map<String, Value>) -> Result<Value, String> + Send + Sync>,
-);
+pub struct ToolExecutor(pub std::sync::Arc<ToolFn>);
 
 impl std::fmt::Debug for ToolExecutor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -683,14 +683,12 @@ fn run(raw_args: Vec<String>) -> Result<i32> {
             adaptive_recommendations,
             suggest_model,
         }) => {
-            if maintenance::adaptive_recommendations_enabled(&ctx, adaptive_recommendations) {
-                return delegate::run(&raw_args, "adaptive suggestion recommendations");
-            }
             maintenance::print_unsorted(&maintenance::doctor_ollama(
                 &ctx,
                 parallel_probe,
                 warmup,
                 suggest_model.as_deref(),
+                adaptive_recommendations,
             )?);
         }
         Command::Doctor(DoctorCommand::Model {

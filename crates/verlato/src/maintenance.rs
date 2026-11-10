@@ -19,9 +19,11 @@ use crate::providers::{
     ProviderRequest,
 };
 use crate::pyjson;
+use crate::suggest::{
+    batch_response_format, full_diff_prompt, parse_batch_json, FULL_DIFF_SUGGESTION_PROMPT_SHAPE,
+};
 
 const MAX_SUGGESTION_PARALLELISM: i64 = 8;
-const FULL_DIFF_SUGGESTION_PROMPT_SHAPE: &str = "full-diff-json-v1";
 
 // -- Python value helpers -------------------------------------------------------------------
 
@@ -549,25 +551,14 @@ fn cache_settings(ctx: &Context) -> (String, String, i64) {
 }
 
 /// Clear the suggestion cache of `backend` and return `(removed entries, cache path)`.
-///
-/// Backend dispatch point: only the built-in `json` backend exists natively (as in Python,
-/// where other backends must be registered by code). Add new backends here.
 fn clear_suggestion_cache_backend(
     backend: &str,
     path: &str,
     ttl_days: i64,
 ) -> Result<(usize, String)> {
-    match backend {
-        "json" => {
-            let mut cache = crate::suggestion_cache::JsonSuggestionCache::load(path, ttl_days)?;
-            let removed = cache.clear()?;
-            Ok((removed, py_path(&cache.path.to_string_lossy())))
-        }
-        other => bail!(
-            "Unknown suggestion cache backend {}; available: json",
-            crate::mcp::py_repr_str(other)
-        ),
-    }
+    let mut cache = crate::suggestion_cache::open_backend(backend, path, ttl_days)?;
+    let removed = cache.clear()?;
+    Ok((removed, py_path(&cache.path.to_string_lossy())))
 }
 
 /// `verlato state clear-suggestion-cache` and the `state.clear_suggestion_cache` service method.
@@ -1285,12 +1276,13 @@ fn summarize_doctor(probes: &[Value], config: &Value, runtime: &Value, warmup: b
     })
 }
 
-/// `verlato doctor ollama` (without adaptive recommendations).
+/// `verlato doctor ollama`.
 pub fn doctor_ollama(
     ctx: &Context,
     parallel_probe: bool,
     warmup: bool,
     suggest_model: Option<&str>,
+    adaptive_recommendations: bool,
 ) -> Result<Value> {
     let parallelism = configured_parallelism(ctx);
     let provider_config = ProviderConfig::from_raw(&ctx.config.raw);
@@ -1324,14 +1316,27 @@ pub fn doctor_ollama(
     }
     let runtime = collect_runtime(&config);
     let summary = summarize_doctor(&probes, &config, &runtime, warmup);
-    Ok(json!({
+    let adaptive = if adaptive_recommendations_enabled(ctx, adaptive_recommendations) {
+        Some(crate::suggest::doctor_adaptive_recommendations(
+            ctx,
+            parallelism,
+            &probes,
+        )?)
+    } else {
+        None
+    };
+    let mut result = json!({
         "schema": "ollama_doctor.v1",
         "provider": "ollama",
         "config": config,
         "runtime": runtime,
         "probes": probes,
         "summary": summary,
-    }))
+    });
+    if let Some(adaptive) = adaptive {
+        result["adaptive_recommendations"] = adaptive;
+    }
+    Ok(result)
 }
 
 // -- doctor model -----------------------------------------------------------------------------
@@ -1377,85 +1382,6 @@ fn doctor_full_diff_item(item_id: &str) -> Value {
     })
 }
 
-/// `_build_full_diff_suggestion_batch_prompt` for the doctor's single git-patch item (patch
-/// evidence present, no semantic diff).
-// TODO(dedupe): share with the full-diff-json strategy once suggest.rs exports its prompt builder.
-fn doctor_full_diff_prompt(item: Value, count: i64, style: &Style) -> String {
-    let payload = json!({
-        "suggestion_count": count,
-        "tone": style.tone,
-        "style_profile": style.profile(),
-        "prompt_shape": FULL_DIFF_SUGGESTION_PROMPT_SHAPE,
-        "items": [item],
-    });
-    format!(
-        "Generate release-note suggestion variants from the full diff evidence.\n\
-         Use the file patches as the primary source of truth. Do not infer behavior from titles alone.\n\
-         Return only JSON that matches the requested schema. Do not include Markdown fences or prose.\n\
-         For each item, return exactly {count} suggestion string(s) in the suggestions array.\n\
-         Do not combine items, rename item ids, omit an item, or mention implementation details unless they matter to \
-         release-note readers.\n\
-         If a file has no semantic_diff (and patch_available=false), treat that file as changed but do not invent \
-         unavailable details.\n\
-         Input JSON:\n{}",
-        pyjson::dumps_indented(&payload, 2)
-    )
-}
-
-/// `_suggestion_batch_response_format`.
-fn batch_response_format(count: i64) -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "items": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "item_id": {"type": "string"},
-                        "suggestions": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "minItems": 1,
-                            "maxItems": count,
-                        },
-                    },
-                    "required": ["item_id", "suggestions"],
-                },
-            }
-        },
-        "required": ["items"],
-    })
-}
-
-/// `_parse_suggestion_batch_json`.
-fn parse_batch_json(content: &str) -> Option<BTreeMap<String, Vec<String>>> {
-    let parsed: Value = serde_json::from_str(content).ok()?;
-    let items = parsed.as_object()?.get("items")?.as_array()?;
-    let mut by_item = BTreeMap::new();
-    for item in items {
-        let Some(item) = item.as_object() else {
-            continue;
-        };
-        let (Some(Value::String(id)), Some(Value::Array(raw))) =
-            (item.get("item_id"), item.get("suggestions"))
-        else {
-            continue;
-        };
-        let suggestions: Vec<String> = raw
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
-            .collect();
-        if !suggestions.is_empty() {
-            by_item.insert(id.clone(), suggestions);
-        }
-    }
-    Some(by_item)
-}
-
 /// `verlato doctor model`.
 pub fn doctor_model(
     ctx: &Context,
@@ -1472,7 +1398,7 @@ pub fn doctor_model(
     let provider: &dyn Provider = provider.as_ref();
     let item_id = "doctor_model";
     let style = Style::resolve(&ctx.config.raw, None);
-    let prompt = doctor_full_diff_prompt(doctor_full_diff_item(item_id), 1, &style);
+    let prompt = full_diff_prompt(&[doctor_full_diff_item(item_id)], 1, &style, 86);
     let request = ProviderRequest {
         task: "suggest".into(),
         prompt: prompt.clone(),

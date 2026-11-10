@@ -2,10 +2,10 @@
 //!
 //! The Rust implementation links the IntentumDiff engine in-process and owns the
 //! deterministic release-note pipeline (collection, grouping, semantic evidence,
-//! classification, reconciliation, drafts, review state and the editor service), and the
-//! stub, plugin and LiteLLM model providers with the classifier's model assists. Other
-//! model-backed features are delegated to the Python implementation until they are ported;
-//! see `docs/RUST_MIGRATION.md`.
+//! classification, reconciliation, drafts, review state and the editor service), every model
+//! provider, suggestions in every strategy, commit intents, the maintenance commands and the
+//! MCP server. Only unknown commands are delegated to the Python implementation; see
+//! `docs/RUST_MIGRATION.md`.
 
 pub mod adaptive;
 pub mod assist;

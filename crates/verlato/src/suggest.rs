@@ -202,7 +202,7 @@ const MAX_SUGGESTION_PARALLELISM: i64 = 8;
 const MAX_SUGGESTION_BATCH_SIZE: i64 = 5;
 const SINGLE_SUGGESTION_PROMPT_SHAPE: &str = "single-prompt-v1";
 const PAIRED_SUGGESTION_PROMPT_SHAPE: &str = "paired-prepared-prompt-v1";
-const FULL_DIFF_SUGGESTION_PROMPT_SHAPE: &str = "full-diff-json-v1";
+pub(crate) const FULL_DIFF_SUGGESTION_PROMPT_SHAPE: &str = "full-diff-json-v1";
 const TOOL_RETRIEVAL_SUGGESTION_PROMPT_SHAPE: &str = "tool-retrieval-v1";
 const FULL_DIFF_BATCH_PROMPT_CHAR_GUARD: usize = 80_000;
 const SUGGESTION_TOOL_MAX_ROUNDS: usize = 4;
@@ -321,6 +321,54 @@ fn effective_strategy(
     effective
 }
 
+/// `_resolve_suggestion_batch_size`.
+fn resolve_batch_size(raw: &Value, requested: Option<i64>) -> i64 {
+    match requested
+        .map(|b| b.to_string())
+        .or_else(|| std::env::var("VERLATO_SUGGESTION_BATCH_SIZE").ok())
+    {
+        Some(text) => text
+            .trim()
+            .parse()
+            .unwrap_or_else(|_| raw_int(raw, "suggestion_batch_size", 5)),
+        None => raw_int(raw, "suggestion_batch_size", 5),
+    }
+    .clamp(1, MAX_SUGGESTION_BATCH_SIZE)
+}
+
+/// The adaptive recommendations of `doctor ollama --adaptive-recommendations`: the configured
+/// suggestion settings judged by the doctor's probes (`source: doctor`).
+pub(crate) fn doctor_adaptive_recommendations(
+    ctx: &Context,
+    parallelism: i64,
+    probes: &[Value],
+) -> Result<Value> {
+    let raw = &ctx.config.raw;
+    let settings = resolve_settings(ctx, &SuggestArgs::default())?;
+    let strategy = resolve_strategy(raw_text(raw, "suggestion_strategy").as_deref(), None)?;
+    let prompt_chars: i64 = probes
+        .iter()
+        .map(|p| p.get("prompt_chars").and_then(Value::as_i64).unwrap_or(0))
+        .sum();
+    Ok(crate::adaptive::build_recommendations(
+        crate::adaptive::current_settings(
+            "ollama",
+            &settings.prompt_profile,
+            settings.count,
+            parallelism,
+            resolve_batch_size(raw, None),
+            Some(&strategy),
+            None,
+        ),
+        probes,
+        &ctx.store().load()?.feedback_events,
+        0,
+        0,
+        prompt_chars,
+        "doctor",
+    ))
+}
+
 /// Resolved settings of a suggestion run.
 struct Settings {
     count: i64,
@@ -409,18 +457,7 @@ fn resolve_settings(ctx: &Context, args: &SuggestArgs) -> Result<Settings> {
     let raw_patches_allowed =
         can_send_raw_patches_for_config(&provider_config, Some(&provider), &privacy);
     let strategy = effective_strategy(&strategy, &provider, &privacy, raw_patches_allowed);
-    let requested_batch_size = match args
-        .batch_size
-        .map(|b| b.to_string())
-        .or_else(|| std::env::var("VERLATO_SUGGESTION_BATCH_SIZE").ok())
-    {
-        Some(text) => text
-            .trim()
-            .parse()
-            .unwrap_or_else(|_| raw_int(raw, "suggestion_batch_size", 5)),
-        None => raw_int(raw, "suggestion_batch_size", 5),
-    }
-    .clamp(1, MAX_SUGGESTION_BATCH_SIZE);
+    let requested_batch_size = resolve_batch_size(raw, args.batch_size);
     let batch_size = match strategy.as_str() {
         "single" | "tool-retrieval" => 1,
         "paired" => requested_batch_size.min(2),
@@ -468,17 +505,13 @@ fn resolve_settings(ctx: &Context, args: &SuggestArgs) -> Result<Settings> {
     })
 }
 
-/// `build_suggestion_cache_backend`: `json` is the only backend a CLI process has. Python
-/// integrations can register more with `register_suggestion_cache_backend`, but only inside
-/// their own interpreter, so the Python CLI rejects any other name exactly like this.
+/// The configured suggestion cache (see `suggestion_cache::open_backend`).
 fn open_cache(settings: &Settings) -> Result<JsonSuggestionCache> {
-    if settings.cache_backend != "json" {
-        bail!(
-            "Unknown suggestion cache backend {}; available: json",
-            crate::mcp::py_repr_str(&settings.cache_backend)
-        );
-    }
-    JsonSuggestionCache::load(&settings.cache_path, settings.cache_ttl_days)
+    crate::suggestion_cache::open_backend(
+        &settings.cache_backend,
+        &settings.cache_path,
+        settings.cache_ttl_days,
+    )
 }
 
 // -- traces -------------------------------------------------------------------
@@ -1754,21 +1787,31 @@ fn batch_prompt(works: &[&Work]) -> String {
     )
 }
 
-/// `_build_full_diff_suggestion_batch_prompt`.
 fn full_diff_batch_prompt(works: &[&Work]) -> String {
-    let first = works[0];
     let items: Vec<Value> = works.iter().map(|w| w.full_diff_item.clone()).collect();
+    let sent: usize = works.iter().map(|w| w.patch_chars).sum();
+    full_diff_prompt(&items, works[0].count, &works[0].style, sent)
+}
+
+/// `_build_full_diff_suggestion_batch_prompt` over full-diff items (also the `doctor model`
+/// probe); `patch_chars_sent` is the raw patch text the items carry.
+pub(crate) fn full_diff_prompt(
+    items: &[Value],
+    count: i64,
+    style: &Style,
+    patch_chars_sent: usize,
+) -> String {
     let payload = json!({
-        "suggestion_count": first.count,
-        "tone": first.style.tone,
-        "style_profile": first.style.profile(),
+        "suggestion_count": count,
+        "tone": style.tone,
+        "style_profile": style.profile(),
         "prompt_shape": FULL_DIFF_SUGGESTION_PROMPT_SHAPE,
         "items": items,
     });
-    let sent: usize = works.iter().map(|w| w.patch_chars).sum();
-    let semantic = works.iter().any(|w| {
-        w.full_diff_item.get("evidence_source") == Some(&json!("intentumdiff-semantic-diff"))
-    });
+    let sent = patch_chars_sent;
+    let semantic = items
+        .iter()
+        .any(|item| item.get("evidence_source") == Some(&json!("intentumdiff-semantic-diff")));
     let (name, instruction) = if semantic {
         (
             "IntentumDiff semantic diff",
@@ -1798,7 +1841,7 @@ fn full_diff_batch_prompt(works: &[&Work]) -> String {
          If a file has no semantic_diff (and patch_available=false), treat that file as changed but do not invent \
          unavailable details.\n\
          Input JSON:\n{}",
-        first.count,
+        count,
         pyjson::dumps_indented(&payload, 2)
     )
 }
@@ -1836,7 +1879,7 @@ fn tool_retrieval_prompt(manifest: &Value, count: i64, style: &Style) -> String 
 }
 
 /// `_suggestion_batch_response_format`.
-fn batch_response_format(count: i64) -> Value {
+pub(crate) fn batch_response_format(count: i64) -> Value {
     json!({
         "type": "object",
         "properties": {
@@ -1862,7 +1905,9 @@ fn batch_response_format(count: i64) -> Value {
 }
 
 /// `_parse_suggestion_batch_json`: suggestions per item id, or `None` for unusable JSON.
-fn parse_batch_json(content: &str) -> Option<std::collections::HashMap<String, Vec<String>>> {
+pub(crate) fn parse_batch_json(
+    content: &str,
+) -> Option<std::collections::HashMap<String, Vec<String>>> {
     let parsed: Value = serde_json::from_str(content).ok()?;
     let items = parsed.as_object()?.get("items")?.as_array()?;
     let mut out = std::collections::HashMap::new();
@@ -3201,6 +3246,75 @@ pub fn preview_suggestions(
     Ok(doc)
 }
 
+/// `draft suggest` without `--preview` (ports `_request_draft_model_input`): ask the model for
+/// a summary of one item and record it in review state as an edited, model-generated summary.
+pub fn apply_model_suggestion(
+    ctx: &Context,
+    base: &str,
+    head: &str,
+    item_id: &str,
+    reviewer: Option<&str>,
+    options: &SuggestOptions,
+) -> Result<ChangeItem> {
+    let provider = resolve_suggest_model_provider(ctx, options.model_provider.as_deref());
+    let raw = &ctx.config.raw;
+    let privacy = resolve_model_privacy(
+        raw.get("model_privacy").and_then(Value::as_str),
+        options.privacy.as_deref(),
+        options.allow_remote_patches,
+    );
+    let (group, _) = find_group(
+        ctx,
+        base,
+        head,
+        item_id,
+        &options.collect_request(&provider, &privacy),
+    )?;
+    let style = Style::resolve(raw, options.tone.as_deref());
+    let assist = crate::assist::ModelAssist {
+        provider: crate::providers::build_provider(&ProviderConfig::from_raw(raw), Some(&provider)),
+        provider_mode: Some(provider.clone()),
+        privacy,
+        style: style.clone(),
+        summary_only: true,
+    };
+    let candidate = classify(&group, base, head, Some(&assist));
+    let signals = &candidate.evidence.commit_signals;
+    let Some(model) = signals
+        .iter()
+        .find_map(|s| s.strip_prefix("provider-summary:"))
+        .map(str::to_owned)
+    else {
+        if let Some(error) = signals
+            .iter()
+            .find_map(|s| s.strip_prefix("provider-error:"))
+        {
+            bail!("No model summary was produced for draft item {item_id}: {error}");
+        }
+        bail!(
+            "No model summary was produced for draft item {item_id}. \
+             Configure a local model provider or pass --model-provider ollama."
+        );
+    };
+    let mut provenance = serde_json::Map::new();
+    provenance.insert("source".into(), json!("model-generated"));
+    provenance.insert("applied_at".into(), json!(crate::drafts::today()));
+    if !provider.is_empty() {
+        provenance.insert("provider".into(), json!(provider));
+    }
+    provenance.insert("model".into(), json!(model));
+    provenance.insert("tone".into(), json!(style.tone));
+    provenance.insert("style_profile".into(), style.profile());
+    let summary = candidate.content.summary.clone();
+    ctx.persist_review(
+        candidate,
+        Some("edited"),
+        Some(&summary),
+        reviewer,
+        Some(provenance),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3270,73 +3384,4 @@ mod tests {
             "single"
         );
     }
-}
-
-/// `draft suggest` without `--preview` (ports `_request_draft_model_input`): ask the model for
-/// a summary of one item and record it in review state as an edited, model-generated summary.
-pub fn apply_model_suggestion(
-    ctx: &Context,
-    base: &str,
-    head: &str,
-    item_id: &str,
-    reviewer: Option<&str>,
-    options: &SuggestOptions,
-) -> Result<ChangeItem> {
-    let provider = resolve_suggest_model_provider(ctx, options.model_provider.as_deref());
-    let raw = &ctx.config.raw;
-    let privacy = resolve_model_privacy(
-        raw.get("model_privacy").and_then(Value::as_str),
-        options.privacy.as_deref(),
-        options.allow_remote_patches,
-    );
-    let (group, _) = find_group(
-        ctx,
-        base,
-        head,
-        item_id,
-        &options.collect_request(&provider, &privacy),
-    )?;
-    let style = Style::resolve(raw, options.tone.as_deref());
-    let assist = crate::assist::ModelAssist {
-        provider: crate::providers::build_provider(&ProviderConfig::from_raw(raw), Some(&provider)),
-        provider_mode: Some(provider.clone()),
-        privacy,
-        style: style.clone(),
-        summary_only: true,
-    };
-    let candidate = classify(&group, base, head, Some(&assist));
-    let signals = &candidate.evidence.commit_signals;
-    let Some(model) = signals
-        .iter()
-        .find_map(|s| s.strip_prefix("provider-summary:"))
-        .map(str::to_owned)
-    else {
-        if let Some(error) = signals
-            .iter()
-            .find_map(|s| s.strip_prefix("provider-error:"))
-        {
-            bail!("No model summary was produced for draft item {item_id}: {error}");
-        }
-        bail!(
-            "No model summary was produced for draft item {item_id}. \
-             Configure a local model provider or pass --model-provider ollama."
-        );
-    };
-    let mut provenance = serde_json::Map::new();
-    provenance.insert("source".into(), json!("model-generated"));
-    provenance.insert("applied_at".into(), json!(crate::drafts::today()));
-    if !provider.is_empty() {
-        provenance.insert("provider".into(), json!(provider));
-    }
-    provenance.insert("model".into(), json!(model));
-    provenance.insert("tone".into(), json!(style.tone));
-    provenance.insert("style_profile".into(), style.profile());
-    let summary = candidate.content.summary.clone();
-    ctx.persist_review(
-        candidate,
-        Some("edited"),
-        Some(&summary),
-        reviewer,
-        Some(provenance),
-    )
 }

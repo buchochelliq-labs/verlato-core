@@ -149,8 +149,9 @@ scripts/fetch_intentumdiff_parsers.sh      # IntentumDiff parser bundle -> targe
 target/release/verlato draft preview --from-latest-tag
 ```
 
-Model-backed commands (suggestions, LLM summaries, commit-message drafting, MCP server) are delegated to the
-Python implementation below (`verlato-py`) until they are ported.
+Model-backed commands (suggestions, LLM summaries, commit-message drafting, MCP server) run natively too;
+only unknown commands and a PR adapter that fails to configure natively are delegated to the Python
+implementation below (`verlato-py`). See `docs/RUST_MIGRATION.md`.
 
 ### Python implementation
 
@@ -238,7 +239,7 @@ Environment variables:
 - `VERLATO_COMMIT_INTENT_INFERENCE`: optional inferred conventional commit pass: `off` (default) or `low-signal`. When enabled, Verlato asks the configured provider to infer conventional type/scope only for non-conventional commits or conventional commits without a scope before grouping.
 - `VERLATO_SUGGESTION_PROMPT_PROFILE`: suggestion prompt budget profile: `conservative` (default), `lean`, or `minimal`.
 - `VERLATO_SUGGESTION_ADAPTIVE_RECOMMENDATIONS`: set to `1` to include recommendation-only adaptive suggestion tuning advice in preview and doctor JSON.
-- `VERLATO_SUGGESTION_CACHE_BACKEND`: suggestion cache backend name (default `json`; additional backends can be registered by Python integrations).
+- `VERLATO_SUGGESTION_CACHE_BACKEND`: suggestion cache backend name (default and only CLI backend `json`; Python integrations can register more for their own in-process use).
 - `VERLATO_SUGGESTION_CACHE_PATH`: overrides the persistent suggestion cache file (default `.verlato_suggestion_cache.json`; set it to an OS cache directory path if you prefer cache files outside the repo).
 - `VERLATO_SUGGESTION_CACHE_TTL_DAYS`: number of days before suggestion cache entries expire (default `30`; key changes always invalidate entries first).
 - `VERLATO_GITHUB_MODEL`: model name when using `github-copilot` (default `openai/gpt-4o-mini`; legacy values such as `gpt-4o-mini` are normalized).
