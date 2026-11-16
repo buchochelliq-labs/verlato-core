@@ -10,15 +10,21 @@
 - Unknown commands are usage errors (exit code 2) instead of being handed to `verlato-py`.
 
 ### Added
+- A documentation site (Zensical, `mkdocs.yml`, published to GitHub Pages): getting started, a user guide
+  from the CLI to the VS Code extension, a reference (CLI, `verlato.json`, environment variables, service
+  and MCP protocol, Python API, output formats) and a technical guide. The CLI reference is generated
+  from `verlato --help` (`scripts/gen_cli_reference.py`), and the screenshots from the real CLI and the
+  extension's view code (`scripts/screenshots/`).
+- Every command and option now has a description in `verlato --help`.
 - Python API: `verlato.run(argv)`, `verlato.call(method, params, repo=...)`, `verlato.engine_version()`,
   `verlato.parser_bundle()`.
 - Release bundles on GitHub Releases: `verlato-v<version>-<target>.tar.gz` (`.zip` on Windows) with the
   `verlato` executable and the parser bundle in `wasm/`, plus `SHA256SUMS`. Usable from the VS Code extension
   via `verlato.cliPath`.
-- Releases are made with rab (`rab.yml`, `.github/workflows/release.yml`); see `docs/RELEASING.md`.
+- Releases are made with rab (`rab.yml`, `.github/workflows/release.yml`); see `docs/technical/releasing.md`.
 - Extension points for embedding binaries (`verlato::cli::run_with` and `verlato::extensions`): forge adapters,
   model providers, a policy hook, event sinks, extra subcommands and service methods. Verlato is open core; see
-  `docs/OPEN_CORE.md`.
+  `docs/open-core.md`.
 
 ### Removed
 - The `verlato-py` command, `VERLATO_PYTHON_CLI`/`VERLATO_TRACE_DELEGATION`, the `mcp` extra, and

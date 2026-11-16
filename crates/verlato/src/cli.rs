@@ -23,27 +23,35 @@ struct Cli {
 
 #[derive(Args, Clone)]
 struct RangeArgs {
+    /// Start of the range (exclusive): a tag, branch or commit.
     #[arg(long)]
     base: Option<String>,
+    /// End of the range (inclusive).
     #[arg(long, default_value = "HEAD")]
     head: String,
+    /// Use the latest tag reachable from --head as the base.
     #[arg(long)]
     from_latest_tag: bool,
+    /// Use the most recent release recorded with `state mark-published` as the base.
     #[arg(long)]
     from_latest_published: bool,
 }
 
 #[derive(Args, Clone)]
 struct ModelArgs {
+    /// Model provider for this run: stub, mock, ollama, litellm, plugin, github-copilot, codex-cli or claude-code (overrides verlato.json and VERLATO_MODEL_PROVIDER).
     #[arg(long)]
     model_provider: Option<String>,
+    /// Infer Conventional Commit type and scope for low-signal commits before grouping.
     #[arg(long, overrides_with = "no_infer_commit_intents")]
     infer_commit_intents: bool,
+    /// Turn commit intent inference off for this run.
     #[arg(long)]
     no_infer_commit_intents: bool,
     /// Privacy mode for model evidence: metadata-only, local-summary-then-ai or trusted-provider-patch.
     #[arg(long = "privacy")]
     privacy: Option<String>,
+    /// Allow trusted-provider-patch evidence for remote providers.
     #[arg(long)]
     allow_remote_patches: bool,
 }
@@ -64,10 +72,13 @@ impl ModelArgs {
 struct DraftArgs {
     #[command(flatten)]
     range: RangeArgs,
+    /// Release heading used in the rendered notes.
     #[arg(long, default_value = "Unreleased")]
     version: String,
+    /// Show each item's confidence score in the rendered notes.
     #[arg(long)]
     include_confidence: bool,
+    /// Show each item's PR and commit provenance in the rendered notes.
     #[arg(long)]
     include_provenance: bool,
     #[command(flatten)]
@@ -76,42 +87,59 @@ struct DraftArgs {
 
 #[derive(Subcommand)]
 enum Command {
+    /// List the change items in a range that are not in state yet (read-only).
     Scan(ScanArgs),
+    /// Detect change items in a range and save the new ones to state.
     Generate(ScanArgs),
+    /// List the unpublished change items in a range, with a count (read-only).
     Reconcile(ScanArgs),
+    /// Render release notes from the items saved in state.
     Render {
+        /// Output format.
         #[arg(long, value_parser = ["github-release", "changelog"])]
         format: String,
+        /// Release heading used in the rendered notes.
         #[arg(long, default_value = "Unreleased")]
         version: String,
+        /// Show each item's confidence score.
         #[arg(long)]
         include_confidence: bool,
+        /// Show each item's PR and commit provenance.
         #[arg(long)]
         include_provenance: bool,
     },
+    /// JSON-lines editor service on stdio (used by the VS Code extension).
     Service,
     /// MCP server on stdio.
     Serve,
+    /// Build, preview, review, apply and improve release-note drafts.
     #[command(subcommand)]
     Draft(DraftCommand),
+    /// Inspect and maintain Verlato's local state.
     #[command(subcommand)]
     State(StateCommand),
+    /// Record, export and learn from reviewer feedback.
     #[command(subcommand)]
     Feedback(FeedbackCommand),
+    /// Health checks for the semantic engine and model providers.
     #[command(subcommand)]
     Doctor(DoctorCommand),
+    /// Draft Conventional Commit messages from commit evidence.
     #[command(subcommand)]
     Commit(CommitCommand),
+    /// Export model telemetry debug logs.
     #[command(subcommand)]
     ModelLogs(ModelLogsCommand),
 }
 
 #[derive(Subcommand)]
 enum ModelLogsCommand {
+    /// Normalize a model debug log into a verlato.model_logs.v1 document (redacted by default).
     Export {
         /// JSONL model debug log produced by VERLATO_MODEL_LOG_PATH.
         #[arg(long)]
         file: String,
+        /// Output format: one JSON document, or one record per line.
         #[arg(long, value_parser = ["json", "jsonl"], default_value = "json")]
         format: String,
         /// Optional output path. Defaults to stdout.
@@ -127,18 +155,25 @@ enum ModelLogsCommand {
 enum CommitCommand {
     /// Draft a full Conventional Commits message for one existing commit.
     Conventional {
+        /// Start of the range that contains the commit (exclusive).
         #[arg(long)]
         base: String,
+        /// End of the range that contains the commit (inclusive).
         #[arg(long, default_value = "HEAD")]
         head: String,
+        /// The commit to draft a message for.
         #[arg(long)]
         sha: String,
+        /// Model provider for this run (see `verlato scan --help`).
         #[arg(long)]
         model_provider: Option<String>,
+        /// diff-only hides the authored commit message from the model; subject-hint includes it.
         #[arg(long, value_parser = ["diff-only", "subject-hint"], default_value = "diff-only")]
         evidence_mode: String,
+        /// Privacy mode for model evidence: metadata-only, local-summary-then-ai or trusted-provider-patch.
         #[arg(long = "privacy")]
         privacy: Option<String>,
+        /// Allow trusted-provider-patch evidence for remote providers.
         #[arg(long)]
         allow_remote_patches: bool,
     },
@@ -154,27 +189,37 @@ struct ScanArgs {
 
 #[derive(Subcommand)]
 enum DraftCommand {
+    /// The draft for a range as a JSON document (items, sections, rendered Markdown).
     Json(DraftArgs),
+    /// The draft for a range rendered as GitHub release notes (Markdown).
     Preview(DraftArgs),
+    /// Write the draft into a release-note file (a target from verlato.json, or --file).
     Apply {
         #[command(flatten)]
         draft: DraftArgs,
+        /// Target from verlato.json `targets`.
         #[arg(long, value_parser = ["changelog", "github-release"], default_value = "changelog")]
         target: String,
+        /// Write to this file instead of the target's configured path.
         #[arg(long)]
         file: Option<String>,
     },
+    /// Save a reviewer decision for one draft item: status, edited summary, reviewer.
     Review {
         #[command(flatten)]
         range: RangeArgs,
+        /// The draft item ID (`ci_...`).
         #[arg(long)]
         id: String,
+        /// New review status. `hidden` leaves the item out of rendered notes.
         #[arg(long, value_parser = ["needs-review", "ready", "accepted", "edited", "hidden"])]
         status: Option<String>,
+        /// Replacement summary text (marks the item edited).
         #[arg(long)]
         summary: Option<String>,
         #[arg(long, hide = true)]
         summary_provenance_json: Option<String>,
+        /// Who made the decision (recorded with the item).
         #[arg(long)]
         reviewer: Option<String>,
         #[command(flatten)]
@@ -184,35 +229,49 @@ enum DraftCommand {
     Suggest {
         #[command(flatten)]
         range: RangeArgs,
+        /// The draft item to suggest a summary for.
         #[arg(long)]
         id: Option<String>,
+        /// Suggest for every item that is not hidden (needs --preview).
         #[arg(long)]
         all_visible: bool,
+        /// Return suggestions as JSON without changing state. Without it, the suggestion for --id is applied.
         #[arg(long)]
         preview: bool,
         /// Build planned AI request envelopes without calling the provider.
         #[arg(long)]
         preflight: bool,
+        /// Suggestions per item (1-5).
         #[arg(long)]
         count: Option<i64>,
+        /// Item suggestions to run at once (1-8).
         #[arg(long)]
         parallelism: Option<i64>,
+        /// Uncached items that may share one structured model request (1-5).
         #[arg(long)]
         batch_size: Option<i64>,
+        /// How items are sent to the model.
         #[arg(long, value_parser = ["auto", "single", "paired", "full-diff-json", "tool-retrieval"])]
         strategy: Option<String>,
+        /// Prompt budget for single-item prompts.
         #[arg(long, value_parser = ["conservative", "lean", "minimal"])]
         prompt_profile: Option<String>,
+        /// Include recommendation-only tuning advice in the JSON output.
         #[arg(long)]
         adaptive_recommendations: bool,
+        /// A different (smaller or faster) model for suggestions only.
         #[arg(long)]
         suggest_model: Option<String>,
+        /// Neither read nor write the suggestion cache.
         #[arg(long)]
         no_cache: bool,
+        /// Ignore cached suggestions and overwrite them.
         #[arg(long)]
         refresh_cache: bool,
+        /// Wording preset.
         #[arg(long, value_parser = ["release-note", "concise", "technical", "customer-facing"])]
         tone: Option<String>,
+        /// Who applied the suggestion (recorded with the item).
         #[arg(long)]
         reviewer: Option<String>,
         /// Emit compact suggestion lifecycle trace logs for this invocation.
@@ -225,8 +284,10 @@ enum DraftCommand {
     Prompt {
         #[command(flatten)]
         range: RangeArgs,
+        /// The draft item ID (`ci_...`).
         #[arg(long)]
         id: String,
+        /// Wording preset.
         #[arg(long, value_parser = ["release-note", "concise", "technical", "customer-facing"])]
         tone: Option<String>,
         #[command(flatten)]
@@ -236,38 +297,53 @@ enum DraftCommand {
 
 #[derive(Subcommand)]
 enum StateCommand {
+    /// Print the saved state as JSON.
     Show,
+    /// Record that items shipped in a release (the base for --from-latest-published).
     MarkPublished {
+        /// The release or tag the items shipped in.
         #[arg(long)]
         version: String,
+        /// Item IDs to mark.
         #[arg(long, num_args = 1..)]
         ids: Vec<String>,
+        /// Mark every unpublished item.
         #[arg(long)]
         all_unpublished: bool,
     },
+    /// Remove unpublished items (and their feedback) from state; published history is kept.
     ClearWorking,
+    /// Delete the suggestion cache.
     ClearSuggestionCache,
 }
 
 #[derive(Subcommand)]
 enum FeedbackCommand {
+    /// Record one feedback event for a draft item.
     Record {
+        /// Event name, e.g. skip, regenerate, useful or not-useful.
         #[arg(long)]
         event: String,
+        /// The draft item ID.
         #[arg(long)]
         item_id: String,
+        /// Extra metadata as a JSON object.
         #[arg(long)]
         metadata_json: Option<String>,
     },
+    /// Export the recorded feedback events.
     Export {
+        /// One JSON document, or one event per line.
         #[arg(long, value_parser = ["json", "jsonl"], default_value = "json")]
         format: String,
+        /// Optional output path. Defaults to stdout.
         #[arg(long)]
         output: Option<String>,
         /// Filter to one feedback event type. Can be provided more than once.
         #[arg(long)]
         event: Vec<String>,
     },
+    /// Prompt and style recommendations from aggregate feedback.
     Recommend,
 }
 
@@ -275,6 +351,7 @@ enum FeedbackCommand {
 enum DoctorCommand {
     /// Report the IntentumDiff semantic engine status.
     Engine,
+    /// Probe a local Ollama server: load, queue, prompt and generation timing.
     Ollama {
         /// Run two tiny Ollama suggestion probes concurrently to detect server queueing.
         #[arg(long)]
@@ -289,6 +366,7 @@ enum DoctorCommand {
         #[arg(long)]
         suggest_model: Option<String>,
     },
+    /// Probe the configured suggestion model with a tiny structured request.
     Model {
         /// Override the configured model provider.
         #[arg(long, value_parser = ["stub", "mock", "ollama", "litellm", "plugin", "github-copilot", "codex-cli", "claude-code"])]

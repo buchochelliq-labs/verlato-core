@@ -14,7 +14,7 @@
 # Verlato publishes two packages (rab.yml): the native bundles as assets of a GitHub release
 # (publish-github) and the `verlato` wheels and sdist on PyPI (publish-pypi). The jobs for the
 # registries Verlato does not use (crates.io, npm, the VS Code Marketplace, Homebrew,
-# Chocolatey) were removed from the template; see docs/RELEASING.md.
+# Chocolatey) were removed from the template; see docs/technical/releasing.md.
 name: release
 
 on:

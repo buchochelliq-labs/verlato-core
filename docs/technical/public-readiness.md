@@ -1,6 +1,6 @@
 # Public-readiness review (verlato-core)
 
-This review was done before making `buchochelliq-labs/verlato-core` public, on 2026-11-10 at commit `635a8ab`.
+This review was done before making `buchochelliq-labs/verlato-core` public, on 2026-11-10 at commit `7212792`.
 Making the repository public publishes **its whole history**, so the scans below cover every reachable commit
 (`git log --all -p`, 101 commits), not only the working tree.
 
@@ -30,7 +30,7 @@ Making the repository public publishes **its whole history**, so the scans below
 | 7 | `verlato_memory.md`, an AI-assistant conversation memory describing internal decisions | Working tree and history | Internal notes, nothing secret | **Removed** from the working tree and from every commit |
 | 8 | `.verlato_state.json`, Verlato's own local state from dogfooding | Working tree and history | Local tool state that shouldn't be versioned | **Removed** from every commit and added to `.gitignore` |
 | 9 | `tests/golden/parity` (18 MB) | Working tree | Recorded outputs of the retired Python implementation over synthetic fixture repos. No absolute paths, home directories or personal data | Keep. It's the parity oracle. |
-| 10 | `AGENT.md`, `BACKLOG.md`, `performance_backlog.md`, `.github/copilot-instructions.md`, `.codex/skills/` | Working tree | Ordinary contributor and agent guidance. No paid-feature plans | Keep. Paid features are described only in [OPEN_CORE.md](OPEN_CORE.md) |
+| 10 | `AGENT.md`, `BACKLOG.md`, `performance_backlog.md`, `.github/copilot-instructions.md`, `.codex/skills/` | Working tree | Ordinary contributor and agent guidance. No paid-feature plans | Keep. Paid features are described only in [Open core](../open-core.md) |
 | 11 | `.github/release.md` and `CHANGELOG.md` | Working tree | Dogfooded release-note drafts, including old ReleasePilot-era entries | Keep. They're the product's default draft targets. |
 
 ## History scrub

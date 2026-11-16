@@ -1,6 +1,6 @@
 # Verlato's implementation: the `verlato` crate (crates/verlato, library + executable) and its
 # Python bindings (crates/verlato-python, the `verlato._native` extension module the `verlato`
-# PyPI package ships). See docs/RUST_MIGRATION.md.
+# PyPI package ships). See docs/technical/rust-migration.md.
 [workspace]
 members = ["crates/verlato", "crates/verlato-python"]
 resolver = "2"

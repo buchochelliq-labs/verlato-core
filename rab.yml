@@ -1,6 +1,6 @@
 # What Verlato releases, for rab (the Release Asset Bundle, installed under .github/rab/).
 # `python3 .github/rab/scripts/release.py check` validates this file against the manifests;
-# `python3 .github/rab/scripts/release.py tag` (on main) starts a release. See docs/RELEASING.md.
+# `python3 .github/rab/scripts/release.py tag` (on main) starts a release. See docs/technical/releasing.md.
 #
 # Both packages take their version from Cargo.toml's [workspace.package] version (the Python
 # package's pyproject.toml has `dynamic = ["version"]` with [tool.maturin] manifest-path).
