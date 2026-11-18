@@ -70,7 +70,7 @@
    "kind": "run",
    "returncode": 0,
    "stderr": "",
-   "stdout": "{\n  \"schema\": \"model_doctor.v1\",\n  \"provider\": \"ollama\",\n  \"model\": \"ollama:tiny\",\n  \"suggest_model\": \"tiny\",\n  \"effective_suggest_model\": \"tiny\",\n  \"ok\": true,\n  \"status\": \"ok\",\n  \"warnings\": [],\n  \"elapsed_ms\": 30,\n  \"prompt_chars\": 2209,\n  \"content_chars\": 82,\n  \"metadata\": {\n    \"total_duration\": 1000000000000,\n    \"load_duration\": 900000000000,\n    \"prompt_eval_count\": 50,\n    \"prompt_eval_duration\": 30000000,\n    \"eval_count\": 12,\n    \"eval_duration\": 40000000,\n    \"done_reason\": \"stop\",\n    \"base_model\": \"parity-model\",\n    \"suggest_model\": \"tiny\",\n    \"effective_model\": \"tiny\"\n  }\n}\n"
+   "stdout": "{\n  \"schema\": \"model_doctor.v1\",\n  \"provider\": \"ollama\",\n  \"model\": \"ollama:tiny\",\n  \"suggest_model\": \"tiny\",\n  \"effective_suggest_model\": \"tiny\",\n  \"ok\": true,\n  \"status\": \"ok\",\n  \"warnings\": [],\n  \"elapsed_ms\": 10,\n  \"prompt_chars\": 2209,\n  \"content_chars\": 82,\n  \"metadata\": {\n    \"total_duration\": 1000000000000,\n    \"load_duration\": 900000000000,\n    \"prompt_eval_count\": 50,\n    \"prompt_eval_duration\": 30000000,\n    \"eval_count\": 12,\n    \"eval_duration\": 40000000,\n    \"done_reason\": \"stop\",\n    \"base_model\": \"parity-model\",\n    \"suggest_model\": \"tiny\",\n    \"effective_model\": \"tiny\"\n  }\n}\n"
   }
  ]
 }

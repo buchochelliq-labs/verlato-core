@@ -233,7 +233,20 @@ def _run_process(cmd, **kwargs) -> subprocess.CompletedProcess:
 
 
 def _git(repo: Path, *args: str) -> None:
-    env = {**os.environ, "GIT_AUTHOR_DATE": _GIT_DATE, "GIT_COMMITTER_DATE": _GIT_DATE}
+    # Fixture commits must hash identically on every machine, because the goldens record their
+    # SHAs (and the item ids derived from them). Ignore the host's git configuration and identity
+    # variables, which CI runners set differently from a developer machine.
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env.update({
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_AUTHOR_NAME": "Tester",
+        "GIT_AUTHOR_EMAIL": "t@example.com",
+        "GIT_COMMITTER_NAME": "Tester",
+        "GIT_COMMITTER_EMAIL": "t@example.com",
+        "GIT_AUTHOR_DATE": _GIT_DATE,
+        "GIT_COMMITTER_DATE": _GIT_DATE,
+    })
     subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True, env=env)
 
 
@@ -1233,7 +1246,10 @@ def test_draft_suggest_batched_parallel_chunks_match(tmp_path: Path):
          "--strategy", "paired", "--parallelism", "2"),
     ):
         py_out, _ = _run_full(_python(*args), py_repo, env)
-        rs_out, _ = _run_full(_rust(*args), rs_repo, _native_only(env))
+        # The native run logs to its own file: parallel chunks append in completion order, which
+        # must not leak into the Python log the recording replays.
+        rs_env = {**env, "PARITY_LOG": env["PARITY_LOG"].replace("unused.jsonl", "unused-native.jsonl")}
+        rs_out, _ = _run_full(_rust(*args), rs_repo, _native_only(rs_env))
         assert _strip_timings(rs_out) == _strip_timings(py_out), args
 
 
