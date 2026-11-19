@@ -58,7 +58,7 @@ Tests, Build, Internal, Other.
 ```json
 {
   "engine": "intentumdiff",
-  "engine_version": "intentumdiff-core@7ae58e9237e0",
+  "engine_version": "intentumdiff-core@1c4bdbc5dfbe",
   "verdict": "additive",
   "complete": true,
   "files_reviewed": 1,

@@ -9,8 +9,9 @@ verlato doctor engine
 ```
 
 Reports whether the IntentumDiff engine is linked and its parser bundle found: `available`,
-`version`, `parser_bundle` (where it was found), the configured engine and the semantic cache
-path. `error` explains what is missing. The VS Code command **Verlato: Show IntentumDiff
+`version`, `parser_bundle` (where it was found), the configured engine, the semantic cache
+path and whether cross-file detection is on (`semantic_cross_file`). `error` explains what is
+missing. The VS Code command **Verlato: Show IntentumDiff
 Engine Status** runs it.
 
 ### `doctor ollama`
@@ -55,6 +56,19 @@ then `wasm/` next to the executable, `../share/verlato/wasm` and `../../wasm` re
 The pip package and the release bundles include it, so this usually means a source build:
 run `scripts/fetch_intentumdiff_parsers.sh`, or point `VERLATO_INTENTUMDIFF_WASM_DIR` at a
 bundle. To work without the engine, use `--diff-engine git` (or `VERLATO_DIFF_ENGINE=git`).
+
+### A file is "not semantically reviewed"
+
+The semantic evidence lists every file IntentumDiff could not review, with a kind and the
+engine's reason, and the changeset is then not reported as completely reviewed:
+
+| Kind | Meaning | What to do |
+|---|---|---|
+| `no_parser` | no bundled parser for the file type | nothing; the file still appears in path evidence |
+| `too_large` | the file exceeds the engine's size limits (about 10,000 lines) | raise `semantic_max_nodes` in `verlato.json` (or `VERLATO_SEMANTIC_MAX_NODES`), e.g. `200000` for about 20,000 lines; reviews get slower |
+| `incomplete` | the engine could not explain the whole change, so it is not a clean review | the reason carries the engine's message and a report link; please report it upstream |
+| `pipeline_error` | the engine failed on this file | the reason carries the error |
+| `root-commit` | the first commit has no parent to compare with | nothing |
 
 ### "Provide --base or one marker mode"
 

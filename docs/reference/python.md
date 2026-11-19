@@ -16,7 +16,7 @@ for section in draft["sections"]:
         print(section["title"], item["id"], item["status"], item["summary"])
 
 verlato.__version__        # "0.2.0"
-verlato.engine_version()   # "intentumdiff-core@7ae58e9237e0"
+verlato.engine_version()   # "intentumdiff-core@1c4bdbc5dfbe"
 verlato.parser_bundle()    # Path to the packaged parser bundle, or None
 ```
 
