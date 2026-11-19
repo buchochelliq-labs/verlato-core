@@ -1,4 +1,8 @@
-## 0.2.0 (2026-11-19)
+## 0.2.0-beta.1 (2026-11-19)
+
+The first release, published as a **pre-release** on every channel: PyPI `verlato-core` 0.2.0b1
+(`pip install --pre verlato-core`), GitHub Releases `v0.2.0-beta.1`, and the VS Code extension 0.2.0 as a
+Pre-Release on the Visual Studio Marketplace and Open VSX (it downloads the 0.2.0-beta.1 runtime).
 
 ### Changed
 - Verlato is now licensed under Apache-2.0 (previously MIT), and the repository is `buchochelliq-labs/verlato-core`.

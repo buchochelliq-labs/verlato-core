@@ -28,9 +28,14 @@ allow it.
 
 ## Install
 
+Verlato 0.2.0-beta.1 is a **pre-release**, so installers need to be told to accept it:
+
 ```sh
-pip install verlato-core         # CPython 3.12+; Linux, macOS, Windows
+pip install --pre verlato-core   # CPython 3.12+; Linux, macOS, Windows (PyPI: 0.2.0b1)
 ```
+
+The VS Code extension is on the Visual Studio Marketplace and Open VSX as a **Pre-Release**
+version: choose *Switch to Pre-Release Version* on its page (or *Install Pre-Release*).
 
 Or download a self-contained bundle (the `verlato` executable plus its parser bundle) for your
 platform from [GitHub Releases](https://github.com/buchochelliq-labs/verlato-core/releases), or

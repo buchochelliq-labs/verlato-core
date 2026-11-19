@@ -48,7 +48,15 @@ cd vscode-extension
 npm ci
 npm run build                     # TypeScript -> dist/
 npx @vscode/vsce package          # verlato-vscode-<version>.vsix (compiles first via vscode:prepublish)
-code --install-extension verlato-vscode-*.vsix --force
+```
+
+The release builds it with `scripts/package_extension.sh` (`npm ci`, `npm test`, then
+`vsce package --pre-release` while Verlato is a pre-release); run it the same way to reproduce the published
+file:
+
+```sh
+scripts/package_extension.sh          # writes dist/verlato-vscode-<version>.vsix
+code --install-extension dist/verlato-vscode-*.vsix --force
 ```
 
 For development, open the repository in VS Code and press **F5**: `.vscode/launch.json`

@@ -32,13 +32,16 @@ review are routed to **needs-review**.
   activity, and the tags, branches, commits and releases a range can start from.
 - **MCP:** start Verlato's MCP server for Copilot agent mode from the Control view.
 
+> **Pre-Release.** Verlato 0.2.0 is a pre-release (it runs Verlato 0.2.0-beta.1). Choose
+> *Install Pre-Release Version* on this page.
+
 ## Requirements
 
 Nothing else to install. The extension runs Verlato's native `verlato` program: when it finds
 none on `PATH`, it downloads the bundle for your platform (Linux x64/arm64, macOS, Windows x64)
 from the matching [GitHub release](https://github.com/buchochelliq-labs/verlato-core/releases),
 checks it against the release's `SHA256SUMS`, and keeps it in its storage. To manage it
-yourself, `pip install verlato-core` or set **`verlato.cliPath`**, and turn off
+yourself, `pip install --pre verlato-core` or set **`verlato.cliPath`**, and turn off
 `verlato.runtime.autoDownload`. Run **Verlato: Show IntentumDiff Engine Status** to check the
 installation, and **Verlato: Download Runtime** to download it again.
 
