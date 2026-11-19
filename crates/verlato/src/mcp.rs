@@ -235,8 +235,11 @@ impl Server {
             "verlato_service_health" => Ok(json!({"status": "ok", "version": VERSION})),
             "verlato_service_info" => {
                 let state = ctx.store().load()?;
-                let mut engine =
-                    crate::engine::engine_info(ctx.diff_engine(), &ctx.config.semantic_cache_path);
+                let mut engine = crate::engine::engine_info(
+                    ctx.diff_engine(),
+                    &ctx.config.semantic_cache_path,
+                    ctx.engine_options(),
+                );
                 // `configured` is the configuration's engine, before VERLATO_DIFF_ENGINE.
                 engine["configured"] = json!(ctx.config.diff_engine);
                 Ok(json!({

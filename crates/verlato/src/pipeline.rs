@@ -82,8 +82,16 @@ impl Context {
             &self.cwd,
             &self.config.semantic_cache_path,
             self.config.semantic_parallelism,
+            self.engine_options(),
         )
         .map(Some)
+    }
+
+    pub fn engine_options(&self) -> crate::engine::EngineOptions {
+        crate::engine::EngineOptions::resolve(
+            self.config.semantic_cross_file,
+            self.config.semantic_max_nodes,
+        )
     }
 
     /// The forge adapter `VERLATO_PR_ADAPTER` selects: a built-in (`standard-git`, `none`,

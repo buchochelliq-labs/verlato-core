@@ -21,7 +21,8 @@ strip = true
 
 # The IntentumDiff engine's build graph needs its first-party patched crates; patch sections
 # only apply at the consuming workspace root, so they are repeated here (mirrors
-# intentumdiff-core/crates/cli/Cargo.toml at the pinned revision).
+# intentumdiff-core/crates/cli/Cargo.toml at the pinned revision, except its `serde_core` patch:
+# that patch is for 1.0.228 and goes unused in the core's own build too, which resolves 1.0.229).
 [patch.crates-io]
-quote = { git = "https://github.com/buchochelliq-labs/intentumdiff-core", rev = "7ae58e9237e0be07ddf919b6d7a7cbc8a1333983" }
-zmij = { git = "https://github.com/buchochelliq-labs/intentumdiff-core", rev = "7ae58e9237e0be07ddf919b6d7a7cbc8a1333983" }
+quote = { git = "https://github.com/buchochelliq-labs/intentumdiff-core", rev = "1c4bdbc5dfbe6e738b3d70d8964e7f148d711821" }
+zmij = { git = "https://github.com/buchochelliq-labs/intentumdiff-core", rev = "1c4bdbc5dfbe6e738b3d70d8964e7f148d711821" }

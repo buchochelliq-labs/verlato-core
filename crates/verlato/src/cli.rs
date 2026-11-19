@@ -780,6 +780,7 @@ fn execute(cli: Cli) -> Result<i32> {
             json_out(&engine::engine_info(
                 ctx.diff_engine(),
                 &ctx.config.semantic_cache_path,
+                ctx.engine_options(),
             ))?;
         }
     }
