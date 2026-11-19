@@ -14,6 +14,8 @@ column).
 | `VERLATO_INTENTUMDIFF_WASM_DIR` (or `INTENTUMDIFF_WASM_DIR`) | the IntentumDiff parser bundle directory | |
 | `VERLATO_SEMANTIC_CACHE_PATH` | semantic review cache (default `.verlato_semantic_cache.json`) | |
 | `VERLATO_SEMANTIC_PARALLELISM` | threads for uncached commit reviews (default up to 4, at most 16) | `verlato.semanticParallelism` |
+| `VERLATO_SEMANTIC_CROSS_FILE` | `1`/`true` turns cross-file move/rename detection on, `0` off (overrides `semantic_cross_file`) | `verlato.semanticCrossFile` |
+| `VERLATO_SEMANTIC_MAX_NODES` | raised engine size limit in tree nodes (overrides `semantic_max_nodes`) | |
 | `VERLATO_PR_ADAPTER` | `standard-git` (default), `github` or `none` ([PR mapping](../guide/concepts.md#pull-request-mapping)) | |
 | `VERLATO_GITHUB_REPO` | `owner/repo` for the `github` PR adapter | |
 | `GITHUB_TOKEN` or `GH_TOKEN` | token for the `github` PR adapter and the GitHub Models provider | |
@@ -76,5 +78,5 @@ column).
 | `VERLATO_REDACT_MODEL_PAYLOADS` | `0` turns payload redaction off (on by default) | `verlato.telemetry.redactPayloads` |
 | `VERLATO_MODEL_LOG_PATH` | append JSONL model telemetry to this file | `verlato.telemetry.debugModelLogPath` |
 
-The extension also sets `VERLATO_SEMANTIC_CROSS_FILE` from `verlato.semanticCrossFile`;
-the native engine does not support cross-file move detection yet and ignores it.
+The extension always sets `VERLATO_SEMANTIC_CROSS_FILE` from `verlato.semanticCrossFile`, so in
+VS Code that setting decides, not `semantic_cross_file` in `verlato.json`.

@@ -4,12 +4,28 @@
 - Verlato is now licensed under Apache-2.0 (previously MIT), and the repository is `buchochelliq-labs/verlato-core`.
 - Verlato is now a native (Rust) program, with the IntentumDiff engine linked in-process. The Python
   implementation is retired; every command, the editor service and the MCP server run natively.
-- The `verlato` Python package is a thin wrapper over the native runtime (PyO3 bindings, abi3 wheels for
+- The Python package is published as `verlato-core` (`pip install verlato-core`; the command and the
+  module are still `verlato`). It is a thin wrapper over the native runtime (PyO3 bindings, abi3 wheels for
   CPython 3.12+). It ships the IntentumDiff parser bundle and has no runtime dependencies
   (`intentumdiff-python` and `fastmcp` are no longer needed).
 - Unknown commands are usage errors (exit code 2) instead of being handed to `verlato-py`.
+- IntentumDiff 0.0.3 (core `1c4bdbc5`, parser bundle from `intentumdiff-python` 0.0.3b1). Verlato
+  drops the workarounds for the engine gaps 0.0.3 fixed (core#297, #298, #299, #300, #301, #250):
+  - Signature changes come from the engine's `CHANGE_SIGNATURE`, so a new required parameter is now
+    detected; an appended optional parameter is still a compatible ("extended") change. A
+    signature change is behavioural, not a refactoring.
+  - A modified statement's semantic-diff edit carries the engine's own change text (`old -> new`)
+    instead of the `before`/`after` snippets Verlato sliced from the sources; added and deleted
+    nodes keep their source snippet. Moves inside a modified statement are left to the engine.
+  - A file whose review the engine reports as `incomplete` is recorded as unreviewed, never as a
+    clean review; a file over the size limits is recorded as `too_large` instead of `no_parser`.
 
 ### Added
+- Cross-file move/rename detection runs natively (`semantic_cross_file`, `VERLATO_SEMANTIC_CROSS_FILE`,
+  VS Code `verlato.semanticCrossFile`, which had no effect before). It is opt-in: it roughly doubles
+  review time.
+- `semantic_max_nodes` (`VERLATO_SEMANTIC_MAX_NODES`) raises the engine's size limit so very large
+  files are reviewed.
 - A documentation site (Zensical, `mkdocs.yml`, published to GitHub Pages): getting started, a user guide
   from the CLI to the VS Code extension, a reference (CLI, `verlato.json`, environment variables, service
   and MCP protocol, Python API, output formats) and a technical guide. The CLI reference is generated

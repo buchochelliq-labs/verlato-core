@@ -244,7 +244,7 @@ fn dispatch(cwd: &Path, method: &str, params: &Map<String, Value>) -> Result<Val
                 "status": "ok",
                 "version": env!("CARGO_PKG_VERSION"),
                 "runtime": "rust",
-                "diff_engine": crate::engine::engine_info(ctx.diff_engine(), &ctx.config.semantic_cache_path),
+                "diff_engine": crate::engine::engine_info(ctx.diff_engine(), &ctx.config.semantic_cache_path, ctx.engine_options()),
                 "state_path": ctx.config.state_path(),
                 "schema_version": state.schema_version,
                 "tracked_items": state.items.len(),

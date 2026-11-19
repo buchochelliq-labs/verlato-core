@@ -15,6 +15,14 @@ classes were added, removed, renamed or re-signatured. A commit called `wip` tha
 public function is flagged for review as a possible breaking change; a `feat:` commit that
 only reformats code is flagged as a contradiction.
 
+!!! note "Powered by IntentumDiff and your agent"
+
+    [IntentumDiff](https://github.com/buchochelliq-labs/intentumdiff-core)
+    ([documentation](https://buchochelliq-labs.github.io/intentumdiff-docs/)) supplies the
+    evidence: what each commit actually changed. Your agent supplies the words: Claude Code,
+    Codex, GitHub Copilot or any other [MCP client](guide/mcp.md), or a
+    [model of your choice](guide/models.md), local by default.
+
 ![The Verlato Control view in VS Code](assets/screenshots/vscode-control.png){ width="420" align="right" }
 
 You can use Verlato in three ways, all backed by the same native program:

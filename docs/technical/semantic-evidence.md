@@ -4,7 +4,9 @@ Verlato's change evidence comes from [IntentumDiff](https://github.com/buchochel
 a semantic diff engine that parses both sides of every changed file (with WebAssembly parsers
 for dozens of languages and file formats) and compares their structure rather than their
 text. Verlato links the engine in-process (`intentumdiff-rust-core`, pinned in `Cargo.toml`)
-and reviews every collected commit as `parent..sha`, each changed file in parallel.
+and reviews every collected commit as `parent..sha`, each changed file in parallel. The
+[IntentumDiff documentation](https://buchochelliq-labs.github.io/intentumdiff-docs/) describes
+the engine's change types, groups and supported languages in full.
 
 ## What a review gives Verlato
 
@@ -80,10 +82,10 @@ The [privacy mode](../guide/privacy.md) sets the detail level:
   only.
 - When the mode lets the provider see source content (`local-summary-then-ai` with a local
   model, or `trusted-provider-patch`), it also includes IntentumDiff's change descriptions
-  and, for meaningful edits, the changed statement before and after (at most 120 characters
-  each), for example
-  `` modification assignment start (was `start = page * per_page + 1`, now `start = page * per_page`) ``.
-  Moved sub-expressions inside a meaningful edit are folded into that edit.
+  (at most 160 characters each). A modified statement reads old -> new, for example
+  `modification assignment start [start = page * per_page + 1 -> start = page * per_page]`.
+  An added or deleted node carries its own source text (at most 120 characters), for example
+  `` addition function_definition handle (added `def handle(req): return req`) ``.
 - Raw patches are only sent with the legacy `git` engine.
 
 Prompt budgets and model request records report `evidence_source` and

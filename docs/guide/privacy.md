@@ -14,7 +14,8 @@ evidence tools.
 deterministic diff facts, and IntentumDiff's semantic diff with identifier names: which
 definitions changed, were added, removed, renamed, moved or refactored, and which edits were
 formatting only. **Source content** adds IntentumDiff's change descriptions, which can quote
-the changed statement before and after (bounded to 120 characters per change). With the
+a changed statement before and after (bounded to 160 characters per change), and the source
+text of added or deleted definitions (bounded to 120 characters). With the
 legacy `git` engine, source content means raw patch excerpts.
 
 Under `local-summary-then-ai`, source content goes only to local providers, and only if every

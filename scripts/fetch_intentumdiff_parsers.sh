@@ -14,8 +14,8 @@
 # on Linux, macOS and Windows (Git Bash).
 set -euo pipefail
 
-WHEEL_URL="https://files.pythonhosted.org/packages/c7/04/a9ae43b301e6aa759a57bba25accb3ddc27b6187c1cc2fcba5cb238bdd83/intentumdiff_python-0.0.2b2-py3-none-manylinux_2_39_x86_64.whl"
-WHEEL_SHA256="8bf9cf778a315e54b6c62fd00029c1c73c555d30fe8d39acd7a190e098dc0319"
+WHEEL_URL="https://files.pythonhosted.org/packages/92/d1/7978e6627015936e593c7a73ff60df3a53411c929f8f13ad130ba4775f08/intentumdiff_python-0.0.3b1-py3-none-manylinux_2_39_x86_64.whl"
+WHEEL_SHA256="42f473ae34dce6d78dfe19c86c3bf1c8967ba658b6059c8185b669df78ae34ec"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dest="${1:-$repo_root/target/release/wasm}"
@@ -23,7 +23,7 @@ python="$("$repo_root/scripts/find_python.sh")"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-echo "Downloading IntentumDiff 0.0.2b2 parser bundle..." >&2
+echo "Downloading IntentumDiff 0.0.3b1 parser bundle..." >&2
 curl -fsSL --retry 3 "$WHEEL_URL" -o "$work/intentumdiff.whl"
 
 "$python" - "$work/intentumdiff.whl" "$WHEEL_SHA256" "$dest" <<'PY'

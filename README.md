@@ -16,12 +16,20 @@ allow it.
 
 **Documentation: <https://buchochelliq-labs.github.io/verlato-core/>**
 
+> **Powered by [IntentumDiff](https://github.com/buchochelliq-labs/intentumdiff-core)
+> ([docs](https://buchochelliq-labs.github.io/intentumdiff-docs/)) and your agent.**
+> IntentumDiff supplies the evidence: what each commit actually changed. Your agent supplies
+> the words: Claude Code, Codex, GitHub Copilot or any other
+> [MCP client](https://buchochelliq-labs.github.io/verlato-core/guide/mcp/), or a
+> [model of your choice](https://buchochelliq-labs.github.io/verlato-core/guide/models/),
+> local by default.
+
 ![The Verlato Control view in VS Code, showing changesets with their semantic review](docs/assets/screenshots/vscode-control.png)
 
 ## Install
 
 ```sh
-pip install verlato              # CPython 3.12+; Linux, macOS, Windows
+pip install verlato-core         # CPython 3.12+; Linux, macOS, Windows
 ```
 
 Or download a self-contained bundle (the `verlato` executable plus its parser bundle) for your

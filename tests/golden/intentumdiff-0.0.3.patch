@@ -1,0 +1,299 @@
+diff --git a/verlato/core/semantic.py b/verlato/core/semantic.py
+index 97e14b0..3f902ec 100644
+--- a/verlato/core/semantic.py
++++ b/verlato/core/semantic.py
+@@ -315,9 +315,7 @@ def _render_edit(edit: dict[str, Any], *, detailed: bool) -> str:
+         text += f" {edit['old_name']} -> {edit['name']}"
+     elif edit.get("name"):
+         text += f" {edit['name']}"
+-    if detailed and edit.get("before") and edit.get("after"):
+-        text += f" (was `{edit['before']}`, now `{edit['after']}`)"
+-    elif detailed and edit.get("after"):
++    if detailed and edit.get("after"):
+         text += f" (added `{edit['after']}`)"
+     elif detailed and edit.get("before"):
+         text += f" (removed `{edit['before']}`)"
+@@ -406,6 +404,7 @@ def build_semantic_evidence(
+     renamed: list[str] = []
+     signatures: list[str] = []
+     extended: list[str] = []
++    signature_files: list[str] = []
+     refactorings: list[str] = []
+     cross_file: list[dict[str, Any]] = []
+     guardrails: list[dict[str, str]] = []
+@@ -447,8 +446,10 @@ def build_semantic_evidence(
+                     _append_unique(renamed, f"{symbol.old_name or '?'} -> {symbol.name} in {symbol.file}")
+                 elif symbol.change == "signature":
+                     _append_unique(signatures, label)
++                    _append_unique(signature_files, file.path)
+                 elif symbol.change == "extended":
+                     _append_unique(extended, label)
++                    _append_unique(signature_files, file.path)
+             for kind in file.refactorings:
+                 _append_unique(refactorings, kind)
+             for violation in file.guardrails:
+@@ -470,9 +471,11 @@ def build_semantic_evidence(
+     # A definition with an incompatible signature change anywhere in the group is not "extended".
+     extended = [entry for entry in extended if entry not in signatures]
+ 
+-    meaningful_files = sorted(path for path, count in file_meaningful.items() if count > 0)
++    meaningful_files = sorted(path for path, count in file_meaningful.items() if count > 0 or path in signature_files)
+     refactor_only_files = sorted(
+-        path for path in reviewed if file_meaningful.get(path, 0) == 0 and file_structural.get(path, 0) > 0
++        path
++        for path in reviewed
++        if file_meaningful.get(path, 0) == 0 and file_structural.get(path, 0) > 0 and path not in signature_files
+     )
+     style_only_files = sorted(
+         path
+@@ -486,6 +489,7 @@ def build_semantic_evidence(
+         meaningful_types=meaningful_types,
+         removed=removed,
+         signatures=signatures,
++        extended=bool(extended),
+     )
+     languages = sorted({file.language for file in reviewed.values() if file.language})
+     evidence = SemanticEvidence(
+@@ -525,9 +529,14 @@ def _verdict(
+     meaningful_types: dict[str, int],
+     removed: list[str],
+     signatures: list[str],
++    extended: bool = False,
+ ) -> str:
+     if reviewed == 0:
+         return "unreviewed"
++    if meaningful == 0 and signatures:
++        return "behavioral"
++    if meaningful == 0 and extended:
++        return "additive"
+     if meaningful == 0 and structural == 0:
+         return "style-only"
+     if meaningful == 0:
+@@ -819,6 +828,78 @@ def _is_moved_within_meaningful(group_changes: list[Any], old_spans: list[_Span]
+     return True
+ 
+ 
++MAX_PARAMETER_SCAN_CHARS = 4000
++
++
++def _parameter_list(definition: str) -> list[str] | None:
++    open_at = definition.find("(")
++    if open_at < 0:
++        return None
++    pieces: list[str] = []
++    current: list[str] = []
++    depth = 0
++    quote: str | None = None
++    for ch in definition[open_at + 1 :][:MAX_PARAMETER_SCAN_CHARS]:
++        if quote:
++            current.append(ch)
++            if ch == quote:
++                quote = None
++            continue
++        if ch in "\"'`":
++            quote = ch
++        elif ch in "([{<":
++            depth += 1
++        elif ch in ")]}" and depth == 0:
++            pieces.append("".join(current))
++            return [" ".join(piece.split()) for piece in pieces if piece.split()]
++        elif ch in ")]}>":
++            depth = max(0, depth - 1)
++        elif ch == "," and depth == 0:
++            pieces.append("".join(current))
++            current = []
++            continue
++        current.append(ch)
++    return None
++
++
++def _is_omittable_parameter(parameter: str) -> bool:
++    name = re.split(r"[:=]", parameter, maxsplit=1)[0].strip()
++    return parameter.startswith("*") or parameter.startswith("...") or name.endswith("?") or "=" in parameter
++
++
++def _signature_change_kind(old: Any, new: Any, old_content: Any, new_content: Any) -> str:
++    """Classify an engine CHANGE_SIGNATURE (core #297); mirrors the native runtime."""
++
++    def facts(node: Any, key: str) -> int | None:
++        value = getattr(getattr(node, "facts", None), key, None)
++        return value if isinstance(value, int) else None
++
++    old_count, old_defaults = facts(old, "param_count"), facts(old, "default_count")
++    new_count, new_defaults = facts(new, "param_count"), facts(new, "default_count")
++    if old_count is None or old_defaults is None or new_count is None or new_defaults is None:
++        return "signature"
++    old_required, new_required = old_count - old_defaults, new_count - new_defaults
++    if new_count <= old_count:
++        return "signature"
++    old_lines, new_lines = _source_lines(old_content), _source_lines(new_content)
++    if old_lines is None or new_lines is None:
++        return "signature"
++    old_text = _node_source(old, old_lines, limit=None)
++    new_text = _node_source(new, new_lines, limit=None)
++    old_params = _parameter_list(old_text) if old_text else None
++    new_params = _parameter_list(new_text) if new_text else None
++    if old_params is None or new_params is None:
++        return "signature"
++    added = new_params[len(old_params) :]
++    appended = (
++        len(new_params) > len(old_params)
++        and new_params[: len(old_params)] == old_params
++        and all(_is_omittable_parameter(p) for p in added)
++    )
++    added_variadic = sum(1 for p in added if p.startswith("*") or p.startswith("..."))
++    return "extended" if appended and new_required - added_variadic <= old_required else "signature"
++
++
+ def semantic_diff_entries(
+     changes: list[Any],
+     groups: list[Any],
+@@ -837,25 +918,13 @@ def semantic_diff_entries(
+     only, and moved sub-expressions inside a meaningful edit are folded into that edit.
+     """
+ 
+-    old_lines = _source_lines(old_content)
+-    new_lines = _source_lines(new_content)
+-    old_spans: list[_Span] = []
+-    new_spans: list[_Span] = []
+-    for group in groups:
+-        if SEMANTIC_DIFF_GROUPS.get(_enum_value(getattr(group, "kind", ""))) != "meaningful":
+-            continue
+-        for change in _group_changes(group, changes):
+-            for span, spans in ((_node_span(getattr(change, "old_node", None)), old_spans),
+-                                (_node_span(getattr(change, "new_node", None)), new_spans)):
+-                if span is not None:
+-                    spans.append(span)
++    old_lines, new_lines = _source_lines(old_content), _source_lines(new_content)
++
+     entries: list[dict[str, Any]] = []
+     for group in groups:
+         group_name = SEMANTIC_DIFF_GROUPS.get(_enum_value(getattr(group, "kind", "")))
+         if group_name is None:
+             continue
+-        if group_name == "moved" and _is_moved_within_meaningful(_group_changes(group, changes), old_spans, new_spans):
+-            continue
+         labels = list(getattr(group, "new_labels", None) or getattr(group, "old_labels", None) or [])
+         old_labels = list(getattr(group, "old_labels", None) or [])
+         edits: list[dict[str, Any]] = []
+@@ -876,14 +945,14 @@ def semantic_diff_entries(
+                 old_name = _node_identifier(old_node)
+                 if old_name and old_name != edit["name"]:
+                     edit["old_name"] = old_name
++            # IntentumDiff describes a modified statement as `old -> new` (core #300), but an
++            # added or deleted definition only by its kind and name: attach its source text.
+             if group_name == "meaningful":
+-                before = _node_source(old_node, old_lines)
+-                after = _node_source(new_node, new_lines)
+-                if before != after:
+-                    if before:
+-                        edit["before"] = before
+-                    if after:
+-                        edit["after"] = after
++                change_type = _enum_value(getattr(change, "change_type", ""))
++                if change_type == "ADDITION" and (after := _node_source(new_node, new_lines)):
++                    edit["after"] = after
++                elif change_type == "DELETION" and (before := _node_source(old_node, old_lines)):
++                    edit["before"] = before
+             edits.append(edit)
+             if len(edits) >= MAX_SEMANTIC_EDITS_PER_ENTRY:
+                 break
+@@ -936,7 +1005,6 @@ def digest_file_diff(
+ 
+     changes = list(getattr(file_diff, "changes", []) or [])
+     groups = list(getattr(file_diff, "change_groups", []) or [])
+-    new_lines = _source_lines(new_content)
+     group_counts: dict[str, int] = {}
+     meaningful_types: dict[str, int] = {}
+     refactorings: list[str] = []
+@@ -958,31 +1026,11 @@ def digest_file_diff(
+             _append_unique(refactorings, group_refactoring)
+         if kind != "MEANINGFUL_CHANGE":
+             continue
+-        signature_symbol: str | None = None
+-        compatible_signature = True
+-        added_optional: list[Any] = []
+         for index in getattr(group, "raw_change_indices", []) or []:
+             if not isinstance(index, int) or not 0 <= index < len(changes):
+                 continue
+-            change = changes[index]
+-            change_type = _enum_value(getattr(change, "change_type", ""))
++            change_type = _enum_value(getattr(changes[index], "change_type", ""))
+             meaningful_types[change_type] = meaningful_types.get(change_type, 0) + 1
+-            node = getattr(change, "new_node", None) or getattr(change, "old_node", None)
+-            if _looks_like_parameter(node):
+-                labels = list(getattr(group, "new_labels", []) or getattr(group, "old_labels", []) or [])
+-                if labels and labels[0]:
+-                    signature_symbol = str(labels[0])
+-                if change_type != "ADDITION" or not _is_optional_parameter(node):
+-                    compatible_signature = False
+-                else:
+-                    added_optional.append(node)
+-        if signature_symbol and compatible_signature:
+-            # A defaulted parameter inserted before an existing positional one rebinds
+-            # positional calls: only appended optional parameters are compatible.
+-            compatible_signature = _appends_optional_parameters(added_optional, new_lines)
+-        if signature_symbol:
+-            add_symbol(SymbolChange(name=signature_symbol, change="extended" if compatible_signature else "signature",
+-                                    file=path))
+ 
+     if not groups and changes:
+         # Whole-file additions/deletions (and some fallback diffs) carry raw changes without
+@@ -1016,20 +1064,9 @@ def digest_file_diff(
+                                         file=path, node_type=str(new_node.node_type),
+                                         refactoring_kind=refactoring_kind))
+         elif refactoring_kind == "CHANGE_SIGNATURE" and _is_definition(new_node):
+-            add_symbol(SymbolChange(name=_node_name(new_node), change="signature", file=path,
++            kind = _signature_change_kind(old_node, new_node, old_content, new_content)
++            add_symbol(SymbolChange(name=_node_name(new_node), change=kind, file=path,
+                                     node_type=str(new_node.node_type), refactoring_kind=refactoring_kind))
+-        elif (
+-            change_type == "MODIFICATION"
+-            and _is_definition(old_node)
+-            and _is_definition(new_node)
+-            and old_node.facts.param_count is not None
+-            and new_node.facts.param_count is not None
+-            and old_node.facts.param_count != new_node.facts.param_count
+-        ):
+-            # Counts alone can't show where parameters were added, so this stays a signature
+-            # change (see the parameter-group path above for appended optional parameters).
+-            add_symbol(SymbolChange(name=_node_name(new_node), change="signature", file=path,
+-                                    node_type=str(new_node.node_type)))
+ 
+     guardrails = [
+         {
+@@ -1351,13 +1388,19 @@ def review_commit(
+                 digest.unreviewed.append(
+                     UnreviewedFile(
+                         path=str(getattr(result, "new_path", "") or getattr(result, "old_path", "")),
+-                        kind=str(getattr(result, "kind", "pipeline_error")),
++                        kind=_unreviewed_kind(result),
+                         reason=str(getattr(result, "reason", ""))[:MAX_REASON_CHARS],
+                     )
+                 )
+                 continue
+             new_path = str(getattr(result, "new_path", "") or getattr(file_diff, "new_filename", ""))
+             old_path = str(getattr(result, "old_path", "") or getattr(file_diff, "old_filename", new_path))
++            if getattr(file_diff, "completeness", None) == "incomplete":
++                incomplete = getattr(file_diff, "incomplete", None)
++                message = str(getattr(incomplete, "message", "") or "IntentumDiff could not explain this change")
++                digest.unreviewed.append(UnreviewedFile(path=new_path or old_path, kind="incomplete",
++                                                        reason=message[:MAX_REASON_CHARS]))
++                continue
+             digest.files.append(
+                 digest_file_diff(
+                     file_diff,
+@@ -1381,6 +1424,13 @@ def review_commit(
+     return digest
+ 
+ 
++def _unreviewed_kind(result: Any) -> str:
++    reason = str(getattr(result, "reason", ""))
++    if "too large" in reason or "limit is" in reason:
++        return "too_large"
++    return str(getattr(result, "kind", "pipeline_error"))
++
++
+ _INDEX_FAILURE = re.compile(r"index incomplete for '([^']+)'")
+ MAX_CROSS_FILE_EXCLUSIONS = 3
+ 

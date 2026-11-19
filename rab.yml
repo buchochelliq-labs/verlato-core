@@ -8,7 +8,7 @@
 # build time by scripts/fetch_intentumdiff_parsers.sh (the bundle's single pinned source).
 
 release:
-  name_from: verlato
+  name_from: verlato-core
   branch: main
 
 packages:
@@ -49,9 +49,9 @@ packages:
         outputs: "target/verlato-bundle/verlato-v*.zip"
         test: scripts/test_native_bundle.sh
 
-  # The `verlato` Python package: abi3 wheels (one per platform, CPython 3.12+) carrying the
+  # The `verlato-core` Python package (command and module `verlato`): abi3 wheels (one per platform, CPython 3.12+) carrying the
   # native extension and the parser bundle, plus the sdist.
-  - name: verlato
+  - name: verlato-core
     registry: pypi
     manifest: pyproject.toml
     version: "0.2.0"

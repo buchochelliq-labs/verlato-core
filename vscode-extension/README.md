@@ -10,6 +10,12 @@ formatting only, and which symbols were added, removed, renamed or re-signatured
 with possible API breaks, protected-config changes, or commit messages that contradict the
 review are routed to **needs-review**.
 
+> **Powered by [IntentumDiff](https://github.com/buchochelliq-labs/intentumdiff-core)
+> ([docs](https://buchochelliq-labs.github.io/intentumdiff-docs/)) and your agent.**
+> IntentumDiff supplies the evidence; your agent supplies the words. Use Claude Code, Codex
+> or GitHub Copilot through Verlato's MCP server, or a model of your choice, local by
+> default.
+
 ![A changeset with its semantic review in the Control view](media/semantic-review.png)
 
 ## Features
@@ -28,7 +34,7 @@ review are routed to **needs-review**.
 
 ## Requirements
 
-The extension runs the `verlato` program. Install it with `pip install verlato`, or download
+The extension runs the `verlato` program. Install it with `pip install verlato-core`, or download
 a release bundle from [GitHub Releases](https://github.com/buchochelliq-labs/verlato-core/releases)
 and set **`verlato.cliPath`** to its `verlato` executable. Run **Verlato: Show IntentumDiff
 Engine Status** to check the installation.

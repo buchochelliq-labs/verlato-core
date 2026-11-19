@@ -121,7 +121,7 @@ cache keys legitimately differ between the runtimes there; the suite masks only 
 
 ## The Python package
 
-The `verlato` PyPI package (`pyproject.toml`, built with maturin) holds:
+The `verlato-core` PyPI package (`pyproject.toml`, built with maturin; it installs the `verlato` command and module) holds:
 
 - **`verlato._native`** (`crates/verlato-python`): a PyO3 extension module, built for the stable
   ABI (`abi3-py312`: one wheel per platform for CPython 3.12+). It exposes `run(argv)`, which
@@ -168,9 +168,10 @@ scripts/fetch_intentumdiff_parsers.sh python/verlato/wasm   # for the Python pac
 ```
 
 The script is the bundle's single pinned source. It extracts the components from the
-checksum-pinned `intentumdiff-python` 0.0.2b2 wheel on PyPI (the components are platform
+checksum-pinned `intentumdiff-python` 0.0.3b1 wheel on PyPI (the components are platform
 independent), checks that every component the manifest names is present, and checks each
-against a SHA-256 recorded in the manifest when there is one (0.0.2b2's manifest records none).
+against a SHA-256 recorded in the manifest when there is one (0.0.3b1's manifest records none).
+The wheel is built from `intentumdiff-core` `1c4bdbc5`, the revision `Cargo.toml` pins.
 **The pin must move together with the `intentumdiff-core` revision in `Cargo.toml`**: the
 parsers are built for that engine. When IntentumDiff publishes native releases with a standalone
 parser bundle, the script should switch to that artifact.
@@ -197,26 +198,40 @@ Known, intentional differences:
   Both parse to the same values.
 - `health`/`info` service responses add `"runtime": "rust"` (and `info` reports the parser
   bundle).
-- Cross-file move detection (`semantic_cross_file`) is not available natively yet; it is
-  opt-in and off by default in Python as well.
+- Cross-file move detection (`semantic_cross_file`) runs natively through the engine's commit
+  index (since IntentumDiff 0.0.3); it is opt-in and off by default, as in Python, and the
+  parity scenarios leave it off.
 
 A changelog re-apply bug found while porting (re-applying a version left that version's old
 subsections behind) was fixed in both implementations.
 
 ## Upstream IntentumDiff issues
 
-Engine gaps found while building on IntentumDiff, with the workaround Verlato carries until each
-is fixed (both runtimes implement the same workaround):
+Engine gaps found while building on IntentumDiff. IntentumDiff 0.0.3 (core `1c4bdbc5`) fixed all
+of them, and Verlato dropped the workarounds it carried. Both runtimes were changed the same
+way before the goldens were re-recorded.
+
+| Issue | Gap | Status in Verlato |
+|---|---|---|
+| [core#297](https://github.com/buchochelliq-labs/intentumdiff-core/issues/297) | No definition-level signature change; a new required parameter was only an `identifier` addition | **Removed.** Signatures come from the engine's `REFACTORING`/`CHANGE_SIGNATURE` change. Its definition facts (`param_count`, `default_count`) decide whether the required-parameter count grew. A change is `extended` (compatible) only when the old parameter list is an exact prefix of the new one and every new parameter can be omitted, a check made on the definition's source text. Signature changes are behavioural, not refactorings, even though the engine files them under `REFACTORING`. |
+| [core#298](https://github.com/buchochelliq-labs/intentumdiff-core/issues/298) | One file over the fuel budget failed cross-file analysis for the whole commit | **Removed.** The engine's commit index skips files it can't index and reports them in `index_errors`; Verlato records them as `excluded from cross-file index: …`. |
+| [core#299](https://github.com/buchochelliq-labs/intentumdiff-core/issues/299) | Spurious `MOVED_CODE` for the surviving sub-expression of a modified statement | **Removed** (the move folding). The engine folds the sub-expression into the modification. |
+| [core#300](https://github.com/buchochelliq-labs/intentumdiff-core/issues/300) | Change descriptions didn't say what changed (`text_diff` empty) | **Removed for modifications.** A modified statement carries the engine's bounded `old -> new` text instead of Verlato's `before`/`after` snippets. **Kept for added and deleted definitions:** the engine still describes those only by kind and name (`Insert -> function_definition('handle')`), so their bounded source text stays (`after` for an addition, `before` for a deletion). |
+| [core#301](https://github.com/buchochelliq-labs/intentumdiff-core/issues/301) | Files over ~10k lines failed fixed size limits | **Fixed upstream as configurable limits.** A file over the limits is recorded as unreviewed with kind `too_large`; `semantic_max_nodes` raises the limits. |
+| [core#250](https://github.com/buchochelliq-labs/intentumdiff-core/issues/250) | Spurious `module` pseudo-moves from duplicate names | **Fixed upstream.** The remaining part, the synthetic `module.` prefix on top-level names and root modules taking part in move matching, moved to [core#311](https://github.com/buchochelliq-labs/intentumdiff-core/issues/311) (0.0.4): Verlato strips the prefix and drops `module`-kind entries until then. |
+| [python#332](https://github.com/buchochelliq-labs/intentumdiff-python/issues/332) | `finalize_commit_diff` crashed on `FileDiffError` results | **Not applicable.** The native engine calls the core's commit index directly. |
+
+Gaps found while upgrading to 0.0.3, filed for 0.0.4:
 
 | Issue | Gap | Verlato workaround |
 |---|---|---|
-| [core#297](https://github.com/buchochelliq-labs/intentumdiff-core/issues/297) | No definition-level signature change; a new required parameter is only an `identifier` addition | Infers "extended" (compatible) signatures from `default_parameter`/`optional_parameter` additions; required-parameter additions go undetected |
-| [core#298](https://github.com/buchochelliq-labs/intentumdiff-core/issues/298) | One file over the fuel budget fails cross-file analysis for the whole commit | Parses the failing path from the error, excludes it and retries (`_attach_cross_file`); cross-file stays opt-in |
-| [core#299](https://github.com/buchochelliq-labs/intentumdiff-core/issues/299) | Spurious `MOVED_CODE` for the surviving sub-expression of a modified statement | Folds moves inside meaningful-edit spans (`_is_moved_within_meaningful`) |
-| [core#300](https://github.com/buchochelliq-labs/intentumdiff-core/issues/300) | Change descriptions don't say what changed (`text_diff` empty) | Slices bounded before/after snippets from the file contents (`_node_source`) |
-| [core#301](https://github.com/buchochelliq-labs/intentumdiff-core/issues/301) | Files over ~10k lines fail the fixed 16 MiB output/tree limits | Recorded as unreviewed with the engine's reason |
-| [core#250](https://github.com/buchochelliq-labs/intentumdiff-core/issues/250) (comment) | Spurious `module` pseudo-moves and a `module.` prefix on real moves | Cross-file stays opt-in |
-| [python#332](https://github.com/buchochelliq-labs/intentumdiff-python/issues/332) | `finalize_commit_diff` crashes on `FileDiffError` results | Only diffed results are passed to cross-file analysis |
+| [core#330](https://github.com/buchochelliq-labs/intentumdiff-core/issues/330) | Added and deleted definitions are described only by kind and name, with no source text | Keeps its bounded `before`/`after` snippets for added and deleted definitions |
+| [core#331](https://github.com/buchochelliq-labs/intentumdiff-core/issues/331) | `api::review_sources` returns size-limit failures as a plain `ReviewError::Engine` | Recognises them by message text to record `too_large` and point at `semantic_max_nodes` |
+| [core#332](https://github.com/buchochelliq-labs/intentumdiff-core/issues/332) | `CHANGE_SIGNATURE`'s `fact_delta` reports only `param_count`, and `param_count` counts Python's bare `*` | Reads the parameter list from source to decide whether a change is `extended`. A bare `*` is handled like other `*` entries, so the inflated count cancels out |
+
+IntentumDiff 0.0.3 also reports whether a review explains the whole change (core #252). A file
+whose review is `incomplete` is recorded as unreviewed (kind `incomplete`) with the engine's
+message, never as a clean review.
 
 ## LLM evidence
 

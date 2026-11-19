@@ -20,6 +20,11 @@ pub struct Config {
     pub diff_engine: String,
     pub semantic_cache_path: String,
     pub semantic_parallelism: Option<usize>,
+    /// Commit-wide cross-file move/rename detection (`semantic_cross_file`).
+    pub semantic_cross_file: bool,
+    /// Raised engine size limit for very large files (`semantic_max_nodes`); `None` keeps the
+    /// engine defaults.
+    pub semantic_max_nodes: Option<usize>,
     pub commit_intent_inference: String,
     pub provider_name: String,
     pub max_items_per_scan: i64,
@@ -50,6 +55,8 @@ impl Default for Config {
             diff_engine: DEFAULT_DIFF_ENGINE.into(),
             semantic_cache_path: DEFAULT_SEMANTIC_CACHE_PATH.into(),
             semantic_parallelism: None,
+            semantic_cross_file: false,
+            semantic_max_nodes: None,
             commit_intent_inference: "off".into(),
             provider_name: "ollama".into(),
             max_items_per_scan: 25,
@@ -91,6 +98,12 @@ pub fn load(cwd: &Path) -> Result<Config> {
     }
     if let Some(v) = raw.get("semantic_parallelism").and_then(Value::as_u64) {
         config.semantic_parallelism = Some(v as usize);
+    }
+    if let Some(v) = raw.get("semantic_cross_file").and_then(Value::as_bool) {
+        config.semantic_cross_file = v;
+    }
+    if let Some(v) = raw.get("semantic_max_nodes").and_then(Value::as_u64) {
+        config.semantic_max_nodes = (v > 0).then_some(v as usize);
     }
     if let Some(v) = str_of("commit_intent_inference") {
         let v = v.trim().to_lowercase();

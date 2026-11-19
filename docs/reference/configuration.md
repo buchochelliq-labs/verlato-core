@@ -28,6 +28,8 @@ both. A complete example is [`verlato.sample.json`](https://github.com/buchochel
 | `diff_engine` | `intentumdiff` | `intentumdiff` (semantic review) or `git` (legacy text patches) |
 | `semantic_cache_path` | `.verlato_semantic_cache.json` | per-commit semantic review cache |
 | `semantic_parallelism` | up to 4 | threads for reviewing uncached commits |
+| `semantic_cross_file` | `false` | detect symbols moved or renamed between files (commit-wide; roughly doubles review time) |
+| `semantic_max_nodes` | engine default (100,000) | raise the engine's size limit, in tree nodes, so very large files (over about 10,000 lines) are reviewed instead of reported as `too_large` |
 | `commit_intent_inference` | `off` | `low-signal` infers Conventional Commit intent for vague commits ([details](../guide/models.md#commit-intent-inference)) |
 | `feedback_include_text` | `false` | keep accepted and edited summary text in feedback events |
 

@@ -10,7 +10,7 @@ program as the command line, so everything it does can also be scripted.
 ## Install
 
 1. **Install Verlato itself**, one of:
-    - `pip install verlato` (the `verlato` command lands on `PATH`);
+    - `pip install verlato-core` (the `verlato` command lands on `PATH`);
     - unpack a [release bundle](../getting-started.md#from-a-release-bundle), then set
       **`verlato.cliPath`** to its `verlato` executable (or put its directory on `PATH`).
 2. **Install the extension**: from a `.vsix` file with *Extensions: Install from VSIX...*, or
@@ -146,7 +146,7 @@ All settings are under **Verlato** in the Settings editor. The extension passes 
 | `verlato.serviceMode` | `auto` | `auto` uses the long-running `verlato service` for core flows; `cli` runs one command per action |
 | `verlato.diffEngine` | `intentumdiff` | `intentumdiff` or `git` evidence |
 | `verlato.semanticParallelism` | `0` | worker threads for uncached commit reviews (0 = automatic: up to 4) |
-| `verlato.semanticCrossFile` | `false` | cross-file move/rename detection; not supported by the native engine yet, so it has no effect |
+| `verlato.semanticCrossFile` | `false` | detect symbols moved or renamed between files; roughly doubles review time |
 | `verlato.modelProvider` | `ollama` | provider, or `configured` to use `verlato.json` and the environment |
 | `verlato.ollamaModel` | `gemma4:latest` | Ollama model |
 | `verlato.ollamaSuggestionModel` | (empty) | a smaller Ollama model for suggestions only |

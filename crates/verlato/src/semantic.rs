@@ -29,7 +29,7 @@ pub const GROUP_KINDS: &[&str] = &[
 ];
 const MAX_SYMBOLS_PER_FILE: usize = 24;
 const MAX_EVIDENCE_SYMBOLS: usize = 12;
-const MAX_CROSS_FILE: usize = 12;
+pub const MAX_CROSS_FILE: usize = 12;
 pub const MAX_REASON_CHARS: usize = 240;
 
 pub fn normalize_diff_engine(value: &str) -> &'static str {
@@ -203,16 +203,6 @@ fn param_count(node: Option<&Value>) -> Option<i64> {
     node?.get("facts")?.get("param_count")?.as_i64()
 }
 
-/// Parameter nodes that carry a default or are declared optional (ports
-/// `_is_optional_parameter`).
-fn is_optional_parameter(node: Option<&Value>) -> bool {
-    let node_type = node
-        .map(|n| str_field(n, "node_type").to_lowercase())
-        .unwrap_or_default();
-    node_type.contains("parameter")
-        && (node_type.contains("default") || node_type.contains("optional"))
-}
-
 fn change_type_group(change_type: &str) -> &'static str {
     match change_type {
         "MOVE" | "MOVE_TO_MODULE" => "MOVED_CODE",
@@ -246,7 +236,6 @@ pub fn digest_file_diff(
         .get("change_groups")
         .and_then(Value::as_array)
         .unwrap_or(&empty);
-    let new_lines = sources.map(|(_, new)| source_lines(new));
     let mut group_counts: BTreeMap<String, u64> = BTreeMap::new();
     let mut meaningful_types: BTreeMap<String, u64> = BTreeMap::new();
     let mut refactorings: Vec<String> = Vec::new();
@@ -281,71 +270,16 @@ pub fn digest_file_diff(
         if kind != "MEANINGFUL_CHANGE" {
             continue;
         }
-        let mut signature_symbol: Option<String> = None;
-        let mut compatible_signature = true;
-        let mut added_optional: Vec<&Value> = Vec::new();
         for index in group
             .get("raw_change_indices")
             .and_then(Value::as_array)
             .unwrap_or(&empty)
         {
-            let Some(change) = index.as_u64().and_then(|i| changes.get(i as usize)) else {
-                continue;
-            };
-            *meaningful_types
-                .entry(str_field(change, "change_type").to_owned())
-                .or_default() += 1;
-            let node = change
-                .get("new_node")
-                .filter(|n| n.is_object())
-                .or_else(|| change.get("old_node"));
-            if node.is_some_and(|n| {
-                str_field(n, "node_type")
-                    .to_lowercase()
-                    .contains("parameter")
-            }) {
-                let labels = group
-                    .get("new_labels")
-                    .and_then(Value::as_array)
-                    .filter(|l| !l.is_empty())
-                    .or_else(|| group.get("old_labels").and_then(Value::as_array));
-                if let Some(first) = labels
-                    .and_then(|l| l.first())
-                    .and_then(Value::as_str)
-                    .filter(|s| !s.is_empty())
-                {
-                    signature_symbol = Some(first.to_owned());
-                }
-                if str_field(change, "change_type") != "ADDITION" || !is_optional_parameter(node) {
-                    compatible_signature = false;
-                } else if let Some(node) = node {
-                    added_optional.push(node);
-                }
+            if let Some(change) = index.as_u64().and_then(|i| changes.get(i as usize)) {
+                *meaningful_types
+                    .entry(str_field(change, "change_type").to_owned())
+                    .or_default() += 1;
             }
-        }
-        if signature_symbol.is_some() && compatible_signature {
-            // A defaulted parameter inserted before an existing positional one rebinds
-            // positional calls: only appended optional parameters are compatible.
-            compatible_signature =
-                appends_optional_parameters(&added_optional, new_lines.as_deref());
-        }
-        if let Some(name) = signature_symbol {
-            add_symbol(
-                SymbolChange {
-                    name,
-                    change: if compatible_signature {
-                        "extended"
-                    } else {
-                        "signature"
-                    }
-                    .into(),
-                    file: path.into(),
-                    node_type: String::new(),
-                    old_name: None,
-                    refactoring_kind: None,
-                },
-                &mut symbols,
-            );
         }
     }
 
@@ -410,28 +344,13 @@ pub fn digest_file_diff(
             add_symbol(
                 symbol(
                     node_name(node),
-                    "signature",
+                    signature_change_kind(old_node, new_node, sources),
                     node,
                     None,
                     Some(refactoring_kind.into()),
                 ),
                 &mut symbols,
             );
-        } else if change_type == "MODIFICATION"
-            && is_definition(old_node)
-            && is_definition(new_node)
-        {
-            if let (Some(old), Some(new)) = (param_count(old_node), param_count(new_node)) {
-                if old != new {
-                    // Counts alone can't show where parameters were added, so this stays a
-                    // signature change (the parameter-group path detects appended ones).
-                    let node = new_node.unwrap();
-                    add_symbol(
-                        symbol(node_name(node), "signature", node, None, None),
-                        &mut symbols,
-                    );
-                }
-            }
         }
     }
 
@@ -512,10 +431,35 @@ pub fn digest_file_diff(
     }
 }
 
+/// A commit-index cross-file change in Verlato's digest shape (the fields the retired Python
+/// implementation recorded). File-root `module` definitions are not symbols: core 0.0.3 still
+/// pairs them across files and prefixes top-level names with `module.` (core #311).
+pub fn digest_cross_file_change(change: &Value) -> Option<Value> {
+    let kind = str_field(change, "symbol_kind");
+    let kind = if kind.is_empty() {
+        str_field(change, "node_type")
+    } else {
+        kind
+    };
+    if kind == "module" {
+        return None;
+    }
+    let name = str_field(change, "symbol_name");
+    let name = name.strip_prefix("module.").unwrap_or(name);
+    Some(json!({
+        "change_type": str_field(change, "change_type"),
+        "symbol_name": name,
+        "symbol_kind": kind,
+        "old_file": str_field(change, "old_file"),
+        "new_file": str_field(change, "new_file"),
+        "confidence": change.get("confidence").and_then(Value::as_f64).unwrap_or(0.0),
+    }))
+}
+
 const MAX_SEMANTIC_ENTRIES_PER_FILE: usize = 40;
 const MAX_SEMANTIC_EDITS_PER_ENTRY: usize = 4;
 const MAX_SEMANTIC_DETAIL_CHARS: usize = 160;
-/// Source text of a meaningful edit's old/new node (`before`/`after`), whitespace-collapsed.
+/// Source text of an added or deleted node (`after`/`before`), whitespace-collapsed.
 const MAX_SEMANTIC_SNIPPET_CHARS: usize = 120;
 
 /// Lines of a source file, split like Python's `bytes.splitlines` (`\n`, `\r\n`, `\r`).
@@ -548,7 +492,7 @@ fn source_lines(content: &str) -> Vec<&[u8]> {
 }
 
 /// Whitespace-collapsed source text of `node` (engine positions are 0-based lines and UTF-8
-/// byte columns), bounded to `MAX_SEMANTIC_SNIPPET_CHARS`. Ports `_node_source`.
+/// byte columns), bounded to `MAX_SEMANTIC_SNIPPET_CHARS`.
 fn node_source(node: Option<&Value>, lines: &[&[u8]]) -> Option<String> {
     node_text(node, lines, Some(MAX_SEMANTIC_SNIPPET_CHARS))
 }
@@ -596,26 +540,25 @@ fn node_text(node: Option<&Value>, lines: &[&[u8]], limit: Option<usize>) -> Opt
 
 const MAX_PARAMETER_SCAN_CHARS: usize = 4000;
 
-/// The whitespace-collapsed parameters that follow `node` in its parameter list, read from
-/// the new source up to the closing bracket (ports `_parameters_after`).
-fn parameters_after(node: Option<&Value>, lines: &[&[u8]]) -> Option<Vec<String>> {
-    let (_, (end_line, end_col)) = node_span(node)?;
-    let (end_line, end_col) = (end_line as usize, end_col as usize);
-    if end_line >= lines.len() {
-        return None;
-    }
-    let first = lines[end_line]
-        .get(end_col.min(lines[end_line].len())..)
-        .unwrap_or_default();
-    let mut parts: Vec<&[u8]> = vec![first];
-    parts.extend(lines[end_line + 1..].iter().copied());
-    let rest = String::from_utf8_lossy(&parts.join(&b'\n')).into_owned();
+/// The whitespace-collapsed parameters of a definition's first parameter list, read from its
+/// source text (`def f(a, b=1)`, `function f(a: number, b?: number)`).
+fn parameter_list(definition: &str) -> Option<Vec<String>> {
+    let open = definition.find('(')?;
     let mut pieces: Vec<String> = Vec::new();
     let mut current = String::new();
     let mut depth = 0usize;
+    // Open generic type-argument brackets (`List<T>`), tracked apart from `(`/`[`/`{` because `<`
+    // and `>` are also operators (`limit=1 < 2`, `x << 1`, `->`, `=>`).
+    let mut angles = 0usize;
+    // Whether the current parameter has reached its default value (`=` outside any brackets).
+    let mut in_default = false;
+    let mut previous = ' ';
     let mut quote: Option<char> = None;
     let collapse = |piece: &str| piece.split_whitespace().collect::<Vec<_>>().join(" ");
-    for ch in rest.chars().take(MAX_PARAMETER_SCAN_CHARS) {
+    for ch in definition[open + 1..]
+        .chars()
+        .take(MAX_PARAMETER_SCAN_CHARS)
+    {
         if let Some(q) = quote {
             current.push(ch);
             if ch == q {
@@ -623,22 +566,39 @@ fn parameters_after(node: Option<&Value>, lines: &[&[u8]]) -> Option<Vec<String>
             }
             continue;
         }
+        let after = previous;
+        if !ch.is_whitespace() {
+            previous = ch;
+        }
         match ch {
-            '"' | '\'' => quote = Some(ch),
+            '"' | '\'' | '`' => quote = Some(ch),
             '(' | '[' | '{' => depth += 1,
+            // A type argument list follows a type name; in a default value `<` is an operator.
+            '<' if !in_default && (after.is_alphanumeric() || after == '_') => {
+                depth += 1;
+                angles += 1;
+            }
+            '>' if angles > 0 && after != '-' && after != '=' => {
+                depth = depth.saturating_sub(1);
+                angles -= 1;
+            }
+            // The `=` of an arrow type (`cb: (a: T) => U`) did not start a default value.
+            '>' if after == '=' && depth == 0 => in_default = false,
+            '=' if depth == 0 => in_default = true,
             ')' | ']' | '}' if depth == 0 => {
                 pieces.push(current);
                 return Some(
                     pieces
                         .iter()
-                        .filter(|p| !p.trim().is_empty())
                         .map(|p| collapse(p))
+                        .filter(|p| !p.is_empty())
                         .collect(),
                 );
             }
-            ')' | ']' | '}' => depth -= 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
             ',' if depth == 0 => {
                 pieces.push(std::mem::take(&mut current));
+                in_default = false;
                 continue;
             }
             _ => {}
@@ -648,24 +608,72 @@ fn parameters_after(node: Option<&Value>, lines: &[&[u8]]) -> Option<Vec<String>
     None
 }
 
-/// Whether the added optional parameters all follow every existing positional parameter, so
-/// positional calls keep binding the same arguments (ports `_appends_optional_parameters`).
-fn appends_optional_parameters(added: &[&Value], lines: Option<&[&[u8]]>) -> bool {
-    let Some(lines) = lines else {
-        return false;
+/// A parameter callers may omit: it has a default (`x=1`, `x: int = 1`), is declared optional
+/// (`x?: T`), or collects the remaining arguments (`*args`, `**kw`, `...rest`).
+fn is_omittable_parameter(parameter: &str) -> bool {
+    let name = parameter
+        .split([':', '='])
+        .next()
+        .unwrap_or_default()
+        .trim();
+    parameter.starts_with('*')
+        || parameter.starts_with("...")
+        || name.ends_with('?')
+        || parameter.contains('=')
+}
+
+fn fact(node: Option<&Value>, key: &str) -> Option<i64> {
+    node?.get("facts")?.get(key)?.as_i64()
+}
+
+/// Classify an engine `CHANGE_SIGNATURE` (core #297). It is `extended` (compatible) only when
+/// the required-parameter count is unchanged and every new parameter is omittable and appended
+/// after the existing ones, so existing calls bind the same arguments; any other change of the
+/// parameter shape is a `signature` change.
+fn signature_change_kind(
+    old: Option<&Value>,
+    new: Option<&Value>,
+    sources: Option<(&str, &str)>,
+) -> &'static str {
+    let required =
+        |node: Option<&Value>| Some(fact(node, "param_count")? - fact(node, "default_count")?);
+    let (Some(old_required), Some(new_required)) = (required(old), required(new)) else {
+        return "signature";
     };
-    let added_texts: Vec<String> = added
+    let (Some(old_count), Some(new_count)) = (param_count(old), param_count(new)) else {
+        return "signature";
+    };
+    if new_count <= old_count {
+        return "signature";
+    }
+    let Some((old_source, new_source)) = sources else {
+        return "signature";
+    };
+    let parameters = |node: Option<&Value>, source: &str| {
+        let lines = source_lines(source);
+        parameter_list(&node_text(node, &lines, None)?)
+    };
+    let (Some(old_params), Some(new_params)) =
+        (parameters(old, old_source), parameters(new, new_source))
+    else {
+        return "signature";
+    };
+    // Variadic parameters can't take new parameters after them positionally: an extension
+    // keeps the old list as an exact prefix, and the required count only grows by catch-alls.
+    let appended = new_params.len() > old_params.len()
+        && new_params[..old_params.len()] == old_params[..]
+        && new_params[old_params.len()..]
+            .iter()
+            .all(|p| is_omittable_parameter(p));
+    let added_variadic = new_params[old_params.len().min(new_params.len())..]
         .iter()
-        .filter_map(|node| node_text(Some(node), lines, None))
-        .collect();
-    added
-        .iter()
-        .all(|node| match parameters_after(Some(node), lines) {
-            None => false,
-            Some(following) => following.iter().all(|piece| {
-                added_texts.contains(piece) || piece.starts_with('*') || piece.starts_with("...")
-            }),
-        })
+        .filter(|p| p.starts_with('*') || p.starts_with("..."))
+        .count() as i64;
+    if appended && new_required - added_variadic <= old_required {
+        "extended"
+    } else {
+        "signature"
+    }
 }
 
 fn semantic_group(kind: &str) -> Option<&'static str> {
@@ -725,58 +733,12 @@ fn edit_of(change: &Value) -> Value {
     edit
 }
 
-/// IntentumDiff's review-level changes as compact semantic-diff entries (ports
-/// `semantic_diff_entries` in `verlato/core/semantic.py`).
-type Span = ((u64, u64), (u64, u64));
-
-fn node_span(node: Option<&Value>) -> Option<Span> {
-    let position = node?.get("position")?;
-    let field = |key: &str| position.get(key).and_then(Value::as_u64);
-    Some((
-        (field("start_line")?, field("start_col")?),
-        (field("end_line")?, field("end_col")?),
-    ))
-}
-
-fn group_changes<'a>(group: &Value, changes: &'a [Value]) -> Vec<&'a Value> {
-    group
-        .get("raw_change_indices")
-        .and_then(Value::as_array)
-        .map(|indices| {
-            indices
-                .iter()
-                .filter_map(|i| i.as_u64().and_then(|i| changes.get(i as usize)))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 fn object_node<'a>(change: &'a Value, key: &str) -> Option<&'a Value> {
     change.get(key).filter(|n| n.is_object())
 }
 
-/// A moved sub-expression whose old and new nodes lie inside meaningful edits is part of that
-/// edit, not a move (ports `_is_moved_within_meaningful`).
-fn is_moved_within_meaningful(
-    group_changes: &[&Value],
-    old_spans: &[Span],
-    new_spans: &[Span],
-) -> bool {
-    let inside = |node: Option<&Value>, containers: &[Span]| {
-        node_span(node).is_some_and(|span| {
-            containers
-                .iter()
-                .any(|outer| outer.0 <= span.0 && span.1 <= outer.1)
-        })
-    };
-    !group_changes.is_empty()
-        && group_changes.iter().all(|change| {
-            let old = object_node(change, "old_node");
-            let new = object_node(change, "new_node");
-            (old.is_none() || inside(old, old_spans)) && (new.is_none() || inside(new, new_spans))
-        })
-}
-
+/// IntentumDiff's review-level changes as compact semantic-diff entries (ports
+/// `semantic_diff_entries` in `verlato/core/semantic.py`).
 pub fn semantic_diff_entries(
     changes: &[Value],
     groups: &[Value],
@@ -786,26 +748,11 @@ pub fn semantic_diff_entries(
         Some((old, new)) => (Some(source_lines(old)), Some(source_lines(new))),
         None => (None, None),
     };
-    let (mut old_spans, mut new_spans) = (Vec::new(), Vec::new());
-    for group in groups {
-        if semantic_group(str_field(group, "kind")) != Some("meaningful") {
-            continue;
-        }
-        for change in group_changes(group, changes) {
-            old_spans.extend(node_span(object_node(change, "old_node")));
-            new_spans.extend(node_span(object_node(change, "new_node")));
-        }
-    }
     let mut entries = Vec::new();
     for group in groups {
         let Some(group_name) = semantic_group(str_field(group, "kind")) else {
             continue;
         };
-        if group_name == "moved"
-            && is_moved_within_meaningful(&group_changes(group, changes), &old_spans, &new_spans)
-        {
-            continue;
-        }
         let labels_of = |key: &str| {
             group
                 .get(key)
@@ -828,21 +775,26 @@ pub fn semantic_diff_entries(
                 continue;
             };
             let mut edit = edit_of(change);
+            // IntentumDiff describes a modified statement as `old -> new` (core #300), but an
+            // added or deleted definition only by its kind and name: attach its source text.
             if group_name == "meaningful" {
                 let side = |key: &str, lines: &Option<Vec<&[u8]>>| {
-                    lines.as_deref().and_then(|lines| {
-                        node_source(change.get(key).filter(|n| n.is_object()), lines)
-                    })
+                    lines
+                        .as_deref()
+                        .and_then(|lines| node_source(object_node(change, key), lines))
                 };
-                let before = side("old_node", &old_lines);
-                let after = side("new_node", &new_lines);
-                if before != after {
-                    if let Some(before) = before {
-                        edit["before"] = json!(before);
+                match str_field(change, "change_type") {
+                    "ADDITION" => {
+                        if let Some(after) = side("new_node", &new_lines) {
+                            edit["after"] = json!(after);
+                        }
                     }
-                    if let Some(after) = after {
-                        edit["after"] = json!(after);
+                    "DELETION" => {
+                        if let Some(before) = side("old_node", &old_lines) {
+                            edit["before"] = json!(before);
+                        }
                     }
+                    _ => {}
                 }
             }
             edits.push(edit);
@@ -970,6 +922,9 @@ pub fn build_semantic_evidence<'a>(
     let (mut added, mut removed, mut renamed, mut signatures) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut extended: Vec<String> = Vec::new();
+    // Files whose definitions changed parameter shape: the engine files that under REFACTORING
+    // (core #297), but it changes how callers use the file.
+    let mut signature_files: Vec<String> = Vec::new();
     let mut refactorings: Vec<String> = Vec::new();
     let mut cross_file: Vec<Value> = Vec::new();
     let mut guardrails: Vec<BTreeMap<String, String>> = Vec::new();
@@ -1018,8 +973,14 @@ pub fn build_semantic_evidence<'a>(
                             symbol.file
                         ),
                     ),
-                    "signature" => push_unique(&mut signatures, &label),
-                    "extended" => push_unique(&mut extended, &label),
+                    "signature" => {
+                        push_unique(&mut signatures, &label);
+                        push_unique(&mut signature_files, &file.path);
+                    }
+                    "extended" => {
+                        push_unique(&mut extended, &label);
+                        push_unique(&mut signature_files, &file.path);
+                    }
                     _ => {}
                 }
             }
@@ -1060,7 +1021,7 @@ pub fn build_semantic_evidence<'a>(
 
     let mut meaningful_files: Vec<String> = file_meaningful
         .iter()
-        .filter(|(_, c)| **c > 0)
+        .filter(|(p, c)| **c > 0 || signature_files.contains(p))
         .map(|(p, _)| p.clone())
         .collect();
     meaningful_files.sort();
@@ -1069,6 +1030,7 @@ pub fn build_semantic_evidence<'a>(
         .filter(|p| {
             file_meaningful.get(*p).copied().unwrap_or(0) == 0
                 && file_structural.get(*p).copied().unwrap_or(0) > 0
+                && !signature_files.contains(*p)
         })
         .cloned()
         .collect();
@@ -1093,6 +1055,7 @@ pub fn build_semantic_evidence<'a>(
         &meaningful_types,
         &removed,
         &signatures,
+        !extended.is_empty(),
     );
     let mut languages: Vec<String> = reviewed
         .values()
@@ -1159,9 +1122,19 @@ fn verdict(
     meaningful_types: &BTreeMap<String, u64>,
     removed: &[String],
     signatures: &[String],
+    extended: bool,
 ) -> &'static str {
     if reviewed == 0 {
         return "unreviewed";
+    }
+    // The engine files a parameter-shape change under REFACTORING (core #297), but it is not
+    // behavior-preserving: a signature change is behavioral, an appended optional parameter
+    // additive.
+    if meaningful == 0 && !signatures.is_empty() {
+        return "behavioral";
+    }
+    if meaningful == 0 && extended {
+        return "additive";
     }
     if meaningful == 0 && structural == 0 {
         return "style-only";
@@ -1585,9 +1558,7 @@ fn render_edit(edit: &Value, detailed: bool) -> String {
         text_of(edit, "after"),
         text_of(edit, "detail"),
     );
-    if detailed && !before.is_empty() && !after.is_empty() {
-        text.push_str(&format!(" (was `{before}`, now `{after}`)"));
-    } else if detailed && !after.is_empty() {
+    if detailed && !after.is_empty() {
         text.push_str(&format!(" (added `{after}`)"));
     } else if detailed && !before.is_empty() {
         text.push_str(&format!(" (removed `{before}`)"));
@@ -1729,17 +1700,17 @@ mod tests {
         let review = json!({
             "language": "python",
             "changes": [
-                {"change_type": "ADDITION", "new_node": node("punct", "default_parameter", None, false), "old_node": null},
+                {"change_type": "REFACTORING", "refactoring_kind": "CHANGE_SIGNATURE", "old_node": node("greet", "function_definition", Some(1), true), "new_node": node("greet", "function_definition", Some(2), true)},
                 {"change_type": "DELETION", "old_node": node("gone", "function_definition", Some(1), true), "new_node": null},
                 {"change_type": "ADDITION", "new_node": node("fresh", "function_definition", Some(2), true), "old_node": null},
                 {"change_type": "REFACTORING", "refactoring_kind": "RENAME_SYMBOL", "old_node": node("bar", "function_definition", Some(2), true), "new_node": node("baz", "function_definition", Some(2), true)},
                 {"change_type": "ADDITION", "new_node": node("[5]", "pair", None, true), "old_node": null},
                 {"change_type": "ADDITION", "new_node": node("pair", "pair", None, true), "old_node": null},
-                {"change_type": "DELETION", "old_node": node("flag", "default_parameter", None, false), "new_node": null}
+                {"change_type": "REFACTORING", "refactoring_kind": "CHANGE_SIGNATURE", "old_node": node("fetch", "function_definition", Some(2), true), "new_node": node("fetch", "function_definition", Some(1), true)}
             ],
             "change_groups": [
-                {"kind": "MEANINGFUL_CHANGE", "raw_change_indices": [0], "old_labels": ["greet"], "new_labels": ["greet", "punct"]},
-                {"kind": "MEANINGFUL_CHANGE", "raw_change_indices": [6], "old_labels": ["fetch"], "new_labels": ["fetch"]},
+                {"kind": "REFACTORING", "raw_change_indices": [0], "refactoring_kind": "CHANGE_SIGNATURE"},
+                {"kind": "REFACTORING", "raw_change_indices": [6], "refactoring_kind": "CHANGE_SIGNATURE"},
                 {"kind": "MEANINGFUL_CHANGE", "raw_change_indices": [1]},
                 {"kind": "MEANINGFUL_CHANGE", "raw_change_indices": [2]},
                 {"kind": "REFACTORING", "raw_change_indices": [3], "refactoring_kind": "RENAME_SYMBOL"},
@@ -1755,7 +1726,7 @@ mod tests {
         for expected in [
             ("added", "fresh"),
             ("removed", "gone"),
-            // Without the source, an added default can't be shown to be appended.
+            // Without the source an added parameter can't be shown to be appended and optional.
             ("signature", "greet"),
             ("signature", "fetch"),
             ("renamed", "baz"),
@@ -1766,8 +1737,11 @@ mod tests {
             );
         }
         assert!(!found.iter().any(|(_, n)| n == "[5]" || n == "pair"));
-        assert_eq!(digest.group_counts.get("MEANINGFUL_CHANGE"), Some(&4));
-        assert_eq!(digest.refactorings, vec!["RENAME_SYMBOL".to_owned()]);
+        assert_eq!(digest.group_counts.get("MEANINGFUL_CHANGE"), Some(&2));
+        assert_eq!(
+            digest.refactorings,
+            vec!["CHANGE_SIGNATURE".to_owned(), "RENAME_SYMBOL".to_owned()]
+        );
     }
 
     fn file(path: &str, counts: &[(&str, u64)], style_only: bool) -> FileSemantics {
@@ -1846,83 +1820,217 @@ mod tests {
     }
 
     #[test]
-    fn meaningful_edits_carry_bounded_source_snippets() {
-        let at = |line: u64, start: u64, end: u64, label: &str, node_type: &str| {
-            let mut n = node(label, node_type, None, false);
-            n["position"] =
-                json!({"start_line": line, "start_col": start, "end_line": line, "end_col": end});
-            n
+    fn signature_changes_are_not_behavior_preserving_refactorings() {
+        let evidence_for = |change: &str| {
+            let mut digest = CommitSemantics::new("c1", Some("p0"), "x");
+            let mut api = file("src/api.py", &[("REFACTORING", 1)], false);
+            api.symbols.push(SymbolChange {
+                name: "fetch".into(),
+                change: change.into(),
+                file: "src/api.py".into(),
+                node_type: "function_definition".into(),
+                old_name: None,
+                refactoring_kind: Some("CHANGE_SIGNATURE".into()),
+            });
+            digest.files.push(api);
+            build_semantic_evidence([&digest], None).unwrap()
         };
-        let old = "def paginate(page, per_page):\r\n    start = page * per_page + 1\r\n    return start\r\n";
-        let new = "def paginate(page, per_page):\n    start = page * per_page\n    return start\n";
-        let changes = vec![
-            json!({"change_type": "MODIFICATION", "old_node": at(1, 4, 31, "start", "assignment"), "new_node": at(1, 4, 27, "start", "assignment")}),
-            json!({"change_type": "MOVE", "old_node": at(1, 12, 27, "page", "binary_operator"), "new_node": at(1, 12, 27, "page", "binary_operator")}),
-        ];
-        let groups = vec![
-            json!({"kind": "MEANINGFUL_CHANGE", "raw_change_indices": [0], "new_labels": ["paginate"]}),
-            json!({"kind": "MOVED_CODE", "raw_change_indices": [1], "new_labels": ["page"]}),
-        ];
-        let entries = semantic_diff_entries(&changes, &groups, Some((old, new)));
-        // The moved `page * per_page` lies inside the modified assignment.
-        assert_eq!(entries.len(), 1);
+        let breaking = evidence_for("signature");
+        assert_eq!(breaking.verdict, "behavioral");
+        assert_eq!(breaking.meaningful_files, vec!["src/api.py".to_owned()]);
+        assert!(breaking.refactor_only_files.is_empty());
         assert_eq!(
-            entries[0]["edits"][0]["before"],
-            "start = page * per_page + 1"
+            breaking.api_break_candidates(),
+            vec!["fetch in src/api.py".to_owned()]
         );
-        assert_eq!(entries[0]["edits"][0]["after"], "start = page * per_page");
-        let plain = semantic_diff_entries(&changes, &groups, None);
-        assert!(plain[0]["edits"][0].get("before").is_none());
-        let mut moved_elsewhere = changes.clone();
-        moved_elsewhere[1]["old_node"] = at(5, 0, 15, "page", "binary_operator");
-        let kept = semantic_diff_entries(&moved_elsewhere, &groups, Some((old, new)));
-        assert_eq!(kept[1]["group"], "moved");
-        assert!(kept[1]["edits"][0].get("before").is_none());
-
-        let long = format!("x = [{}]", "1, ".repeat(60));
-        let lines = source_lines(&long);
-        let snippet = node_source(
-            Some(&at(0, 0, long.len() as u64, "x", "assignment")),
-            &lines,
-        )
-        .unwrap();
-        assert_eq!(snippet.chars().count(), MAX_SEMANTIC_SNIPPET_CHARS);
-        assert!(snippet.ends_with("..."));
+        let compatible = evidence_for("extended");
+        assert_eq!(compatible.verdict, "additive");
+        assert!(compatible.refactor_only_files.is_empty());
+        assert!(compatible.api_break_candidates().is_empty());
     }
 
     #[test]
-    fn only_appended_optional_parameters_are_compatible() {
-        let digest_for = |new: &str, start: u64, end: u64| {
-            let mut param = node("offset", "default_parameter", None, false);
-            param["position"] =
-                json!({"start_line": 0, "start_col": start, "end_line": 0, "end_col": end});
+    fn entries_use_engine_details_and_keep_real_moves() {
+        let changes = vec![
+            json!({"change_type": "MODIFICATION", "old_node": node("start", "assignment", None, false), "new_node": node("start", "assignment", None, false), "text_diff": "start = page * per_page + 1 -> start = page * per_page"}),
+            json!({"change_type": "DELETION", "old_node": node("binary_operator", "binary_operator", None, false), "new_node": null, "description": "Delete binary_operator('page * per_page + 1')"}),
+            json!({"change_type": "MOVE", "old_node": node("helper", "function_definition", Some(1), true), "new_node": node("helper", "function_definition", Some(1), true)}),
+        ];
+        let groups = vec![
+            json!({"kind": "MEANINGFUL_CHANGE", "raw_change_indices": [0, 1], "new_labels": ["paginate"]}),
+            json!({"kind": "MOVED_CODE", "raw_change_indices": [2], "new_labels": ["helper"]}),
+        ];
+        let entries = semantic_diff_entries(&changes, &groups, None);
+        assert_eq!(entries.len(), 2);
+        let edits = entries[0]["edits"].as_array().unwrap();
+        assert_eq!(
+            edits[0]["detail"],
+            "start = page * per_page + 1 -> start = page * per_page"
+        );
+        assert_eq!(
+            edits[1]["detail"],
+            "Delete binary_operator('page * per_page + 1')"
+        );
+        assert!(edits[0].get("before").is_none());
+        // Moves are the engine's call now (core #299): a real move is kept.
+        assert_eq!(entries[1]["group"], "moved");
+    }
+
+    #[test]
+    fn added_and_deleted_nodes_carry_their_source_text() {
+        let at = |label: &str, node_type: &str, line: u64, end: u64| {
+            let mut n = node(label, node_type, None, false);
+            n["position"] =
+                json!({"start_line": line, "start_col": 0, "end_line": line + 1, "end_col": end});
+            n
+        };
+        let old = "def gone(x):\n    return x\n";
+        let new = "def handle(req):\n    return req\n";
+        let changes = vec![
+            json!({"change_type": "ADDITION", "new_node": at("handle", "function_definition", 0, 14), "old_node": null, "description": "Insert -> function_definition('handle')"}),
+            json!({"change_type": "DELETION", "old_node": at("gone", "function_definition", 0, 12), "new_node": null}),
+            json!({"change_type": "MODIFICATION", "old_node": at("x", "return_statement", 1, 12), "new_node": at("req", "return_statement", 1, 14), "text_diff": "return x -> return req"}),
+        ];
+        let groups = vec![json!({"kind": "MEANINGFUL_CHANGE", "raw_change_indices": [0, 1, 2]})];
+        let entries = semantic_diff_entries(&changes, &groups, Some((old, new)));
+        let edits = entries[0]["edits"].as_array().unwrap();
+        assert_eq!(edits[0]["after"], "def handle(req): return req");
+        assert_eq!(edits[1]["before"], "def gone(x): return x");
+        // Modifications use the engine's own `old -> new` text (core #300).
+        assert!(edits[2].get("before").is_none() && edits[2].get("after").is_none());
+        assert_eq!(edits[2]["detail"], "return x -> return req");
+        let rendered = render_semantic_diff(
+            &[
+                json!({"path": "m.py", "commit": "abc", "language": "python", "lifecycle": "modified", "changes": entries}),
+            ],
+            true,
+            None,
+        );
+        assert!(
+            rendered.contains("(added `def handle(req): return req`)"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("[return x -> return req]"), "{rendered}");
+    }
+
+    #[test]
+    fn parameter_lists_tell_generics_from_operators() {
+        let params = |source: &str| parameter_list(source).unwrap();
+        // Generic type arguments keep their commas.
+        assert_eq!(
+            params("function f(a: Map<string, number>, b?: Array<Set<T>>) {"),
+            ["a: Map<string, number>", "b?: Array<Set<T>>"]
+        );
+        // `<`, `<<` and `>` in default values are operators.
+        assert_eq!(
+            params("def fetch(limit=1 < 2, mask=1 << 3, big=a > b, offset=0):"),
+            ["limit=1 < 2", "mask=1 << 3", "big=a > b", "offset=0"]
+        );
+        // Arrow types do not start a default value or close a bracket.
+        assert_eq!(
+            params("function f(cb: (a: T) => Promise<A, B>, d = 1) {"),
+            ["cb: (a: T) => Promise<A, B>", "d = 1"]
+        );
+        assert_eq!(
+            params("fn f(a: Vec<u8>, b: impl Fn(u8) -> Option<u8>) -> u8 {"),
+            ["a: Vec<u8>", "b: impl Fn(u8) -> Option<u8>"]
+        );
+    }
+
+    #[test]
+    fn signature_changes_are_extended_only_for_appended_omittable_parameters() {
+        let definition = |label: &str, source: &str, count: i64, defaults: i64| {
+            let first = source.lines().next().unwrap();
+            json!({"label": label, "node_type": "function_definition",
+                   "facts": {"param_count": count, "default_count": defaults},
+                   "position": {"start_line": 0, "start_col": 0, "end_line": 0, "end_col": first.len()}})
+        };
+        let kind = |old: &str, new: &str, counts: (i64, i64, i64, i64)| {
             let review = json!({
-                "changes": [{"change_type": "ADDITION", "new_node": param, "old_node": null}],
-                "change_groups": [{"kind": "MEANINGFUL_CHANGE", "raw_change_indices": [0], "new_labels": ["fetch", "offset"]}],
+                "changes": [{"change_type": "REFACTORING", "refactoring_kind": "CHANGE_SIGNATURE",
+                             "old_node": definition("fetch", old, counts.0, counts.1),
+                             "new_node": definition("fetch", new, counts.2, counts.3)}],
+                "change_groups": [{"kind": "REFACTORING", "raw_change_indices": [0], "refactoring_kind": "CHANGE_SIGNATURE"}],
             });
-            let old = "def fetch(limit=10):\n    return limit\n";
             digest_file_diff(&review, "m.py", "m.py", None, Some((old, new))).symbols[0]
                 .change
                 .clone()
         };
-        // def fetch(limit=10, offset=0):  -> `offset=0` at bytes 20..28
+        let old = "def fetch(limit, page=1):\n    return limit\n";
+        // An optional parameter appended after the existing ones.
         assert_eq!(
-            digest_for("def fetch(limit=10, offset=0):\n    return limit\n", 20, 28),
+            kind(old, "def fetch(limit, page=1, offset=0):\n", (2, 1, 3, 2)),
             "extended"
         );
-        // def fetch(offset=0, limit=10):  -> inserted before `limit`
+        // A new required parameter.
         assert_eq!(
-            digest_for("def fetch(offset=0, limit=10):\n    return limit\n", 10, 18),
+            kind(old, "def fetch(limit, page=1, *, offset):\n", (2, 1, 3, 1)),
             "signature"
         );
-        // def fetch(limit=10, offset=0, **kw):
         assert_eq!(
-            digest_for(
-                "def fetch(limit=10, offset=0, **kw):\n    return limit\n",
-                20,
-                28
+            kind(old, "def fetch(limit, page, offset=0):\n", (2, 1, 3, 1)),
+            "signature"
+        );
+        // An optional parameter inserted before an existing positional one rebinds calls.
+        assert_eq!(
+            kind(
+                old,
+                "def fetch(offset=0, limit=10, page=1):\n",
+                (2, 1, 3, 3)
+            ),
+            "signature"
+        );
+        // Catch-alls are omittable.
+        assert_eq!(
+            kind(old, "def fetch(limit, page=1, **kw):\n", (2, 1, 3, 1)),
+            "extended"
+        );
+        // The engine counts Python's bare `*` separator as a parameter (core #332); keyword-only
+        // parameters after it are still classified by whether they can be omitted.
+        assert_eq!(
+            kind(
+                "def fetch(limit):\n",
+                "def fetch(limit, *, offset=0):\n",
+                (1, 0, 3, 1)
             ),
             "extended"
+        );
+        assert_eq!(
+            kind(
+                "def fetch(limit):\n",
+                "def fetch(limit, *, offset):\n",
+                (1, 0, 3, 0)
+            ),
+            "signature"
+        );
+        // `<` in a default value is a comparison, not a generic bracket.
+        assert_eq!(
+            kind(
+                "def fetch(limit=1 < 2):\n",
+                "def fetch(limit=1 < 2, offset=0):\n",
+                (1, 1, 2, 2)
+            ),
+            "extended"
+        );
+        // A removed parameter.
+        assert_eq!(kind(old, "def fetch(limit):\n", (2, 1, 1, 0)), "signature");
+        // TypeScript optional parameters.
+        let ts = "export function fetch(limit: number): number {\n";
+        assert_eq!(
+            kind(
+                ts,
+                "export function fetch(limit: number, page?: number): number {\n",
+                (1, 0, 2, 1)
+            ),
+            "extended"
+        );
+        assert_eq!(
+            kind(
+                ts,
+                "export function fetch(limit: number, page: Map<string, number>): number {\n",
+                (1, 0, 2, 0)
+            ),
+            "signature"
         );
     }
 }
