@@ -4,7 +4,9 @@ Verlato's change evidence comes from [IntentumDiff](https://github.com/buchochel
 a semantic diff engine that parses both sides of every changed file (with WebAssembly parsers
 for dozens of languages and file formats) and compares their structure rather than their
 text. Verlato links the engine in-process (`intentumdiff-rust-core`, pinned in `Cargo.toml`)
-and reviews every collected commit as `parent..sha`, each changed file in parallel.
+and reviews every collected commit as `parent..sha`, each changed file in parallel. The
+[IntentumDiff documentation](https://buchochelliq-labs.github.io/intentumdiff-docs/) describes
+the engine's change types, groups and supported languages in full.
 
 ## What a review gives Verlato
 

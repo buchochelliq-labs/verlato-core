@@ -10,7 +10,10 @@ site_description: >-
 site_url: https://buchochelliq-labs.github.io/verlato-core/
 docs_dir: docs
 site_dir: site
-copyright: Buchochelliq Labs. Verlato is licensed under Apache-2.0.
+copyright: >-
+  Powered by <a href="https://github.com/buchochelliq-labs/intentumdiff-core">IntentumDiff</a>
+  (<a href="https://buchochelliq-labs.github.io/intentumdiff-docs/">docs</a>) and your agent.
+  Buchochelliq Labs. Verlato is licensed under Apache-2.0.
 
 theme:
   name: material
