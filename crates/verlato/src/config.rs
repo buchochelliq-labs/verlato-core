@@ -29,6 +29,8 @@ pub struct Config {
     pub provider_name: String,
     pub max_items_per_scan: i64,
     pub feedback_include_text: bool,
+    /// How a model-free summary is written (`summary_style`): `prose` (default) or `evidence`.
+    pub summary_style: crate::prose::SummaryStyle,
     pub targets: IndexMap<String, OutputTarget>,
     pub raw: Value,
 }
@@ -61,6 +63,7 @@ impl Default for Config {
             provider_name: "ollama".into(),
             max_items_per_scan: 25,
             feedback_include_text: false,
+            summary_style: crate::prose::SummaryStyle::Prose,
             targets,
             raw: Value::Null,
         }
@@ -108,6 +111,14 @@ pub fn load(cwd: &Path) -> Result<Config> {
     if let Some(v) = str_of("commit_intent_inference") {
         let v = v.trim().to_lowercase();
         config.commit_intent_inference = if v == "low-signal" { v } else { "off".into() };
+    }
+    if let Some(v) = str_of("summary_style") {
+        config.summary_style = crate::prose::SummaryStyle::parse(&v).with_context(|| {
+            format!(
+                "Invalid summary_style {v:?} in {}: expected \"prose\" or \"evidence\"",
+                path.display()
+            )
+        })?;
     }
     if let Some(v) = raw.get("feedback_include_text").and_then(Value::as_bool) {
         config.feedback_include_text = v;
@@ -199,6 +210,14 @@ impl Config {
             Ok(v) if v == "low-signal" || v == "off" => v,
             _ => self.commit_intent_inference.clone(),
         }
+    }
+
+    /// `VERLATO_SUMMARY_STYLE` > config (`summary_style`) > `prose`.
+    pub fn summary_style(&self) -> crate::prose::SummaryStyle {
+        std::env::var("VERLATO_SUMMARY_STYLE")
+            .ok()
+            .and_then(|v| crate::prose::SummaryStyle::parse(&v))
+            .unwrap_or(self.summary_style)
     }
 
     pub fn feedback_include_text(&self) -> bool {

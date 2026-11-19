@@ -212,6 +212,14 @@ _ORACLE: _Oracle | None = None
 
 
 @pytest.fixture(autouse=True)
+def _evidence_summaries(monkeypatch):
+    # The goldens record the retired Python implementation, whose model-free summary was the
+    # diagnostic evidence summary. The native default is now a release-note sentence
+    # (`summary_style: prose`, covered by tests/test_summary_style.py); compare the evidence style.
+    monkeypatch.setenv("VERLATO_SUMMARY_STYLE", "evidence")
+
+
+@pytest.fixture(autouse=True)
 def _golden_oracle(request, tmp_path: Path):
     global _ORACLE
     _ORACLE = _Oracle(request.node.nodeid, tmp_path)

@@ -1,0 +1,44 @@
+name: live release
+
+# Checks that a published release works the way the VS Code extension uses it: on each platform,
+# the extension's own runtime code downloads the release's bundle, verifies it against
+# SHA256SUMS, unpacks it and runs `verlato --version` and `verlato doctor engine`
+# (vscode-extension/test/liveRelease.test.js). Run it by hand after a release, or weekly.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release to check (SemVer, e.g. 0.2.0-beta.1); empty for package.json's verlatoRuntime
+        required: false
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-download:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: vscode-extension
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run build
+      - name: Download, verify and run the published runtime
+        env:
+          VERLATO_LIVE_RELEASE_TEST: "1"
+          VERLATO_LIVE_RELEASE_VERSION: ${{ inputs.version }}
+        run: node --test --test-reporter=spec test/liveRelease.test.js

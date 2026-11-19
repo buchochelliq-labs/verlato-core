@@ -1,0 +1,65 @@
+name: Release notes quality
+description: A draft that was wrong, misleading or unclear (wrong section, missed breaking change, vague wording).
+labels: [release-notes-quality]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        These reports are the most useful feedback during the beta. Please don't paste private code:
+        `verlato draft json` shows the evidence Verlato used, so trim anything you can't share.
+  - type: input
+    id: version
+    attributes:
+      label: Verlato version
+      placeholder: verlato 0.2.0-beta.1
+    validations:
+      required: true
+  - type: dropdown
+    id: problem
+    attributes:
+      label: What was wrong
+      multiple: true
+      options:
+        - Wrong section (e.g. a fix listed as Added)
+        - Missed or false breaking change
+        - Wording unclear or too technical
+        - Change missing from the notes
+        - Change that should have been hidden was shown
+        - Grouping (changes split or merged wrongly)
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: model
+    attributes:
+      label: Model
+      description: Which provider wrote or improved the wording, if any.
+      options:
+        - None (deterministic draft)
+        - Ollama
+        - LiteLLM
+        - GitHub Models
+        - Claude Code / Codex CLI
+        - Plugin
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Diff engine
+      options:
+        - intentumdiff (default)
+        - git
+  - type: textarea
+    id: draft
+    attributes:
+      label: The draft item
+      description: The relevant item from `verlato draft json --base <ref>`, or from the Releases view.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What it should have said
+      description: The section and wording you expected, and why.
+    validations:
+      required: true

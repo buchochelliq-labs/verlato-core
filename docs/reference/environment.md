@@ -22,6 +22,7 @@ column).
 | `VERLATO_GITHUB_API_URL` | GitHub REST API base URL (default `https://api.github.com`) | |
 | `VERLATO_COMMIT_INTENT_INFERENCE` | `off` or `low-signal` | `verlato.commitIntentInference` |
 | `VERLATO_FEEDBACK_INCLUDE_TEXT` | `1` keeps summary text in feedback events | `verlato.feedbackIncludeText` |
+| `VERLATO_SUMMARY_STYLE` | `prose` (default) or `evidence`: how model-free summaries are written (`summary_style`) | |
 
 ## Models
 

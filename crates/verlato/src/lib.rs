@@ -29,6 +29,7 @@ pub mod maintenance;
 pub mod mcp;
 pub mod models;
 pub mod pipeline;
+pub mod prose;
 pub mod providers;
 pub mod pyjson;
 pub mod semantic;

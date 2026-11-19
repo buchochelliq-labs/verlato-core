@@ -31,6 +31,18 @@ verlato draft json --from-latest-tag --version v1.1.0       # the full draft doc
 Markdown. Hidden items are left out of the Markdown but stay in the JSON. The JSON shape is
 described in [Output formats](../reference/output-formats.md#draft-documents).
 
+Without a model, each entry is a release-note sentence written from the title and the
+semantic review:
+
+```markdown
+### Changed
+- Big change across areas (frontend). Changed the signature of `render` (possible breaking change) (PR #12).
+- Updated app helpers. Removed `gone` (possible breaking change); added optional parameters to `greet`; added `fresh`.
+```
+
+See [Summaries](concepts.md#summaries) for how the sentence is written, and `summary_style` to
+get the diagnostic evidence summary instead.
+
 To render notes from the items saved in state, rather than a range, use
 `verlato render --format changelog|github-release --version v1.1.0`.
 

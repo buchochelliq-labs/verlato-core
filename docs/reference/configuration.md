@@ -32,6 +32,7 @@ both. A complete example is [`verlato.sample.json`](https://github.com/buchochel
 | `semantic_max_nodes` | engine default (100,000) | raise the engine's size limit, in tree nodes, so very large files (over about 10,000 lines) are reviewed instead of reported as `too_large` |
 | `commit_intent_inference` | `off` | `low-signal` infers Conventional Commit intent for vague commits ([details](../guide/models.md#commit-intent-inference)) |
 | `feedback_include_text` | `false` | keep accepted and edited summary text in feedback events |
+| `summary_style` | `prose` | how a summary is written without a model: `prose`, a release-note sentence ("Renamed `open_tasks` to `pending` (possible breaking change)."), or `evidence`, the diagnostic evidence summary Verlato 0.1 used ([details](../guide/concepts.md#summaries)) |
 
 ## Models
 

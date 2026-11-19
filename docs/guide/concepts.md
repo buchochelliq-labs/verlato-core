@@ -51,6 +51,35 @@ commits ──► changesets ──► change items ──► draft ──► CH
 5. **Review and apply.** You accept, edit or hide items, then write the draft into a target
    file.
 
+## Summaries
+
+Without a model, each item's summary is a **release-note sentence** written from the changeset's
+title and its semantic evidence (`summary_style: "prose"`, the default):
+
+- The title's Conventional Commit prefix and scope are dropped, and its leading verb is put in
+  the past tense: `feat(api): add export endpoint` becomes "Added export endpoint.", and
+  `fix(api): handle empty export` "Fixed handling of empty export.".
+- Facts from the semantic review are added when they say something the title does not:
+  renamed, removed and re-signatured public symbols (marked "possible breaking change"),
+  optional parameters added to existing functions, and the symbols a feature adds.
+  `Update app helpers` reads "Updated app helpers. Removed `gone` (possible breaking change);
+  added optional parameters to `greet`; added `fresh`."
+- A title that says nothing (`wip`, `misc`, `fix stuff`) is replaced by the facts:
+  "Renamed `fresh` to `renamed_fresh` (possible breaking change).", or, without a semantic
+  review, the changed files ("Updated `src/app.py`.").
+- Breaking changes say so, formatting-only and refactoring-only changes are marked as such,
+  and nothing is claimed that the title or the evidence does not say.
+
+The rendered notes use the sentence as the entry, followed by the PR: `- Big change across
+areas (frontend). Changed the signature of `render` (possible breaking change) (PR #12).`
+The diagnostic evidence summary ("IntentumDiff semantic review: behavioral changes; 1 file(s)
+reviewed; …") stays in the item's evidence (`evidence_summary` in the draft JSON), where the
+VS Code extension and models read it.
+
+A model, when configured, writes the summary instead. `summary_style: "evidence"` (or
+`VERLATO_SUMMARY_STYLE=evidence`) restores the earlier behaviour, where the summary *was* the
+evidence summary and each entry read `- <title>: <evidence summary>`.
+
 ## Review status
 
 Every item has one of these statuses:

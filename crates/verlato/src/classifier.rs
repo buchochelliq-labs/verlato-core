@@ -85,6 +85,7 @@ pub fn classify(
     base_ref: &str,
     head_ref: &str,
     model: Option<&ModelAssist>,
+    style: crate::prose::SummaryStyle,
 ) -> ChangeItem {
     let pr = group.pr.as_ref();
     let labels: Vec<String> = pr
@@ -217,6 +218,8 @@ pub fn classify(
         .unwrap_or_else(|| subject(&group.commits[0].message).to_owned())
         .trim()
         .to_owned();
+    // The model assist always sees the evidence summary; the prose style replaces it below when
+    // no model summary was accepted.
     let mut summary = diff.summary.clone();
     if let Some(model) = model {
         let mut decision = assist::Decision {
@@ -249,6 +252,21 @@ pub fn classify(
         summary = decision.summary;
         // A confident model summary or classification must not lift the review cap.
         d.confidence = cap_for_semantic_review(semantic, &d.kind, decision.confidence);
+    }
+    if style == crate::prose::SummaryStyle::Prose && summary == diff.summary {
+        // No model summary was accepted: write the release-note sentence.
+        let files: Vec<(String, String)> = diff
+            .file_statuses
+            .iter()
+            .map(|(path, status)| (path.clone(), status.clone()))
+            .collect();
+        summary = crate::prose::release_note(&crate::prose::ProseInput {
+            title: &title,
+            pr_number: pr.map(|p| p.number),
+            kind: &d.kind,
+            semantic,
+            files: &files,
+        });
     }
     let source = SourceRef {
         pr_number: pr.map(|p| p.number),

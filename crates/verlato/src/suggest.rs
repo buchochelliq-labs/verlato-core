@@ -65,7 +65,7 @@ pub fn find_group(
     request: &crate::pipeline::ModelRequest,
 ) -> Result<(ChangeGroup, ChangeItem)> {
     for group in ctx.collect_groups(base, head, request)? {
-        let item = classify(&group, base, head, None);
+        let item = classify(&group, base, head, None, ctx.config.summary_style());
         if item.id == item_id {
             return Ok((group, item));
         }
@@ -2718,7 +2718,7 @@ pub fn preview_suggestions(
             "Selecting suggestion targets",
             json!({"detail": group_detail(group), "current": index, "total": groups.len(), "unit": "changeset"}),
         );
-        let baseline = classify(group, base, head, None);
+        let baseline = classify(group, base, head, None, ctx.config.summary_style());
         if item_id.as_deref().is_some_and(|id| id != baseline.id) {
             trace_progress(
                 "selecting_suggestion_targets",
@@ -3278,7 +3278,13 @@ pub fn apply_model_suggestion(
         style: style.clone(),
         summary_only: true,
     };
-    let candidate = classify(&group, base, head, Some(&assist));
+    let candidate = classify(
+        &group,
+        base,
+        head,
+        Some(&assist),
+        ctx.config.summary_style(),
+    );
     let signals = &candidate.evidence.commit_signals;
     let Some(model) = signals
         .iter()
