@@ -152,6 +152,41 @@ jobs:
           selection: ${{ needs.gate.outputs.selection }}
           verify-only: ${{ needs.gate.outputs.verify-only }}
 
+  # The VS Code extension, to the Visual Studio Marketplace and Open VSX (rab.yml: open-vsx: true).
+  # The `marketplace` environment holds VSCE_PAT (Azure DevOps, Marketplace "Manage") and OVSX_PAT.
+  publish-vscode:
+    needs: [gate, ci, build]
+    if: >-
+      !cancelled() && needs.gate.outputs.vscode == 'true' && needs.ci.result == 'success'
+      && (needs.build.result == 'success'
+          || (needs.build.result == 'skipped' && needs.gate.outputs.verify-only == 'true'))
+    runs-on: ubuntu-latest
+    environment: marketplace
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false   # release jobs write no caches
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - run: python3 -m pip install --quiet pyyaml
+      - if: needs.gate.outputs.verify-only != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release--*
+          path: dist
+      - uses: ./.github/rab/publish-vscode
+        with:
+          selection: ${{ needs.gate.outputs.selection }}
+          vsce-token: ${{ secrets.VSCE_PAT }}
+          ovsx-token: ${{ secrets.OVSX_PAT }}
+          verify-only: ${{ needs.gate.outputs.verify-only }}
+
   # The run's release record, release-record.json, uploaded as the artifact
   # `release-record`: the release, its commit, and each package's outcome,
   # files and registry URL, for a coordinator (`gh run download <run> -n
@@ -159,7 +194,7 @@ jobs:
   # failed halfway still says what it published. Keep every publish job in
   # its `needs`.
   record:
-    needs: [gate, ci, build, publish-github, publish-pypi]
+    needs: [gate, ci, build, publish-github, publish-pypi, publish-vscode]
     if: always()
     runs-on: ubuntu-latest
     steps:
