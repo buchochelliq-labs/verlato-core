@@ -50,6 +50,9 @@ export class VerlatoClient implements vscode.Disposable {
   private pendingRequestEmit: NodeJS.Timeout | undefined;
   private nextCommandId = 1;
   private nextActivityId = 1;
+  /** A runtime the extension found or downloaded, used when `verlato.cliPath` is not set. */
+  private runtimeOverride: string | undefined;
+  private runtimePreparation: (() => Promise<string | undefined>) | undefined;
 
   constructor(
     private readonly workspaceFolder: vscode.WorkspaceFolder,
@@ -67,7 +70,27 @@ export class VerlatoClient implements vscode.Disposable {
         this.stopService("Verlato diff engine settings changed.");
         this.serviceStartFailed = false;
       }
+      if (event.affectsConfiguration("verlato.cliPath")) {
+        this.stopService("Verlato CLI path changed.");
+        this.serviceStartFailed = false;
+      }
     });
+  }
+
+  /** Called before the first command to find or download the native runtime. */
+  setRuntimePreparation(prepare: () => Promise<string | undefined>): void {
+    this.runtimePreparation = prepare;
+  }
+
+  /** Use this runtime executable from now on (restarting the service lazily). */
+  useRuntime(executable: string | undefined): void {
+    if (executable === this.runtimeOverride) {
+      return;
+    }
+    this.runtimeOverride = executable;
+    this.lastResolution = undefined;
+    this.stopService("Verlato runtime changed.");
+    this.serviceStartFailed = false;
   }
 
   private readonly configurationWatcher: vscode.Disposable | undefined;
@@ -479,6 +502,13 @@ export class VerlatoClient implements vscode.Disposable {
   }
 
   async initialize(): Promise<void> {
+    if (this.runtimePreparation) {
+      try {
+        this.useRuntime(await this.runtimePreparation());
+      } catch (error) {
+        this.output.appendLine(`Verlato runtime: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     const resolution = this.resolveExecutable();
     const modelSettings = this.getModelSettings();
     this.output.appendLine(`Workspace: ${this.workspaceFolder.uri.fsPath}`);
@@ -629,7 +659,7 @@ export class VerlatoClient implements vscode.Disposable {
       cwd: this.workspaceFolder.uri.fsPath,
       env: await this.buildEnvironment(args),
       label: args.slice(0, 2).join(" "),
-      missingExecutableMessage: `Verlato CLI was not found. Tried: ${resolution.searched.join(", ")}. Install the backend package or set verlato.cliPath to the full path of verlato.exe.`,
+      missingExecutableMessage: `Verlato CLI was not found. Tried: ${resolution.searched.join(", ")}. Run "Verlato: Download Runtime", install it with \`pip install verlato-core\`, or set verlato.cliPath to the verlato executable.`,
       onActivity: options.onActivity,
     });
     if (result.stderr) {
@@ -759,9 +789,12 @@ export class VerlatoClient implements vscode.Disposable {
   }
 
   private resolveExecutable(): ExecutableResolution {
-    const configuredPath = vscode.workspace.getConfiguration("verlato").get<string>("cliPath") || "verlato";
+    let configuredPath = (vscode.workspace.getConfiguration("verlato").get<string>("cliPath") || "").trim();
+    if (configuredPath === "verlato") {
+      configuredPath = "";
+    }
     this.lastResolution = resolveVerlatoExecutable({
-      configuredPath,
+      configuredPath: configuredPath || this.runtimeOverride || "verlato",
       workspacePath: this.workspaceFolder.uri.fsPath,
       extensionPath: this.extensionPath,
       existsSync: fs.existsSync,
