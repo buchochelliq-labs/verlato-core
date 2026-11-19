@@ -102,8 +102,11 @@ item's `grouping_reason` says why commits were grouped.
 
 ### The VS Code extension cannot find Verlato
 
-Run **Verlato: Show Service Info**: it shows the executable in use and every place searched.
-Set `verlato.cliPath` to the `verlato` executable (or install with pip so it is on `PATH`).
+Run **Verlato: Show Service Info**: it shows the executable in use and every place searched,
+and the *Verlato* output channel says why a `verlato` on `PATH` was skipped (a different
+version) or why a download failed. **Verlato: Download Runtime** fetches the runtime again.
+Behind a proxy, set VS Code's `http.proxy`. Otherwise set `verlato.cliPath` to the `verlato`
+executable, or install it with `pip install verlato-core`.
 
 ## Diagnostics
 

@@ -9,6 +9,10 @@
   CPython 3.12+). It ships the IntentumDiff parser bundle and has no runtime dependencies
   (`intentumdiff-python` and `fastmcp` are no longer needed).
 - Unknown commands are usage errors (exit code 2) instead of being handed to `verlato-py`.
+- The VS Code extension (0.2.0, publisher `buchochelliq-labs`) is published to the Visual Studio
+  Marketplace and Open VSX. When it finds no matching `verlato`, it downloads the native runtime for
+  its platform from the GitHub release of its version and verifies it against `SHA256SUMS`
+  (`verlato.runtime.autoDownload`, command **Verlato: Download Runtime**).
 - IntentumDiff 0.0.3 (core `1c4bdbc5`, parser bundle from `intentumdiff-python` 0.0.3b1). Verlato
   drops the workarounds for the engine gaps 0.0.3 fixed (core#297, #298, #299, #300, #301, #250):
   - Signature changes come from the engine's `CHANGE_SIGNATURE`, so a new required parameter is now

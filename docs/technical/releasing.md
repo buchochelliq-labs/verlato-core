@@ -44,7 +44,22 @@ Each asset also gets a `<file>.sha256` from rab.
 
 To use a bundle: unpack it, then put its directory on `PATH` or point the VS Code extension's
 `verlato.cliPath` setting at its `verlato` executable. The extension also picks up an unpacked bundle placed in
-its own `bin/` directory (executable and `wasm/` side by side). It does not download bundles itself.
+its own `bin/` directory (executable and `wasm/` side by side), and downloads the bundle for its own version
+when it finds none (see below), so the bundle names and `SHA256SUMS` are part of its contract.
+
+### VS Code extension (Marketplace and Open VSX)
+
+`buchochelliq-labs.verlato-vscode` (`registry: vscode`, `open-vsx: true`): one universal
+`verlato-vscode-<version>.vsix`, built by rab's `vsix` artifact (`npm ci`, then `vsce package`, which runs
+`vscode:prepublish` to compile) and tested with `npm test`. The `publish-vscode` job uploads it to the Visual
+Studio Marketplace and to Open VSX, and waits until both list it. Its tag is
+`buchochelliq-labs.verlato-vscode-v<version>`.
+
+The extension carries no native code. On first use it downloads `verlato-v<version>-<target>` for the user's
+platform from the `v<version>` GitHub release of the same run, verifies it against `SHA256SUMS`, and unpacks it
+into its global storage. So the extension's version must equal the native bundles' version (Cargo's
+workspace version): bump `vscode-extension/package.json` together with `Cargo.toml` (`release.py check`
+compares each manifest with `rab.yml`).
 
 ### Python package (PyPI)
 
@@ -80,7 +95,16 @@ pin in the same commit.**
    workflow `release.yml`, environment `pypi`. The first upload creates the project. No token is stored.
 3. **GitHub Releases** need nothing: the `publish-github` job uses the workflow's token with
    `contents: write`.
-4. **GitHub Actions** must be able to run jobs (the organisation's Actions billing), including the
+4. **VS Code Marketplace and Open VSX.** The extension's publisher is `buchochelliq-labs` on both.
+    - Marketplace: the publisher `buchochelliq-labs` must exist
+      (<https://marketplace.visualstudio.com/manage>). Create an Azure DevOps personal access token with
+      the **Marketplace → Manage** scope for all accessible organisations.
+    - Open VSX: sign in at <https://open-vsx.org> with GitHub, sign the publisher agreement, create an access
+      token, and create the namespace once if it doesn't exist:
+      `npx ovsx create-namespace buchochelliq-labs -p <token>`.
+    - In the repository settings, create the environment **`marketplace`** with the secrets `VSCE_PAT` (the
+      Azure DevOps token) and `OVSX_PAT` (the Open VSX token).
+5. **GitHub Actions** must be able to run jobs (the organisation's Actions billing), including the
    `ubuntu-24.04-arm`, `macos-latest` and `windows-latest` runners the builds use.
 
 ## Cutting a release
@@ -110,7 +134,6 @@ publishes only what is missing). See rab's
 `.github/rab/` and `.github/workflows/rab-build.yml` are an installed, pinned copy; do not edit them (CI runs
 `release.py vendored`, which fails on any change). To update rab, pull its repository and run
 `python3 ../release-asset-bundle/scripts/release.py install` from the repository root, then open a PR.
-`.github/workflows/release.yml` is Verlato's own file: it keeps only the `publish-github` and `publish-pypi`
-jobs; the template's crates.io, npm, VS Code Marketplace, Homebrew and Chocolatey jobs were removed because
-Verlato publishes none of those. The VS Code extension is not published by rab yet (its marketplace
-publisher and packaging of the native runtime are still open).
+`.github/workflows/release.yml` is Verlato's own file: it keeps the `publish-github`, `publish-pypi` and
+`publish-vscode` jobs (the last with the environment `marketplace`); the template's crates.io, npm,
+Homebrew and Chocolatey jobs were removed because Verlato publishes none of those.

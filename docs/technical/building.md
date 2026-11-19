@@ -47,7 +47,7 @@ After changing Rust code, rebuild with `maturin develop --release` (or reinstall
 cd vscode-extension
 npm ci
 npm run build                     # TypeScript -> dist/
-npx @vscode/vsce package          # verlato-vscode-<version>.vsix
+npx @vscode/vsce package          # verlato-vscode-<version>.vsix (compiles first via vscode:prepublish)
 code --install-extension verlato-vscode-*.vsix --force
 ```
 
