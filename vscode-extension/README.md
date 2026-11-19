@@ -75,6 +75,11 @@ Every setting and command is described in the
 <https://buchochelliq-labs.github.io/verlato-core/>: getting started, the full user guide,
 and the reference for the CLI, configuration and protocols.
 
+## Feedback
+
+Verlato is in beta. Report a bug, a release-notes draft that was wrong or unclear, or an idea on
+[GitHub](https://github.com/buchochelliq-labs/verlato-core/issues/new/choose); each kind has its own form.
+
 ## Development
 
 From the repository's `vscode-extension/` directory:

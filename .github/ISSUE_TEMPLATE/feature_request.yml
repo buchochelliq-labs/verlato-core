@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest an improvement to the CLI, the VS Code extension or the MCP server.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you'd like
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Command line
+        - VS Code extension
+        - MCP server
+        - Models and providers
+        - Release notes and changelog format
+        - Installation and releases
+        - Documentation

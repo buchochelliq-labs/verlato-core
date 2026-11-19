@@ -1,0 +1,61 @@
+name: Bug report
+description: Verlato failed, crashed or did something wrong.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying the Verlato beta. For a release-notes draft that is wrong or unclear rather
+        than broken, use the **Release notes quality** form instead.
+  - type: input
+    id: version
+    attributes:
+      label: Verlato version
+      description: The output of `verlato --version`, or the extension's version.
+      placeholder: verlato 0.2.0-beta.1
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you installed it
+      options:
+        - pip / pipx / uv (verlato-core)
+        - Release bundle from GitHub Releases
+        - VS Code extension (runtime downloaded by the extension)
+        - VS Code extension with my own verlato (verlato.cliPath or PATH)
+        - Built from source
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and architecture
+      placeholder: macOS 15 arm64, Ubuntu 24.04 x86_64, Windows 11 x64
+    validations:
+      required: true
+  - type: textarea
+    id: engine
+    attributes:
+      label: Engine status
+      description: "The output of `verlato doctor engine`, or **Verlato: Show IntentumDiff Engine Status** in VS Code."
+      render: json
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you did
+      description: The commands or clicks, and the range (base and head) you used.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Error messages, and the Verlato output channel in VS Code if you used the extension.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected

@@ -126,3 +126,18 @@ verlato state clear-working           # forget unpublished items and their revie
 verlato state clear-suggestion-cache  # forget cached suggestions
 rm .verlato_semantic_cache.json       # re-review every commit next time
 ```
+
+## Reporting a problem
+
+Verlato is in beta, and reports help. Open an issue on
+[GitHub](https://github.com/buchochelliq-labs/verlato-core/issues/new/choose) using one of the forms:
+
+- **Bug report:** Verlato failed or did something wrong. Include `verlato --version`, how you installed
+  it, and the output of `verlato doctor engine`.
+- **Release notes quality:** a draft that was wrong or unclear, such as a wrong section, a missed or false
+  breaking change, or vague wording. Include the item from `verlato draft json` and what it should have
+  said.
+- **Feature request.**
+
+A semantic review that is wrong for a particular language usually belongs to the
+[IntentumDiff engine](https://github.com/buchochelliq-labs/intentumdiff-core/issues).
