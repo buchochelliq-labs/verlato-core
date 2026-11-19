@@ -121,7 +121,7 @@ cache keys legitimately differ between the runtimes there; the suite masks only 
 
 ## The Python package
 
-The `verlato` PyPI package (`pyproject.toml`, built with maturin) holds:
+The `verlato-core` PyPI package (`pyproject.toml`, built with maturin; it installs the `verlato` command and module) holds:
 
 - **`verlato._native`** (`crates/verlato-python`): a PyO3 extension module, built for the stable
   ABI (`abi3-py312`: one wheel per platform for CPython 3.12+). It exposes `run(argv)`, which

@@ -1,6 +1,6 @@
 # Python API
 
-The [`verlato` package](https://pypi.org/project/verlato/) wraps the native runtime with
+The [`verlato-core` package](https://pypi.org/project/verlato-core/) wraps the native runtime with
 PyO3 bindings. Everything runs in-process: no subprocess, and no Python reimplementation.
 
 ```python

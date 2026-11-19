@@ -10,7 +10,7 @@ program as the command line, so everything it does can also be scripted.
 ## Install
 
 1. **Install Verlato itself**, one of:
-    - `pip install verlato` (the `verlato` command lands on `PATH`);
+    - `pip install verlato-core` (the `verlato` command lands on `PATH`);
     - unpack a [release bundle](../getting-started.md#from-a-release-bundle), then set
       **`verlato.cliPath`** to its `verlato` executable (or put its directory on `PATH`).
 2. **Install the extension**: from a `.vsix` file with *Extensions: Install from VSIX...*, or

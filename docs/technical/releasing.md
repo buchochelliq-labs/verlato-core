@@ -75,7 +75,7 @@ pin in the same commit.**
    must point at a commit on it. Merge the release work into `main` first.
 2. **PyPI trusted publisher.** Create a `pypi` environment in the repository settings (Settings →
    Environments; optionally limit it to `main` and `release-*` tags, and add required reviewers). On PyPI, the
-   `verlato` project does not exist yet, so add a *pending* trusted publisher from your account's publishing
+   `verlato-core` project does not exist yet, so add a *pending* trusted publisher from your account's publishing
    page (<https://pypi.org/manage/account/publishing/>): owner `buchochelliq-labs`, repository `verlato-core`,
    workflow `release.yml`, environment `pypi`. The first upload creates the project. No token is stored.
 3. **GitHub Releases** need nothing: the `publish-github` job uses the workflow's token with

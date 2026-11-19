@@ -34,7 +34,7 @@ review are routed to **needs-review**.
 
 ## Requirements
 
-The extension runs the `verlato` program. Install it with `pip install verlato`, or download
+The extension runs the `verlato` program. Install it with `pip install verlato-core`, or download
 a release bundle from [GitHub Releases](https://github.com/buchochelliq-labs/verlato-core/releases)
 and set **`verlato.cliPath`** to its `verlato` executable. Run **Verlato: Show IntentumDiff
 Engine Status** to check the installation.

@@ -29,7 +29,7 @@ allow it.
 ## Install
 
 ```sh
-pip install verlato              # CPython 3.12+; Linux, macOS, Windows
+pip install verlato-core         # CPython 3.12+; Linux, macOS, Windows
 ```
 
 Or download a self-contained bundle (the `verlato` executable plus its parser bundle) for your

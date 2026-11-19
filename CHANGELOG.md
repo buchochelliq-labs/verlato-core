@@ -4,7 +4,8 @@
 - Verlato is now licensed under Apache-2.0 (previously MIT), and the repository is `buchochelliq-labs/verlato-core`.
 - Verlato is now a native (Rust) program, with the IntentumDiff engine linked in-process. The Python
   implementation is retired; every command, the editor service and the MCP server run natively.
-- The `verlato` Python package is a thin wrapper over the native runtime (PyO3 bindings, abi3 wheels for
+- The Python package is published as `verlato-core` (`pip install verlato-core`; the command and the
+  module are still `verlato`). It is a thin wrapper over the native runtime (PyO3 bindings, abi3 wheels for
   CPython 3.12+). It ships the IntentumDiff parser bundle and has no runtime dependencies
   (`intentumdiff-python` and `fastmcp` are no longer needed).
 - Unknown commands are usage errors (exit code 2) instead of being handed to `verlato-py`.

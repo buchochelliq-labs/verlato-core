@@ -43,7 +43,7 @@ coverage of more forges, governance, analytics and multi-user operation are paid
 
 - **Core:**
   - the `verlato` binary and per-platform bundles on GitHub Releases;
-  - the `verlato` wheel on PyPI;
+  - the `verlato-core` wheel on PyPI (command and module `verlato`);
   - the VS Code extension.
 
   See [Releasing](technical/releasing.md).

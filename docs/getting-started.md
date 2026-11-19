@@ -9,14 +9,14 @@ distribution below includes. Pick one.
 ### With pip
 
 ```sh
-pip install verlato
+pip install verlato-core
 ```
 
-The [`verlato` package on PyPI](https://pypi.org/project/verlato/) is a thin wrapper over the
+The [`verlato-core` package on PyPI](https://pypi.org/project/verlato-core/) is a thin wrapper over the
 native runtime, for CPython 3.12 or newer on Linux (x86_64, aarch64), macOS (Apple Silicon and
 Intel) and Windows (x64). It installs the `verlato` and `verlato-mcp` commands and a small
 [Python API](reference/python.md), and carries the parser bundle inside the wheel. It has no
-other dependencies. `pipx install verlato` or `uv tool install verlato` work too.
+other dependencies. `pipx install verlato-core` or `uv tool install verlato-core` work too.
 
 ### From a release bundle
 

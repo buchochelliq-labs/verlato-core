@@ -3,7 +3,7 @@ requires = ["maturin>=1.9,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "verlato"
+name = "verlato-core"
 # The version is the Rust workspace's ([workspace.package] in Cargo.toml).
 dynamic = ["version"]
 description = "Semantic release notes powered by IntentumDiff, with conventional commit and intent inference"
