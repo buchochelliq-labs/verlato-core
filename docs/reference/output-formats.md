@@ -94,11 +94,15 @@ The `github-release` format (`draft preview`, `render --format github-release`):
 ## v1.1.0 - 2026-11-10
 
 ### Added
-- Merge pull request #12 from demo/feature/csv-export (PR #12): Export a board as CSV ...
+- Export a board as CSV. Added `export_csv` (PR #12).
 
 ### Fixed
-- fix: reject tasks with empty titles: ...
+- Rejected tasks with empty titles. Renamed `open_tasks` to `pending`; added `overdue` (possible breaking change).
 ```
+
+Each entry is the item's summary followed by its PR. With `summary_style: "evidence"` an entry
+reads `- <title> (PR #12): <summary>` instead, as in Verlato 0.1 (see
+[Summaries](../guide/concepts.md#summaries)).
 
 The `changelog` format uses `### v1.1.0 (2026-11-10)` as the release heading. With
 `--include-confidence` / `--include-provenance`, each entry ends with
