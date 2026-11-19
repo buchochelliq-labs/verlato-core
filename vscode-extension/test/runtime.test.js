@@ -17,6 +17,7 @@ const {
   UnsupportedPlatformError,
   versionMatches,
   writeEntries,
+  runtimeVersion,
 } = require("../dist/client/runtime");
 
 // -- tiny archive writers for fixtures ---------------------------------------------------------
@@ -259,4 +260,29 @@ test("unsupported platforms are reported as such", async () => {
     installRuntime({ version: "0.2.0", storageDir: tempDir(), platform: "win32", arch: "arm64", fetch: async () => Buffer.alloc(0) }),
     (error) => error instanceof UnsupportedPlatformError,
   );
+});
+
+test("the runtime version comes from verlatoRuntime and matches the Rust workspace", () => {
+  assert.equal(runtimeVersion({ version: "0.2.0", verlatoRuntime: "0.2.0-beta.1" }), "0.2.0-beta.1");
+  assert.equal(runtimeVersion({ version: "0.3.0" }), "0.3.0");
+  assert.equal(runtimeVersion({ version: "0.3.0", verlatoRuntime: " " }), "0.3.0");
+  assert.equal(runtimeVersion({}), "0.0.0");
+
+  // A pre-release runtime's bundles and tag carry the SemVer suffix.
+  const bundle = runtimeBundle("0.2.0-beta.1", "linux", "x64");
+  assert.equal(bundle.archive, "verlato-v0.2.0-beta.1-x86_64-unknown-linux-gnu.tar.gz");
+  assert.equal(
+    bundle.sumsUrl,
+    "https://github.com/buchochelliq-labs/verlato-core/releases/download/v0.2.0-beta.1/SHA256SUMS",
+  );
+  assert.equal(versionMatches("verlato 0.2.0-beta.1\n", "0.2.0-beta.1"), true);
+
+  // The extension downloads the runtime this repository releases: verlatoRuntime must equal the
+  // Rust workspace version ([workspace.package] in Cargo.toml).
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+  const cargo = fs.readFileSync(path.join(__dirname, "..", "..", "Cargo.toml"), "utf8");
+  const section = cargo.split(/^\[workspace\.package\]\s*$/m)[1]?.split(/^\[/m)[0] ?? "";
+  const workspace = /^version\s*=\s*"([^"]+)"/m.exec(section);
+  assert.ok(workspace, "Cargo.toml has a [workspace.package] version");
+  assert.equal(runtimeVersion(manifest), workspace[1]);
 });

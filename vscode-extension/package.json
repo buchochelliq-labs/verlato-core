@@ -3,6 +3,7 @@
   "displayName": "Verlato",
   "description": "Release notes you can trust, drafted from what your code actually changed. Powered by IntentumDiff and your agent.",
   "version": "0.2.0",
+  "verlatoRuntime": "0.2.0-beta.1",
   "publisher": "buchochelliq-labs",
   "icon": "media/verlato-icon.png",
   "license": "Apache-2.0",

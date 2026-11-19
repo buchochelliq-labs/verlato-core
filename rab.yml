@@ -81,5 +81,9 @@ packages:
     open-vsx: true
     paths: ["vscode-extension/**"]
     artifacts:
-      - kind: vsix
-        test: cd vscode-extension && npm test
+      # Packaged as a pre-release (`vsce package --pre-release`): the stores take only x.y.z
+      # versions, so the pre-release flag lives in the vsix manifest. The extension's own tests run
+      # inside the script before packaging.
+      - kind: command
+        run: scripts/package_extension.sh "$VERSION" "$OUT"
+        outputs: "dist/verlato-vscode-*.vsix"
