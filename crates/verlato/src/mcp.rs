@@ -559,7 +559,9 @@ pub(crate) fn suggestion_tools(
     let groups = ctx.collect_groups(base, head, &ModelRequest::default())?;
     let items = groups
         .iter()
-        .map(|group| crate::classifier::classify(group, base, head, None))
+        .map(|group| {
+            crate::classifier::classify(group, base, head, None, ctx.config.summary_style())
+        })
         .collect();
     let privacy = crate::assist::resolve_model_privacy(
         ctx.config.raw.get("model_privacy").and_then(Value::as_str),

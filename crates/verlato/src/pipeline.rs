@@ -304,7 +304,13 @@ impl Context {
                 label,
                 json!({"detail": group_detail(group), "current": index, "total": total, "unit": "changeset"}),
             );
-            let item = classify(group, base, head, assist.as_ref());
+            let item = classify(
+                group,
+                base,
+                head,
+                assist.as_ref(),
+                self.config.summary_style(),
+            );
             trace_progress(
                 stage,
                 "Classified changeset",

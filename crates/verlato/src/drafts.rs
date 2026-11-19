@@ -1,5 +1,6 @@
 //! Markdown rendering and draft documents. Ports `verlato/core/{generator,drafts}.py`.
 
+use crate::prose::SummaryStyle;
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
 use regex::Regex;
@@ -27,6 +28,7 @@ fn item_kind(item: &ChangeItem) -> String {
 
 fn render_sections(
     items: &[ChangeItem],
+    style: SummaryStyle,
     include_summary: bool,
     include_confidence: bool,
     include_provenance: bool,
@@ -65,7 +67,16 @@ fn render_sections(
             } else {
                 format!(" [{}]", extras.join("; "))
             };
-            if include_summary || !item.content.summary.is_empty() {
+            if style == SummaryStyle::Prose && !item.content.summary.is_empty() {
+                // The summary is the release-note sentence; the title is already part of it.
+                // "Sentence (PR #12)." rather than "Sentence. (PR #12)".
+                let summary = item.content.summary.trim();
+                let line = match summary.strip_suffix('.') {
+                    Some(stem) if !source.is_empty() => format!("{stem}{source}.{suffix}"),
+                    _ => format!("{summary}{source}{suffix}"),
+                };
+                lines.push(format!("- {line}"));
+            } else if include_summary || !item.content.summary.is_empty() {
                 lines.push(format!(
                     "- {}{source}: {}{suffix}",
                     item.content.title, item.content.summary
@@ -94,25 +105,27 @@ fn finish(header: String, body: Vec<String>) -> String {
 
 pub fn render_github_release(
     items: &[ChangeItem],
+    style: SummaryStyle,
     version: &str,
     confidence: bool,
     provenance: bool,
 ) -> String {
     finish(
         format!("## {version} - {}", today()),
-        render_sections(items, false, confidence, provenance),
+        render_sections(items, style, false, confidence, provenance),
     )
 }
 
 pub fn render_changelog_entry(
     items: &[ChangeItem],
+    style: SummaryStyle,
     version: &str,
     confidence: bool,
     provenance: bool,
 ) -> String {
     finish(
         format!("### {version} ({})", today()),
-        render_sections(items, true, confidence, provenance),
+        render_sections(items, style, true, confidence, provenance),
     )
 }
 
@@ -223,6 +236,7 @@ pub fn build_document(
         "github-release".to_owned(),
         render_github_release(
             &render_items,
+            config.summary_style(),
             version,
             include_confidence,
             include_provenance,
@@ -232,6 +246,7 @@ pub fn build_document(
         "changelog".to_owned(),
         render_changelog_entry(
             &render_items,
+            config.summary_style(),
             version,
             include_confidence,
             include_provenance,
