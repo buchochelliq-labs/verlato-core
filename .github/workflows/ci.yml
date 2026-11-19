@@ -68,6 +68,45 @@ jobs:
           python3 .github/rab/scripts/release.py check
           python3 .github/rab/scripts/release.py vendored
 
+  # Builds the wheel the way the release does (rab's maturin step: maturin-action with
+  # `manylinux: auto`, so the Linux wheel is built in the manylinux2014 container, glibc 2.17)
+  # and installs it in a fresh venv, so a wheel that builds but cannot be imported fails the PR
+  # rather than the release (0.2.0's Linux wheels imported with "undefined symbol: le16toh").
+  wheel:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Provision the IntentumDiff parser bundle
+        run: scripts/fetch_intentumdiff_parsers.sh python/verlato/wasm
+      # Same action, pin and arguments as .github/rab/build/action.yml.
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          target: ${{ matrix.target }}
+          args: --release --locked --out dist
+          manylinux: auto
+          sccache: "false"
+      - name: Install and use the wheel (scripts/test_wheel.sh)
+        run: scripts/test_wheel.sh dist/*.whl
+
   extension:
     runs-on: ubuntu-latest
     defaults:
