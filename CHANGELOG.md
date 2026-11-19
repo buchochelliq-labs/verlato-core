@@ -1,4 +1,4 @@
-## 0.2.0 (unreleased)
+## 0.2.0 (2026-11-19)
 
 ### Changed
 - Verlato is now licensed under Apache-2.0 (previously MIT), and the repository is `buchochelliq-labs/verlato-core`.
