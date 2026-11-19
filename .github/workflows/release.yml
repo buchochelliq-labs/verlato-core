@@ -154,12 +154,16 @@ jobs:
 
   # The VS Code extension, to the Visual Studio Marketplace and Open VSX (rab.yml: open-vsx: true).
   # The `marketplace` environment holds VSCE_PAT (Azure DevOps, Marketplace "Manage") and OVSX_PAT.
+  # It waits for publish-github: the extension downloads its runtime from the v<version> GitHub
+  # release, so it must not go live while that release is missing (a skipped publish-github means
+  # the release was already published by an earlier run).
   publish-vscode:
-    needs: [gate, ci, build]
+    needs: [gate, ci, build, publish-github]
     if: >-
       !cancelled() && needs.gate.outputs.vscode == 'true' && needs.ci.result == 'success'
       && (needs.build.result == 'success'
           || (needs.build.result == 'skipped' && needs.gate.outputs.verify-only == 'true'))
+      && (needs.publish-github.result == 'success' || needs.publish-github.result == 'skipped')
     runs-on: ubuntu-latest
     environment: marketplace
     steps:
