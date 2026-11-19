@@ -1,9 +1,9 @@
 {
   "name": "verlato-vscode",
   "displayName": "Verlato",
-  "description": "Semantic release notes powered by IntentumDiff: review changesets, draft changelogs, and publish release notes.",
-  "version": "0.0.1",
-  "publisher": "verlato",
+  "description": "Release notes you can trust, drafted from what your code actually changed. Powered by IntentumDiff and your agent.",
+  "version": "0.2.0",
+  "publisher": "buchochelliq-labs",
   "icon": "media/verlato-icon.png",
   "license": "Apache-2.0",
   "repository": {
@@ -14,6 +14,7 @@
     "vscode": "^1.90.0"
   },
   "categories": [
+    "SCM Providers",
     "Other"
   ],
   "activationEvents": [
@@ -42,7 +43,8 @@
     "onCommand:verlato.acceptItem",
     "onCommand:verlato.unhideItem",
     "onCommand:verlato.resetItemSummary",
-    "onCommand:verlato.showSemanticEngine"
+    "onCommand:verlato.showSemanticEngine",
+    "onCommand:verlato.downloadRuntime"
   ],
   "extensionDependencies": [
     "vscode.git"
@@ -177,6 +179,10 @@
       {
         "command": "verlato.showSemanticEngine",
         "title": "Verlato: Show IntentumDiff Engine Status"
+      },
+      {
+        "command": "verlato.downloadRuntime",
+        "title": "Verlato: Download Runtime"
       }
     ],
     "configuration": {
@@ -185,7 +191,12 @@
         "verlato.cliPath": {
           "type": "string",
           "default": "verlato",
-          "description": "Path to the Verlato CLI executable."
+          "description": "Path to the verlato executable. Leave as `verlato` to use a matching `verlato` on PATH or the runtime the extension downloads."
+        },
+        "verlato.runtime.autoDownload": {
+          "type": "boolean",
+          "default": true,
+          "description": "Download the native Verlato runtime for this extension's version from GitHub Releases (checked against the release's SHA256SUMS) when no `verlato` is configured or found on PATH."
         },
         "verlato.serviceMode": {
           "type": "string",
@@ -536,6 +547,7 @@
     }
   },
   "scripts": {
+    "vscode:prepublish": "npm run build",
     "build": "tsc -p ./",
     "watch": "tsc -w -p ./",
     "test": "npm run build && node --test test/*.test.js"
@@ -545,5 +557,18 @@
     "@types/vscode": "^1.90.0",
     "@vscode-elements/elements": "^2.5.1",
     "typescript": "^5.6.0"
-  }
+  },
+  "homepage": "https://buchochelliq-labs.github.io/verlato-core/",
+  "bugs": {
+    "url": "https://github.com/buchochelliq-labs/verlato-core/issues"
+  },
+  "keywords": [
+    "release notes",
+    "changelog",
+    "semantic diff",
+    "intentumdiff",
+    "git",
+    "conventional commits",
+    "mcp"
+  ]
 }

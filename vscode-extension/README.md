@@ -34,10 +34,13 @@ review are routed to **needs-review**.
 
 ## Requirements
 
-The extension runs the `verlato` program. Install it with `pip install verlato-core`, or download
-a release bundle from [GitHub Releases](https://github.com/buchochelliq-labs/verlato-core/releases)
-and set **`verlato.cliPath`** to its `verlato` executable. Run **Verlato: Show IntentumDiff
-Engine Status** to check the installation.
+Nothing else to install. The extension runs Verlato's native `verlato` program: when it finds
+none on `PATH`, it downloads the bundle for your platform (Linux x64/arm64, macOS, Windows x64)
+from the matching [GitHub release](https://github.com/buchochelliq-labs/verlato-core/releases),
+checks it against the release's `SHA256SUMS`, and keeps it in its storage. To manage it
+yourself, `pip install verlato-core` or set **`verlato.cliPath`**, and turn off
+`verlato.runtime.autoDownload`. Run **Verlato: Show IntentumDiff Engine Status** to check the
+installation, and **Verlato: Download Runtime** to download it again.
 
 ## Getting started
 
@@ -53,7 +56,8 @@ The most useful settings:
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `verlato.cliPath` | `verlato` | the `verlato` executable |
+| `verlato.cliPath` | `verlato` | the `verlato` executable (`verlato`: find or download it) |
+| `verlato.runtime.autoDownload` | `true` | download the native runtime when none is found |
 | `verlato.diffEngine` | `intentumdiff` | `intentumdiff` semantic review, or `git` text patches |
 | `verlato.modelProvider` | `ollama` | the model provider, or `configured` to use `verlato.json` |
 | `verlato.ollamaModel` | `gemma4:latest` | the Ollama model |

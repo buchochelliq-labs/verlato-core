@@ -2,6 +2,9 @@
 node_modules/**
 src/**
 test/**
+bin/**
+.venv/**
+**/*.map
 *.vsix
 package-lock.json
 tsconfig.json
