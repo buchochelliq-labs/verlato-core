@@ -547,6 +547,12 @@ fn parameter_list(definition: &str) -> Option<Vec<String>> {
     let mut pieces: Vec<String> = Vec::new();
     let mut current = String::new();
     let mut depth = 0usize;
+    // Open generic type-argument brackets (`List<T>`), tracked apart from `(`/`[`/`{` because `<`
+    // and `>` are also operators (`limit=1 < 2`, `x << 1`, `->`, `=>`).
+    let mut angles = 0usize;
+    // Whether the current parameter has reached its default value (`=` outside any brackets).
+    let mut in_default = false;
+    let mut previous = ' ';
     let mut quote: Option<char> = None;
     let collapse = |piece: &str| piece.split_whitespace().collect::<Vec<_>>().join(" ");
     for ch in definition[open + 1..]
@@ -560,9 +566,25 @@ fn parameter_list(definition: &str) -> Option<Vec<String>> {
             }
             continue;
         }
+        let after = previous;
+        if !ch.is_whitespace() {
+            previous = ch;
+        }
         match ch {
             '"' | '\'' | '`' => quote = Some(ch),
-            '(' | '[' | '{' | '<' => depth += 1,
+            '(' | '[' | '{' => depth += 1,
+            // A type argument list follows a type name; in a default value `<` is an operator.
+            '<' if !in_default && (after.is_alphanumeric() || after == '_') => {
+                depth += 1;
+                angles += 1;
+            }
+            '>' if angles > 0 && after != '-' && after != '=' => {
+                depth = depth.saturating_sub(1);
+                angles -= 1;
+            }
+            // The `=` of an arrow type (`cb: (a: T) => U`) did not start a default value.
+            '>' if after == '=' && depth == 0 => in_default = false,
+            '=' if depth == 0 => in_default = true,
             ')' | ']' | '}' if depth == 0 => {
                 pieces.push(current);
                 return Some(
@@ -573,9 +595,10 @@ fn parameter_list(definition: &str) -> Option<Vec<String>> {
                         .collect(),
                 );
             }
-            ')' | ']' | '}' | '>' => depth = depth.saturating_sub(1),
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
             ',' if depth == 0 => {
                 pieces.push(std::mem::take(&mut current));
+                in_default = false;
                 continue;
             }
             _ => {}
@@ -1891,6 +1914,30 @@ mod tests {
     }
 
     #[test]
+    fn parameter_lists_tell_generics_from_operators() {
+        let params = |source: &str| parameter_list(source).unwrap();
+        // Generic type arguments keep their commas.
+        assert_eq!(
+            params("function f(a: Map<string, number>, b?: Array<Set<T>>) {"),
+            ["a: Map<string, number>", "b?: Array<Set<T>>"]
+        );
+        // `<`, `<<` and `>` in default values are operators.
+        assert_eq!(
+            params("def fetch(limit=1 < 2, mask=1 << 3, big=a > b, offset=0):"),
+            ["limit=1 < 2", "mask=1 << 3", "big=a > b", "offset=0"]
+        );
+        // Arrow types do not start a default value or close a bracket.
+        assert_eq!(
+            params("function f(cb: (a: T) => Promise<A, B>, d = 1) {"),
+            ["cb: (a: T) => Promise<A, B>", "d = 1"]
+        );
+        assert_eq!(
+            params("fn f(a: Vec<u8>, b: impl Fn(u8) -> Option<u8>) -> u8 {"),
+            ["a: Vec<u8>", "b: impl Fn(u8) -> Option<u8>"]
+        );
+    }
+
+    #[test]
     fn signature_changes_are_extended_only_for_appended_omittable_parameters() {
         let definition = |label: &str, source: &str, count: i64, defaults: i64| {
             let first = source.lines().next().unwrap();
@@ -1936,6 +1983,15 @@ mod tests {
         // Catch-alls are omittable.
         assert_eq!(
             kind(old, "def fetch(limit, page=1, **kw):\n", (2, 1, 3, 1)),
+            "extended"
+        );
+        // `<` in a default value is a comparison, not a generic bracket.
+        assert_eq!(
+            kind(
+                "def fetch(limit=1 < 2):\n",
+                "def fetch(limit=1 < 2, offset=0):\n",
+                (1, 1, 2, 2)
+            ),
             "extended"
         );
         // A removed parameter.
