@@ -62,8 +62,8 @@ title and its semantic evidence (`summary_style: "prose"`, the default):
 - Facts from the semantic review are added when they say something the title does not:
   renamed, removed and re-signatured public symbols (marked "possible breaking change"),
   optional parameters added to existing functions, and the symbols a feature adds.
-  `Update app helpers` reads "Updated app helpers. Removed `gone`; added optional parameters
-  to `greet`; added `fresh` (possible breaking change)."
+  `Update app helpers` reads "Updated app helpers. Removed `gone` (possible breaking change);
+  added optional parameters to `greet`; added `fresh`."
 - A title that says nothing (`wip`, `misc`, `fix stuff`) is replaced by the facts:
   "Renamed `fresh` to `renamed_fresh` (possible breaking change).", or, without a semantic
   review, the changed files ("Updated `src/app.py`.").

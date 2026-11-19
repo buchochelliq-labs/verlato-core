@@ -103,8 +103,8 @@ _PROSE = {
     "intentumdiff": {
         "feat(api): add export endpoint": "Added export endpoint.",
         "Update app helpers": (
-            "Updated app helpers. Removed `gone`; added optional parameters to `greet`; added `fresh` "
-            "(possible breaking change)."
+            "Updated app helpers. Removed `gone` (possible breaking change); added optional parameters to "
+            "`greet`; added `fresh`."
         ),
         "Big change across areas (#12) [backend]": "Big change across areas (backend). Added `handle`.",
         "Big change across areas (#12) [frontend]": (

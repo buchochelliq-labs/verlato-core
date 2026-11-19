@@ -257,7 +257,7 @@ pub fn release_note(input: &ProseInput<'_>) -> String {
     if breaking {
         let first = sentences.remove(0);
         sentences.insert(0, before_period(&first, " (breaking change)"));
-    } else if facts.possible_break {
+    } else if facts.possible_break && !facts.marks_break() {
         let last = sentences.pop().unwrap_or_default();
         sentences.push(before_period(&last, " (possible breaking change)"));
     }
@@ -478,20 +478,41 @@ impl Facts {
             && self.added.is_empty())
     }
 
-    /// "renamed `a` to `b`; changed the signature of `c`; added `d`".
+    /// "renamed `a` to `b`; changed the signature of `c` (possible breaking change); added `d`".
+    /// A possible API break is marked on the facts that can break callers (renames, removals,
+    /// signature changes), not on the compatible ones after them.
     fn clause(&self) -> Option<String> {
-        let mut parts = Vec::new();
-        let mut push = |verb: &str, list: &[String]| {
-            if !list.is_empty() {
-                parts.push(format!("{verb} {}", enumerate(list)));
-            }
+        let part = |verb: &str, list: &[String]| {
+            (!list.is_empty()).then(|| format!("{verb} {}", enumerate(list)))
         };
-        push("renamed", &self.renamed);
-        push("removed", &self.removed);
-        push("changed the signature of", &self.signature);
-        push("added optional parameters to", &self.extended);
-        push("added", &self.added);
+        let mut parts: Vec<String> = [
+            part("renamed", &self.renamed),
+            part("removed", &self.removed),
+            part("changed the signature of", &self.signature),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if self.marks_break() {
+            if let Some(last) = parts.last_mut() {
+                last.push_str(" (possible breaking change)");
+            }
+        }
+        parts.extend(
+            [
+                part("added optional parameters to", &self.extended),
+                part("added", &self.added),
+            ]
+            .into_iter()
+            .flatten(),
+        );
         (!parts.is_empty()).then(|| parts.join("; "))
+    }
+
+    /// Whether `clause` carries the possible-break marker itself.
+    fn marks_break(&self) -> bool {
+        self.possible_break
+            && !(self.renamed.is_empty() && self.removed.is_empty() && self.signature.is_empty())
     }
 }
 
@@ -618,14 +639,14 @@ mod tests {
         ];
         assert_eq!(
             note("Big change across areas (#12)", "changed", Some(&mixed)),
-            "Big change across areas (#12). Changed the signature of `render`; added optional \
-             parameters to `greet`; added `handle` (possible breaking change)."
+            "Big change across areas (#12). Changed the signature of `render` (possible breaking \
+             change); added optional parameters to `greet`; added `handle`."
         );
         // A feature names the symbols it adds unless the title already does.
         assert_eq!(
             note("feat: request routing", "added", Some(&mixed)),
-            "Added request routing. Changed the signature of `render`; added optional parameters \
-             to `greet`; added `handle` (possible breaking change)."
+            "Added request routing. Changed the signature of `render` (possible breaking change); \
+             added optional parameters to `greet`; added `handle`."
         );
         let mut many = evidence("additive");
         many.added_symbols = (1..=5).map(|i| format!("f{i} in m.py")).collect();

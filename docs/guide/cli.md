@@ -37,7 +37,7 @@ semantic review:
 ```markdown
 ### Changed
 - Big change across areas (frontend). Changed the signature of `render` (possible breaking change) (PR #12).
-- Updated app helpers. Removed `gone`; added optional parameters to `greet`; added `fresh` (possible breaking change).
+- Updated app helpers. Removed `gone` (possible breaking change); added optional parameters to `greet`; added `fresh`.
 ```
 
 See [Summaries](concepts.md#summaries) for how the sentence is written, and `summary_style` to

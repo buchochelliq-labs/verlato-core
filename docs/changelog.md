@@ -7,8 +7,8 @@ release notes Verlato drafted for itself while it was developed.
 
 ### Changed
 - Without a model, release notes now read as release notes. Each item's summary is a sentence
-  written from its title and its semantic evidence ("Updated app helpers. Removed `gone`; added
-  optional parameters to `greet`; added `fresh` (possible breaking change).") instead of the
+  written from its title and its semantic evidence ("Updated app helpers. Removed `gone` (possible
+  breaking change); added optional parameters to `greet`; added `fresh`.") instead of the
   diagnostic evidence summary, and each rendered entry is that sentence followed by its PR. The
   evidence summary stays in the item's evidence (`evidence_summary`). The new `summary_style`
   setting (`VERLATO_SUMMARY_STYLE`) selects `prose` (the default) or `evidence`, the previous
