@@ -2,6 +2,12 @@
 
 ## Install
 
+!!! warning "Pre-release"
+
+    Verlato 0.2.0-beta.1 is a pre-release (beta). Every channel marks it as one: PyPI
+    (`0.2.0b1`), GitHub Releases (`v0.2.0-beta.1`, a pre-release) and the VS Code Marketplace and
+    Open VSX (a Pre-Release version). Installers only offer it when asked to, as shown below.
+
 Verlato is a single native program with the IntentumDiff engine linked in. It needs git on
 `PATH`, and the IntentumDiff parser bundle (a directory of WebAssembly parsers), which every
 distribution below includes. Pick one.
@@ -9,14 +15,15 @@ distribution below includes. Pick one.
 ### With pip
 
 ```sh
-pip install verlato-core
+pip install --pre verlato-core          # or: pip install verlato-core==0.2.0b1
 ```
 
 The [`verlato-core` package on PyPI](https://pypi.org/project/verlato-core/) is a thin wrapper over the
 native runtime, for CPython 3.12 or newer on Linux (x86_64, aarch64), macOS (Apple Silicon and
 Intel) and Windows (x64). It installs the `verlato` and `verlato-mcp` commands and a small
 [Python API](reference/python.md), and carries the parser bundle inside the wheel. It has no
-other dependencies. `pipx install verlato-core` or `uv tool install verlato-core` work too.
+other dependencies. `pipx install --pip-args=--pre verlato-core` or `uv tool install --prerelease=allow verlato-core`
+work too. Without `--pre` (or its equivalent), pip skips pre-releases and finds no version.
 
 ### From a release bundle
 
@@ -26,8 +33,8 @@ Windows), and a `SHA256SUMS` file:
 
 ```sh
 sha256sum -c SHA256SUMS --ignore-missing
-tar -xzf verlato-v0.2.0-x86_64-unknown-linux-gnu.tar.gz
-verlato-v0.2.0-x86_64-unknown-linux-gnu/verlato --version
+tar -xzf verlato-v0.2.0-beta.1-x86_64-unknown-linux-gnu.tar.gz
+verlato-v0.2.0-beta.1-x86_64-unknown-linux-gnu/verlato --version
 ```
 
 The archive holds the `verlato` executable with the parser bundle beside it in `wasm/`. Keep

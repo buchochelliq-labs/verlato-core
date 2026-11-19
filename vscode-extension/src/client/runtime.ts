@@ -1,6 +1,7 @@
 // Obtaining the native `verlato` runtime for the extension: the release bundle for this platform,
-// downloaded from the GitHub release that matches the extension's version, checked against the
-// release's SHA256SUMS and unpacked into the extension's global storage.
+// downloaded from the GitHub release for the extension's runtime version (package.json
+// `verlatoRuntime`), checked against the release's SHA256SUMS and unpacked into the extension's
+// global storage.
 //
 // Nothing here imports `vscode`, so it can be unit-tested; the extension supplies the fetcher
 // (Node's https, which VS Code routes through `http.proxy`) and the progress reporting.
@@ -77,7 +78,20 @@ export function parseSha256Sums(text: string): Map<string, string> {
   return sums;
 }
 
-/** Whether `verlato --version` output (`verlato 0.2.0`) has the extension's major.minor. */
+/**
+ * The native runtime version this extension downloads: `verlatoRuntime` in package.json (the
+ * Rust workspace version, e.g. `0.2.0-beta.1`), else the extension's own version. The two differ
+ * for pre-releases, because the Marketplace and Open VSX only take plain `x.y.z` versions.
+ */
+export function runtimeVersion(packageJson: { version?: unknown; verlatoRuntime?: unknown }): string {
+  const runtime = typeof packageJson.verlatoRuntime === "string" ? packageJson.verlatoRuntime.trim() : "";
+  if (runtime) {
+    return runtime;
+  }
+  return typeof packageJson.version === "string" && packageJson.version ? packageJson.version : "0.0.0";
+}
+
+/** Whether `verlato --version` output (`verlato 0.2.0-beta.1`) has the runtime's major.minor. */
 export function versionMatches(versionOutput: string, extensionVersion: string): boolean {
   const found = /(\d+)\.(\d+)\.\d+/.exec(versionOutput);
   const wanted = /^(\d+)\.(\d+)\./.exec(extensionVersion);

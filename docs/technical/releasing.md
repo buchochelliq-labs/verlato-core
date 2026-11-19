@@ -44,22 +44,43 @@ Each asset also gets a `<file>.sha256` from rab.
 
 To use a bundle: unpack it, then put its directory on `PATH` or point the VS Code extension's
 `verlato.cliPath` setting at its `verlato` executable. The extension also picks up an unpacked bundle placed in
-its own `bin/` directory (executable and `wasm/` side by side), and downloads the bundle for its own version
+its own `bin/` directory (executable and `wasm/` side by side), and downloads the bundle for its runtime version
 when it finds none (see below), so the bundle names and `SHA256SUMS` are part of its contract.
 
 ### VS Code extension (Marketplace and Open VSX)
 
 `buchochelliq-labs.verlato-vscode` (`registry: vscode`, `open-vsx: true`): one universal
-`verlato-vscode-<version>.vsix`, built by rab's `vsix` artifact (`npm ci`, then `vsce package`, which runs
-`vscode:prepublish` to compile) and tested with `npm test`. The `publish-vscode` job uploads it to the Visual
-Studio Marketplace and to Open VSX, and waits until both list it. Its tag is
+`verlato-vscode-<version>.vsix`, built by a rab `command` artifact, `scripts/package_extension.sh`. It runs
+`npm ci` and `npm test`, then `vsce package --pre-release`. The `publish-vscode` job uploads the file to the
+Visual Studio Marketplace and to Open VSX, and waits until both list it. Its tag is
 `buchochelliq-labs.verlato-vscode-v<version>`.
 
-The extension carries no native code. On first use it downloads `verlato-v<version>-<target>` for the user's
-platform from the `v<version>` GitHub release of the same run, verifies it against `SHA256SUMS`, and unpacks it
-into its global storage. So the extension's version must equal the native bundles' version (Cargo's
-workspace version): bump `vscode-extension/package.json` together with `Cargo.toml` (`release.py check`
-compares each manifest with `rab.yml`).
+The extension carries no native code. On first use it downloads `verlato-v<runtime>-<target>` for the user's
+platform from the `v<runtime>` GitHub release of the same run, verifies it against `SHA256SUMS`, and unpacks it
+into its global storage. `<runtime>` is `verlatoRuntime` in `vscode-extension/package.json`, which must equal
+Cargo's workspace version; an extension unit test checks this. `publish-vscode` waits for `publish-github`, so
+the extension never goes live before the release it downloads from.
+
+### Pre-releases
+
+0.2.0-beta.1 is a pre-release on every channel:
+
+| Channel | Version | Marked as a pre-release by |
+|---|---|---|
+| GitHub Releases (native bundles) | `0.2.0-beta.1`, tag `v0.2.0-beta.1` | the `-` in the version: rab creates the release with `--prerelease` |
+| PyPI (`verlato-core`) | `0.2.0b1` (maturin's PEP 440 form of the Cargo version) | the version itself: pip installs it only with `--pre` or an exact pin |
+| Marketplace and Open VSX | `0.2.0` | `vsce package --pre-release`, which sets `Microsoft.VisualStudio.Code.PreRelease` in the vsix manifest; both stores read it from the uploaded file |
+
+The stores accept only plain `x.y.z` versions, which is why the extension's own version (`0.2.0`) differs from
+its runtime's (`verlatoRuntime: 0.2.0-beta.1`). They never reuse a version either, so the next extension
+release, pre-release or stable, needs a higher `x.y.z` (for example `0.2.1` or `0.3.0`).
+
+**Making a stable release:**
+- set a version without a suffix in `Cargo.toml` (`0.3.0`), `release.py sync`;
+- set `verlatoRuntime` and the extension's `version` to match it;
+- drop `--pre-release` from `scripts/package_extension.sh`.
+
+The release tag is named from the native package (`release: name_from: verlato-native`): `release-0.2.0-beta.1`.
 
 ### Python package (PyPI)
 

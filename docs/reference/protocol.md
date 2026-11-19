@@ -11,7 +11,7 @@ line on stdout, in order.
 
 ```text
 → {"id": 1, "method": "health"}
-← {"id": 1, "ok": true, "result": {"status": "ok", "version": "0.2.0", "runtime": "rust"}}
+← {"id": 1, "ok": true, "result": {"status": "ok", "version": "0.2.0-beta.1", "runtime": "rust"}}
 → {"id": 2, "method": "draft.preview", "params": {"request": {"base": "v1.0.0", "version": "v1.1.0"}}}
 ← {"id": 2, "ok": true, "result": "## v1.1.0 - 2026-11-10\n\n### Added\n- ..."}
 → {"id": 3, "method": "nope"}

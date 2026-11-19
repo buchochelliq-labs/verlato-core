@@ -12,6 +12,7 @@ import {
   installRuntime,
   pathExecutables,
   runtimeBundle,
+  runtimeVersion,
   versionMatches,
 } from "./client/runtime";
 
@@ -37,8 +38,9 @@ export class RuntimeManager {
     private readonly output: vscode.OutputChannel,
   ) {}
 
+  /** The runtime version to use and download (package.json `verlatoRuntime`). */
   get version(): string {
-    return String(this.context.extension.packageJSON.version ?? "0.0.0");
+    return runtimeVersion(this.context.extension.packageJSON ?? {});
   }
 
   async prepare(): Promise<string | undefined> {

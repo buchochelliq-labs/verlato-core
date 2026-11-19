@@ -13,15 +13,18 @@ program as the command line, so everything it does can also be scripted.
    [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=buchochelliq-labs.verlato-vscode) or [Open VSX](https://open-vsx.org/extension/buchochelliq-labs/verlato-vscode)
    (search for *Verlato*, publisher `buchochelliq-labs`), or from a `.vsix` file with
    *Extensions: Install from VSIX...* ([Building from source](../technical/building.md#the-vs-code-extension)).
-   It needs VS Code 1.90 or later.
+   It needs VS Code 1.90 or later. Version 0.2.0 is a **Pre-Release**: on the extension's page,
+   choose *Install Pre-Release Version* (or *Switch to Pre-Release Version*); a plain *Install*
+   offers no version until a stable one is published.
 2. **Open a git repository** and click the Verlato icon in the activity bar.
 
 That's all: the extension needs the native `verlato` runtime, and if it can't find one it
 downloads the [release bundle](../getting-started.md#from-a-release-bundle) for your platform
-from the GitHub release matching its version, checks it against the release's `SHA256SUMS`, and
+from the GitHub release for its runtime version (`verlatoRuntime` in the extension's
+`package.json`, `0.2.0-beta.1` for extension 0.2.0), checks it against the release's `SHA256SUMS`, and
 keeps it in the extension's storage. **Verlato: Download Runtime** downloads it again (for
 example after a failed or interrupted download). To manage the runtime yourself, install it
-with `pip install verlato-core`, or set `verlato.runtime.autoDownload` to `false`.
+with `pip install --pre verlato-core`, or set `verlato.runtime.autoDownload` to `false`.
 
 The extension looks for `verlato` in this order:
 
@@ -29,9 +32,9 @@ The extension looks for `verlato` in this order:
 2. a local install: a release bundle unpacked into the extension's own `bin/` directory,
    `target/release/verlato` next to the extension (a source checkout), or a `.venv` in the
    workspace, the extension directory or its parent;
-3. `verlato` on `PATH`, if its version has the extension's major.minor (a mismatched one is
+3. `verlato` on `PATH`, if its version has the runtime version's major.minor (a mismatched one is
    skipped, with a note in the *Verlato* output channel);
-4. a runtime it downloaded earlier for this version;
+4. a runtime it downloaded earlier for this runtime version;
 5. the release bundle, downloaded now (with `verlato.runtime.autoDownload`; otherwise it asks).
 
 Downloads use VS Code's proxy settings (`http.proxy`). Bundles exist for Linux (x64, arm64),

@@ -17,7 +17,10 @@ bin="$venv/bin"
 work="$(mktemp -d)"
 cd "$work"
 "$bin/verlato" --help >/dev/null
-"$bin/verlato" --version | grep -F "${VERSION:-}"
+# rab's VERSION is the PyPI (PEP 440) version, e.g. 0.2.0b1: the package's __version__. The
+# command prints the native SemVer version (verlato 0.2.0-beta.1).
+"$bin/verlato" --version | grep -E '^verlato [0-9]+\.[0-9]+\.[0-9]+'
+"$bin/python" -c 'import sys, verlato; assert not sys.argv[1] or verlato.__version__ == sys.argv[1], (verlato.__version__, sys.argv[1])' "${VERSION:-}"
 env -u VERLATO_INTENTUMDIFF_WASM_DIR -u INTENTUMDIFF_WASM_DIR "$bin/verlato" doctor engine \
   | "$bin/python" -c 'import json,sys; info=json.load(sys.stdin); assert info["available"], info; print("engine", info["version"])'
 "$bin/python" -c 'import verlato; assert verlato.parser_bundle(); assert verlato.call("health")["runtime"] == "rust"; print("verlato", verlato.__version__)'

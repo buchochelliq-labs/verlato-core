@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from collections.abc import Sequence
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +20,22 @@ from verlato import _native
 
 __all__ = ["ServiceError", "__version__", "call", "engine_version", "parser_bundle", "run"]
 
-__version__: str = _native.version()
+
+
+def _pep440(version: str) -> str:
+    """The PEP 440 form of the native runtime's SemVer version (`0.2.0-beta.1` -> `0.2.0b1`)."""
+    match = re.fullmatch(r"(\d+\.\d+\.\d+)(?:-(alpha|beta|rc)\.(\d+))?", version)
+    if not match:
+        return version
+    release, stage, number = match.groups()
+    return release if stage is None else f"{release}{dict(alpha='a', beta='b', rc='rc')[stage]}{number}"
+
+
+try:
+    # The installed distribution's version (PEP 440, as on PyPI: `0.2.0b1`).
+    __version__: str = metadata.version("verlato-core")
+except metadata.PackageNotFoundError:  # pragma: no cover - running from a source tree
+    __version__ = _pep440(_native.version())
 
 _WASM_ENV = ("VERLATO_INTENTUMDIFF_WASM_DIR", "INTENTUMDIFF_WASM_DIR")
 

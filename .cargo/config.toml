@@ -1,0 +1,8 @@
+# C flags for the Linux wheels. maturin builds them in the manylinux2014 container (glibc 2.17),
+# whose <endian.h> defines le16toh/be16toh only with _BSD_SOURCE: glibc added _DEFAULT_SOURCE,
+# which tree-sitter's build script defines, only in 2.19. Without this the wheel links but fails
+# to import ("undefined symbol: le16toh"). Defining _DEFAULT_SOURCE as well keeps newer glibc,
+# which treats _BSD_SOURCE as _DEFAULT_SOURCE, from warning that _BSD_SOURCE is deprecated.
+[env]
+CFLAGS_x86_64_unknown_linux_gnu = "-D_DEFAULT_SOURCE -D_BSD_SOURCE"
+CFLAGS_aarch64_unknown_linux_gnu = "-D_DEFAULT_SOURCE -D_BSD_SOURCE"
