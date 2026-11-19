@@ -8,7 +8,7 @@
 # build time by scripts/fetch_intentumdiff_parsers.sh (the bundle's single pinned source).
 
 release:
-  name_from: verlato-core
+  name_from: verlato-native
   branch: main
 
 packages:
@@ -18,7 +18,7 @@ packages:
   - name: verlato-native
     registry: github
     manifest: crates/verlato/Cargo.toml
-    version: "0.2.0"
+    version: "0.2.0-beta.1"
     tag: "v{version}"
     paths: ["crates/**", "Cargo.toml", "Cargo.lock", "scripts/**", "README.md", "LICENSE", "NOTICE"]
     checksums: SHA256SUMS
@@ -54,7 +54,7 @@ packages:
   - name: verlato-core
     registry: pypi
     manifest: pyproject.toml
-    version: "0.2.0"
+    version: "0.2.0b1"
     paths: ["pyproject.toml", "python/**", "crates/**", "Cargo.toml", "Cargo.lock", "scripts/**", "README.md",
             "LICENSE", "NOTICE"]
     artifacts:

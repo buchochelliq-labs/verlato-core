@@ -39,8 +39,11 @@ def _repo(tmp_path: Path) -> Path:
 
 def test_version_agrees_with_cargo():
     workspace_version = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
-    assert verlato.__version__ == native.version() == workspace_version
-    assert _cli("--version").stdout.strip() == f"verlato {verlato.__version__}"
+    # The native runtime reports Cargo's SemVer version; the package's __version__ is its PEP 440
+    # form (`0.2.0-beta.1` -> `0.2.0b1`), the version PyPI shows.
+    assert native.version() == workspace_version
+    assert verlato.__version__ == verlato._pep440(workspace_version)
+    assert _cli("--version").stdout.strip() == f"verlato {native.version()}"
     assert verlato.engine_version().startswith("intentumdiff-core@")
 
 

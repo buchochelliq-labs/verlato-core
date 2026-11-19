@@ -8,7 +8,7 @@ resolver = "2"
 [workspace.package]
 # The one version: the crates, the Python package (pyproject.toml `dynamic = ["version"]`) and
 # the release bundles all take it from here.
-version = "0.2.0"
+version = "0.2.0-beta.1"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/buchochelliq-labs/verlato-core"
