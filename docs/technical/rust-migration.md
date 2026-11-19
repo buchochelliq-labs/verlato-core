@@ -221,6 +221,14 @@ way before the goldens were re-recorded.
 | [core#250](https://github.com/buchochelliq-labs/intentumdiff-core/issues/250) | Spurious `module` pseudo-moves from duplicate names | **Fixed upstream.** The remaining part, the synthetic `module.` prefix on top-level names and root modules taking part in move matching, moved to [core#311](https://github.com/buchochelliq-labs/intentumdiff-core/issues/311) (0.0.4): Verlato strips the prefix and drops `module`-kind entries until then. |
 | [python#332](https://github.com/buchochelliq-labs/intentumdiff-python/issues/332) | `finalize_commit_diff` crashed on `FileDiffError` results | **Not applicable.** The native engine calls the core's commit index directly. |
 
+Gaps found while upgrading to 0.0.3, filed for 0.0.4:
+
+| Issue | Gap | Verlato workaround |
+|---|---|---|
+| [core#330](https://github.com/buchochelliq-labs/intentumdiff-core/issues/330) | Added and deleted definitions are described only by kind and name, with no source text | Keeps its bounded `before`/`after` snippets for added and deleted definitions |
+| [core#331](https://github.com/buchochelliq-labs/intentumdiff-core/issues/331) | `api::review_sources` returns size-limit failures as a plain `ReviewError::Engine` | Recognises them by message text to record `too_large` and point at `semantic_max_nodes` |
+| [core#332](https://github.com/buchochelliq-labs/intentumdiff-core/issues/332) | `CHANGE_SIGNATURE`'s `fact_delta` reports only `param_count`, and `param_count` counts Python's bare `*` | Reads the parameter list from source to decide whether a change is `extended`. A bare `*` is handled like other `*` entries, so the inflated count cancels out |
+
 IntentumDiff 0.0.3 also reports whether a review explains the whole change (core #252). A file
 whose review is `incomplete` is recorded as unreviewed (kind `incomplete`) with the engine's
 message, never as a clean review.

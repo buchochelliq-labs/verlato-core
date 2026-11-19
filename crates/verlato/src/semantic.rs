@@ -1985,6 +1985,24 @@ mod tests {
             kind(old, "def fetch(limit, page=1, **kw):\n", (2, 1, 3, 1)),
             "extended"
         );
+        // The engine counts Python's bare `*` separator as a parameter (core #332); keyword-only
+        // parameters after it are still classified by whether they can be omitted.
+        assert_eq!(
+            kind(
+                "def fetch(limit):\n",
+                "def fetch(limit, *, offset=0):\n",
+                (1, 0, 3, 1)
+            ),
+            "extended"
+        );
+        assert_eq!(
+            kind(
+                "def fetch(limit):\n",
+                "def fetch(limit, *, offset):\n",
+                (1, 0, 3, 0)
+            ),
+            "signature"
+        );
         // `<` in a default value is a comparison, not a generic bracket.
         assert_eq!(
             kind(
