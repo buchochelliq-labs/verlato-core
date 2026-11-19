@@ -1,0 +1,9 @@
+Verlato
+Copyright 2026 n1ckyb
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+Versions published before the relicensing were released under the MIT License.
+
+Verlato uses the IntentumDiff semantic diff engine
+(https://github.com/buchochelliq-labs/intentumdiff-core) and its parser components,
+which are distributed under their own licenses.

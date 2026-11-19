@@ -8,6 +8,7 @@ import { ReleaseActivityViewProvider } from "./webview/releaseActivityView";
 import { PreviewPanel } from "./webview/previewPanel";
 import { ReleaseControlViewProvider } from "./webview/releaseControlView";
 import { ReleaseReleasesViewProvider } from "./webview/releaseReleasesView";
+import { RuntimeManager } from "./runtimeManager";
 
 export function activate(context: vscode.ExtensionContext): void {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -17,6 +18,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const output = vscode.window.createOutputChannel("Verlato");
   const client = new VerlatoClient(workspaceFolder, context.extensionPath, output);
+  const runtime = new RuntimeManager(context, workspaceFolder.uri.fsPath, output);
+  client.setRuntimePreparation(() => runtime.prepare());
   const mcpServer = new McpServerController(workspaceFolder);
   const previewPanel = new PreviewPanel();
   const releaseSourcesProvider = new ReleaseSourcesProvider();
@@ -57,6 +60,13 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("verlato.openActivity", () => {
       releaseActivityView.reveal();
+    }),
+    vscode.commands.registerCommand("verlato.downloadRuntime", async () => {
+      const executable = await runtime.download();
+      if (executable) {
+        client.useRuntime(executable);
+        await client.initialize();
+      }
     }),
   );
 

@@ -9,19 +9,33 @@ program as the command line, so everything it does can also be scripted.
 
 ## Install
 
-1. **Install Verlato itself**, one of:
-    - `pip install verlato-core` (the `verlato` command lands on `PATH`);
-    - unpack a [release bundle](../getting-started.md#from-a-release-bundle), then set
-      **`verlato.cliPath`** to its `verlato` executable (or put its directory on `PATH`).
-2. **Install the extension**: from a `.vsix` file with *Extensions: Install from VSIX...*, or
-   build one from source (see [Building from source](../technical/building.md#the-vs-code-extension)).
+1. **Install the extension** from the
+   [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=buchochelliq-labs.verlato-vscode) or [Open VSX](https://open-vsx.org/extension/buchochelliq-labs/verlato-vscode)
+   (search for *Verlato*, publisher `buchochelliq-labs`), or from a `.vsix` file with
+   *Extensions: Install from VSIX...* ([Building from source](../technical/building.md#the-vs-code-extension)).
    It needs VS Code 1.90 or later.
-3. **Open a git repository** and click the Verlato icon in the activity bar.
+2. **Open a git repository** and click the Verlato icon in the activity bar.
 
-The extension looks for `verlato` in this order: the `verlato.cliPath` setting (when it is not
-the default `verlato`); a release bundle unpacked into the extension's own `bin/` directory;
-`target/release/verlato` next to the extension (a source checkout); a `.venv` in the workspace,
-the extension directory or its parent; and finally `verlato` on `PATH`.
+That's all: the extension needs the native `verlato` runtime, and if it can't find one it
+downloads the [release bundle](../getting-started.md#from-a-release-bundle) for your platform
+from the GitHub release matching its version, checks it against the release's `SHA256SUMS`, and
+keeps it in the extension's storage. **Verlato: Download Runtime** downloads it again (for
+example after a failed or interrupted download). To manage the runtime yourself, install it
+with `pip install verlato-core`, or set `verlato.runtime.autoDownload` to `false`.
+
+The extension looks for `verlato` in this order:
+
+1. the `verlato.cliPath` setting, when it is not the default `verlato`;
+2. a local install: a release bundle unpacked into the extension's own `bin/` directory,
+   `target/release/verlato` next to the extension (a source checkout), or a `.venv` in the
+   workspace, the extension directory or its parent;
+3. `verlato` on `PATH`, if its version has the extension's major.minor (a mismatched one is
+   skipped, with a note in the *Verlato* output channel);
+4. a runtime it downloaded earlier for this version;
+5. the release bundle, downloaded now (with `verlato.runtime.autoDownload`; otherwise it asks).
+
+Downloads use VS Code's proxy settings (`http.proxy`). Bundles exist for Linux (x64, arm64),
+macOS (Apple Silicon, Intel) and Windows (x64); on other platforms install it with pip.
 
 ## The views
 
@@ -142,7 +156,8 @@ All settings are under **Verlato** in the Settings editor. The extension passes 
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `verlato.cliPath` | `verlato` | path to the `verlato` executable |
+| `verlato.cliPath` | `verlato` | path to the `verlato` executable; `verlato` means: find or download it |
+| `verlato.runtime.autoDownload` | `true` | download the native runtime from GitHub Releases when none is found |
 | `verlato.serviceMode` | `auto` | `auto` uses the long-running `verlato service` for core flows; `cli` runs one command per action |
 | `verlato.diffEngine` | `intentumdiff` | `intentumdiff` or `git` evidence |
 | `verlato.semanticParallelism` | `0` | worker threads for uncached commit reviews (0 = automatic: up to 4) |

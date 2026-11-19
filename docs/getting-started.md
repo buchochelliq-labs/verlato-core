@@ -32,7 +32,8 @@ verlato-v0.2.0-x86_64-unknown-linux-gnu/verlato --version
 
 The archive holds the `verlato` executable with the parser bundle beside it in `wasm/`. Keep
 the two together, then put the directory on `PATH` (or point the VS Code extension's
-`verlato.cliPath` setting at the executable). Targets: `x86_64-unknown-linux-gnu`,
+`verlato.cliPath` setting at the executable; the extension also downloads the bundle itself
+when it finds no `verlato`). Targets: `x86_64-unknown-linux-gnu`,
 `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin` and
 `x86_64-pc-windows-msvc`.
 
